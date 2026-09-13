@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- Measure individual shot confirmations, probe RTTs and complete-checkpoint
+  arrival intervals with bounded event histories. Avoid repeated last-value
+  latency samples and report overwritten measurements in network trials.
+
 - Reduce UDP bandwidth with acknowledged owner configuration references and
   lossless input batch compaction. Preserve update cadence, input redundancy and
   full-precision dynamics; require matching protocol 29 builds.
