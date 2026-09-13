@@ -82,7 +82,7 @@ jobs:
       - name: Verify archive checksums
         working-directory: release-assets
         run: |
-          test "$(find . -name '*.zip' | wc -l)" -eq 4
+          test "$(find . -name '*.zip' | wc -l)" -eq 3
           cat ./*.sha256 > SHA256SUMS.txt
           sha256sum --check SHA256SUMS.txt
       - name: Create draft, upload all files, then publish
@@ -100,4 +100,4 @@ jobs:
           gh release edit "$TAG" --draft=false
       - name: Report successful dry run
         if: inputs.dry-run
-        run: echo "Dry run passed. All four ZIPs and checksums were verified; no tag or release was created." >> "$GITHUB_STEP_SUMMARY"
+        run: echo "Dry run passed. All three ZIPs and checksums were verified; no tag or release was created." >> "$GITHUB_STEP_SUMMARY"

@@ -4,6 +4,9 @@
 
 ## Unreleased
 
+- Drop Intel macOS from native validation and release packages. Supported release
+  targets are Windows x64, Linux x64 and macOS Apple Silicon.
+
 - Unblock standalone Windows release validation by testing without the optional
   Steam feature, whose native library conflicts with static GameNetworkingSockets
   on MSVC. Keep an all-feature compile check on Windows and all-feature tests on

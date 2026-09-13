@@ -16,9 +16,10 @@ Run **Actions > Full validation > Run workflow** on the branch to validate, or:
 gh workflow run full-check.yml --ref main
 ```
 
-Full validation builds and tests the workspace with all features on Windows x64,
-Linux x64, macOS Apple Silicon and macOS Intel. Linux also runs Clippy with all
-features and targets. Compilation finishes and saves the cache in separate jobs
+Full validation builds and tests the workspace on Windows x64, Linux x64 and
+macOS Apple Silicon. Windows tests the standalone configuration and compile-checks
+all features because optional Steam linking conflicts with static GNS on MSVC.
+Linux and macOS test all features. Linux also runs Clippy with all features and targets. Compilation finishes and saves the cache in separate jobs
 before the tests execute. No ZIPs are produced. Test jobs hydrate the versioned field through Git LFS;
 build jobs and lightweight checks do not download it.
 
@@ -48,7 +49,7 @@ positive prerelease number or an identifier such as `rc1`. For example, `0.2.0`,
 `v0.0.1-alpha.rc1`. Stable ignores the number.
 
 **Dry run defaults to true.** It runs the same validation prerequisite, stamps
-the version, builds all four release packages, checks the field through the real
+the version, builds all three release packages, checks the field through the real
 loader, smoke-tests both packaged binaries with `--help`, uploads ZIP artifacts,
 and verifies their combined checksums. It creates no tag, draft, or release.
 Download its `package-*` artifacts from the run page. Artifacts are retained for
@@ -70,7 +71,7 @@ the release without committing a version bump. Third-party locked versions stay
 unchanged. The release tag points to the selected source commit; rebuilding that
 tag requires the same version-stamping step.
 
-Publication waits for verification and all four ZIPs. Only the final job has
+Publication waits for verification and all three ZIPs. Only the final job has
 `contents: write`; its GitHub release commands are skipped in dry-run mode. It
 creates a draft, uploads archives and checksums, then publishes. Alpha, beta and
 RC releases are marked as prereleases. The workflow uses `GITHUB_TOKEN`, with no

@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 <!-- Copyright (c) 2026 hxyulin <hxyulin@proton.me> -->
-Download the ZIP for Windows x64, Linux x64, macOS Apple Silicon, or macOS Intel.
+Download the ZIP for Windows x64, Linux x64, or macOS Apple Silicon.
 Extract the whole archive, then run `bin/rm-simulator` or `bin/rm-simulator.exe`.
 The headless server is in the same directory. Windows also includes local-play
 and team-join launchers. Each ZIP includes the pinned CAD field package.
