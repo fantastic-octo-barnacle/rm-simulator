@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 hxyulin <hxyulin@proton.me>
+name: Full validation
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Ignore a previous successful validation of this commit
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      force:
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  actions: read
+jobs:
+  receipt:
+    name: Look up validated commit
+    runs-on: ubuntu-24.04
+    outputs:
+      reused: ${{ steps.lookup.outputs.reused }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Find successful validation for this SHA
+        id: lookup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_VALIDATION: ${{ inputs.force }}
+        run: python3 scripts/validated-commit.py
+  repository:
+    # Advisory data changes independently of the source SHA; rerun cheap checks.
+    needs: receipt
+    uses: ./.github/workflows/ci.yaml
+  native:
+    needs: receipt
+    if: needs.receipt.outputs.reused != 'true'
+    uses: ./.github/workflows/package.yml
+    with:
+      version: '0.0.0'
+      package: false
+      validate: true
+  result:
+    name: Full validation passed
+    if: always()
+    needs: [receipt, repository, native]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require reused success or all current checks
+        env:
+          RECEIPT_RESULT: ${{ needs.receipt.result }}
+          REUSED: ${{ needs.receipt.outputs.reused }}
+          REPOSITORY_RESULT: ${{ needs.repository.result }}
+          NATIVE_RESULT: ${{ needs.native.result }}
+        run: |
+          test "$RECEIPT_RESULT" = success
+          test "$REPOSITORY_RESULT" = success
+          if [ "$REUSED" != true ]; then
+            test "$NATIVE_RESULT" = success
+          fi

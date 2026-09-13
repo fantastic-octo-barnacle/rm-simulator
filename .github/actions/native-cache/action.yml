@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 hxyulin <hxyulin@proton.me>
+name: Restore native build cache
+description: Restore exact source/version artifacts, falling back to compatible compiler caches.
+outputs:
+  key:
+    description: Exact cache key to save after a successful build
+    value: ${{ steps.key.outputs.key }}
+  cache-hit:
+    description: Whether the exact source/version cache was restored
+    value: ${{ steps.restore.outputs.cache-hit }}
+  paths:
+    description: Cargo registry and target paths shared by restore and save
+    value: ${{ steps.key.outputs.paths }}
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      env:
+        RM_MANIFEST_HASH: ${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', '.cargo/**', '.github/actions/native-dependencies/action.yml', '.github/actions/native-cache/action.yml') }}
+      run: |
+        python - <<'PY'
+        import hashlib, json, os, pathlib, subprocess
+        compiler = subprocess.check_output(['rustc', '-vV'], text=True)
+        environment = {k: v for k, v in os.environ.items()
+                       if k.startswith(('CARGO_', 'RUST', 'CMAKE_', 'CC', 'CXX', 'CFLAGS'))}
+        identity = hashlib.sha256((compiler + json.dumps(environment, sort_keys=True)).encode()).hexdigest()[:16]
+        prefix = f"native-v5-{os.environ['RUNNER_OS']}-{os.environ['RUNNER_ARCH']}-{identity}-"
+        key = prefix + os.environ['RM_MANIFEST_HASH'] + '-' + os.environ['GITHUB_SHA']
+        cargo = pathlib.Path(os.environ.get('CARGO_HOME', str(pathlib.Path.home() / '.cargo')))
+        # Cargo can recreate unpacked sources from the cached archives and Git DB.
+        paths = [str(cargo / 'registry/cache'), str(cargo / 'registry/index'),
+                 str(cargo / 'git/db'), os.environ.get('CARGO_TARGET_DIR', 'target')]
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+            out.write(f'key={key}\nprefix={prefix}\npaths<<CACHE_PATHS\n' + '\n'.join(paths) + '\nCACHE_PATHS\n')
+        PY
+    - uses: actions/cache/restore@v4
+      id: restore
+      with:
+        path: ${{ steps.key.outputs.paths }}
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: ${{ steps.key.outputs.prefix }}

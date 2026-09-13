@@ -1,0 +1,35 @@
+{
+  "base": {
+    "name": "1080p-geometry",
+    "resolution": [
+      1920,
+      1080
+    ],
+    "camera_position_flu_m": [
+      10,
+      0,
+      0.7
+    ],
+    "camera_target_flu_m": [
+      0,
+      0,
+      0.7
+    ],
+    "stadium": true,
+    "warmup_seconds": 10,
+    "sample_seconds": 20
+  },
+  "sweep": {
+    "graphics.preset": [
+      "High",
+      "Ultra"
+    ],
+    "geometry": [
+      "normal",
+      "boxes",
+      "sparse"
+    ]
+  },
+  "repeats": 2,
+  "seed": 2026
+}

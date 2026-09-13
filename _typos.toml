@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 hxyulin <hxyulin@proton.me>
+[default.extend-identifiers]
+# Existing domain terms and coordinate indices, not spelling errors.
+iy = "iy"
+PNGs = "PNGs"

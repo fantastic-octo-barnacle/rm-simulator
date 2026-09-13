@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Copyright (c) 2026 hxyulin <hxyulin@proton.me> -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rm-simulator referee</title>
+<style>
+  :root { color-scheme: dark; --bg: #14171c; --panel: #1e2229; --line: #2e343d; --fg: #e6e9ee; --dim: #9aa3af; --red: #e5484d; --blue: #3e8ef7; --ok: #46c46a; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif; }
+  h1 { font-size: 18px; margin: 0 0 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 0 0 8px; }
+  .clock { font-size: 32px; font-variant-numeric: tabular-nums; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  button { background: #2b313b; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  button:hover { background: #363d49; }
+  button.red { border-color: var(--red); } button.blue { border-color: var(--blue); }
+  .team-red { color: var(--red); } .team-blue { color: var(--blue); }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { text-align: left; padding: 3px 6px 3px 0; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  .bar { height: 6px; background: #2b313b; border-radius: 3px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--ok); }
+  .events { max-height: 260px; overflow: auto; font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; }
+  .muted { color: var(--dim); }
+  #error { color: var(--red); min-height: 1.4em; }
+  input[type=number] { width: 7em; background: #2b313b; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 4px; }
+  label { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 8px 4px 0; }
+  select { padding: 5px; background: #2b313b; color: var(--fg); }
+  .card table { font-size: 13px; }
+  .card { overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>rm-simulator referee <span id="conn" class="muted"></span></h1>
+<div id="error"></div>
+<div class="grid">
+  <div class="card">
+    <h2>Match</h2>
+    <div class="clock" id="clock">--:--</div>
+    <div id="phase" class="muted"></div>
+    <div class="row">
+      <button onclick="referee('StartMatch')">Start match</button>
+      <button onclick="referee('FinishMatch')">Finish</button>
+      <button onclick="referee('ResetMatch')">Reset</button>
+    </div>
+    <div class="row">
+      <button onclick="skip(180)">Skip to 3:00</button>
+      <button onclick="skip(255)">4:15</button>
+      <button onclick="skip(330)">5:30</button>
+      <button onclick="skip(415)">6:55</button>
+    </div>
+    <div class="row">
+      <button id="pause" onclick="togglePause()">Pause</button>
+      <button onclick="command({Step:{ticks:16}})">Step 16 ms</button>
+      <button onclick="command({Step:{ticks:1000}})">Step 1 s</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Power Rune</h2>
+    <div id="runes"></div>
+    <div class="row">
+      <button class="red" onclick="referee({ActivateRune:{team:'Red'}})">Activate red rune</button>
+      <button class="blue" onclick="referee({ActivateRune:{team:'Blue'}})">Activate blue rune</button>
+    </div>
+    <div class="row">
+      <button class="red" onclick="referee({GrantRuneOpportunity:{team:'Red'}})">Grant red opportunity</button>
+      <button class="blue" onclick="referee({GrantRuneOpportunity:{team:'Blue'}})">Grant blue opportunity</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Robots</h2>
+    <label>Bot team <select id="botTeam"><option>Blue</option><option>Red</option></select></label>
+    <label>Spin (rad/s) <input id="botSpin" type="number" value="3" min="-20" max="20" step="0.5"></label>
+    <button onclick="command({SpawnBot:{team:$('botTeam').value,spin_rad_s:Number($('botSpin').value)}})">Spawn bot</button>
+    <button onclick="command('ClearBots')">Remove all bots</button>
+    <div id="bots"></div>
+    <table id="robots"></table>
+    <div class="row muted">Damage <input type="number" id="dmg" value="10" min="1"></div>
+  </div>
+  <div class="card">
+    <h2>Bases</h2>
+    <table id="bases"></table>
+    <label>Team <select id="baseTeam"><option>Red</option><option>Blue</option></select></label>
+    <label>HP <input id="baseHp" type="number" min="0" max="5000" value="5000"></label>
+    <label>Shield <input id="baseShield" type="number" min="0" max="5000" value="150"></label>
+    <button onclick="referee({SetBaseHp:{team:$('baseTeam').value,hp:Number($('baseHp').value),shield_hp:Number($('baseShield').value)}})">Set base HP</button>
+    <p class="muted">Idle practice permits damage. During matches, destroy the defending outpost first. Open base covers below to expose lower armor. Dart plate accepts projectiles for training.</p>
+  </div>
+  <div class="card">
+    <h2>Outposts</h2>
+    <table id="outposts"></table>
+  </div>
+  <div class="card">
+    <h2>Ammo and economy policy</h2>
+    <p class="muted">Tracking and income start when the round is Running. Starting allowances apply on match start/reset and to new pilots. Other settings affect future actions and income grants.</p>
+    <form id="settingsForm" onsubmit="event.preventDefault(); submit(saveSettings)">
+      <label><input id="enforceAmmo" type="checkbox"> Enforce ammo allowance</label>
+      <label><input id="economyEnabled" type="checkbox"> Automatic income</label><br>
+      <label>Starting 17 mm <input id="initial17" type="number" min="0" max="4294967295" required></label>
+      <label>Starting 42 mm <input id="initial42" type="number" min="0" max="4294967295" required></label>
+      <label>Initial gold <input id="initialGold" type="number" min="0" max="4294967295" required></label>
+      <label>Minute gold <input id="minuteGold" type="number" min="0" max="4294967295" required></label>
+      <label>Final minute gold <input id="finalGold" type="number" min="0" max="4294967295" required></label>
+      <label>Gold / 17 mm <input id="price17" type="number" min="0" max="4294967295" required></label>
+      <label>Gold / 42 mm <input id="price42" type="number" min="0" max="4294967295" required></label>
+      <div class="row"><button>Apply policy</button><button type="button" onclick="loadSettings()">Load current policy</button></div>
+    </form>
+    <div id="policyStatus" class="muted"></div>
+  </div>
+  <div class="card">
+    <h2>Live ammo and gold</h2>
+    <div id="resources"></div>
+    <form onsubmit="event.preventDefault(); submit(saveRobot)">
+      <label>Robot <select id="resourceRobot" onchange="loadRobot()"></select></label>
+      <button type="button" onclick="loadRobot()">Load current</button><br>
+      <label>17 mm left <input id="ammo17" type="number" min="0" max="4294967295" required value="0"></label>
+      <label>42 mm left <input id="ammo42" type="number" min="0" max="4294967295" required value="0"></label>
+      <label>17 mm fired <input id="shots17" type="number" min="0" max="9007199254740991" required value="0"></label>
+      <label>42 mm fired <input id="shots42" type="number" min="0" max="9007199254740991" required value="0"></label>
+      <button>Set robot resources</button>
+    </form>
+    <form onsubmit="event.preventDefault(); submit(buyAmmo)">
+      <label>Resupply selected robot <select id="purchaseCaliber"><option value="Mm17">17 mm</option><option value="Mm42">42 mm</option></select></label>
+      <label>Count <input id="purchaseAmount" type="number" min="1" max="4294967295" required value="10"></label>
+      <button>Buy with team gold</button>
+    </form>
+    <p class="muted">Referee resupply is immediate at the configured price; it does not simulate RFID or remote-exchange restrictions.</p>
+    <form onsubmit="event.preventDefault(); submit(saveGold)">
+      <label>Team <select id="goldTeam"><option>Red</option><option>Blue</option></select></label>
+      <label>Gold <input id="goldValue" type="number" min="0" max="4294967295" required value="400"></label>
+      <button>Set gold</button>
+    </form>
+    <form onsubmit="event.preventDefault(); submit(saveUnassigned)">
+      <label>Free-camera 17 mm fired <input id="free17" type="number" min="0" max="9007199254740991" required value="0"></label>
+      <label>42 mm fired <input id="free42" type="number" min="0" max="9007199254740991" required value="0"></label>
+      <button>Set free-camera counts</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2>Equipment overrides</h2>
+    <form onsubmit="event.preventDefault(); submit(saveOutpost)">
+      <label>Outpost <select id="editOutpost" onchange="loadOutpost()"></select></label>
+      <label>HP <input id="outpostHp" type="number" min="0" max="1500" required value="1500"></label>
+      <button>Set HP</button><button type="button" onclick="loadOutpost()">Load current</button>
+    </form>
+    <p class="muted">Zero stops the outpost and disables its armor lights and hit detection. Restoring HP resumes its configured rotation. Match start/reset restores 1500 HP. Base armor damage is not connected yet.</p>
+    <div>
+      <label>Mechanism team <select id="mechanismTeam"><option>Red</option><option>Blue</option></select></label>
+      <button onclick="submit(()=>setMechanism('SetDartDoorOpen',true))">Open dart door</button>
+      <button onclick="submit(()=>setMechanism('SetDartDoorOpen',false))">Close dart door</button>
+      <button onclick="submit(()=>setMechanism('SetBaseOpen',true))">Open base</button>
+      <button onclick="submit(()=>setMechanism('SetBaseOpen',false))">Close base</button>
+      <p id="mechanismState" class="muted"></p>
+    </div>
+    <form onsubmit="event.preventDefault(); submit(saveOpportunities)">
+      <label>Rune team <select id="runeTeam"><option>Red</option><option>Blue</option></select></label>
+      <label>Opportunities <input id="opportunities" type="number" min="0" max="4294967295" required value="1"></label>
+      <button>Set opportunities</button>
+    </form>
+    <form onsubmit="event.preventDefault(); submit(saveBuff)">
+      <label>Defense % <input id="buffDefense" type="number" min="0" max="100" required value="25"></label>
+      <label>Attack % <input id="buffAttack" type="number" min="0" max="1000" required value="100"></label>
+      <label>Cooling multiplier <input id="buffCooling" type="number" min="0" max="100" required value="1"></label>
+      <label>Duration seconds <input id="buffDuration" type="number" min="0" max="86400" required value="45"></label>
+      <button>Override selected team buff</button>
+    </form>
+    <p class="muted">During Running only. Zero seconds clears the buff. Overrides cancel an activation attempt without spending an opportunity. Only defense affects damage; attack and cooling are reported. Rune activation timing and motion still use the existing rules.</p>
+  </div>
+  <div class="card" style="grid-column: 1 / -1">
+    <h2>Events</h2>
+    <div class="events" id="events"></div>
+  </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+let paused = false, latest = null, settingsLoaded = false;
+function number(id) {
+  const value = Number($(id).value);
+  if ($(id).value === '' || !Number.isSafeInteger(value) || value < 0) throw new Error('Enter a nonnegative whole number for ' + id);
+  return value;
+}
+async function submit(action) { try { await action(); } catch(e) { $('error').textContent = String(e); } }
+function gameplay(edit) { return referee({Gameplay: edit}); }
+function loadSettings() {
+  const g = latest?.field.referee?.gameplay; if (!g) return;
+  const p = g.settings;
+  $('enforceAmmo').checked = p.enforce_allowance; $('economyEnabled').checked = p.economy_enabled;
+  for (const [id, value] of Object.entries({initial17:p.initial_allowance[0], initial42:p.initial_allowance[1], initialGold:p.initial_gold, minuteGold:p.minute_gold, finalGold:p.final_minute_gold, price17:p.ammo_price[0], price42:p.ammo_price[1]})) $(id).value = value;
+}
+function saveSettings() {
+  return gameplay({Settings:{enforce_allowance:$('enforceAmmo').checked, economy_enabled:$('economyEnabled').checked,
+    initial_allowance:[number('initial17'),number('initial42')], initial_gold:number('initialGold'), minute_gold:number('minuteGold'),
+    final_minute_gold:number('finalGold'), ammo_price:[number('price17'),number('price42')]}});
+}
+function selectedRobot() { if ($('resourceRobot').value === '') throw new Error('No robot selected'); return number('resourceRobot'); }
+function saveRobot() { return gameplay({Robot:{id:selectedRobot(), allowance:[number('ammo17'),number('ammo42')], shots:[number('shots17'),number('shots42')]}}); }
+function buyAmmo() { return gameplay({BuyAmmo:{id:selectedRobot(),caliber:$('purchaseCaliber').value,amount:number('purchaseAmount')}}); }
+function saveGold() { return gameplay({Gold:{team:$('goldTeam').value,gold:number('goldValue')}}); }
+function saveUnassigned() { return gameplay({UnassignedShots:{shots:[number('free17'),number('free42')]}}); }
+function setMechanism(command,open) { return referee({[command]:{team:$('mechanismTeam').value,open}}); }
+function saveOutpost() { return referee({SetOutpostHp:{outpost:number('editOutpost'),hp:number('outpostHp')}}); }
+function saveOpportunities() { return referee({SetRuneOpportunities:{team:$('runeTeam').value,opportunities:number('opportunities')}}); }
+function saveBuff() { return referee({SetRuneBuff:{team:$('runeTeam').value,defense_pct:number('buffDefense'),attack_pct:number('buffAttack'),cooling_multiplier:number('buffCooling'),duration_ns:number('buffDuration')*1e9}}); }
+function loadRobot() {
+  const r = latest?.field.referee?.gameplay.robots.find(r => String(r.id) === $('resourceRobot').value); if (!r) return;
+  for (const [id,value] of Object.entries({ammo17:r.allowance[0],ammo42:r.allowance[1],shots17:r.shots[0],shots42:r.shots[1]})) $(id).value=value;
+}
+function loadOutpost() { const o=latest?.field.outposts[Number($('editOutpost').value)]; if(o) $('outpostHp').value=o.hp; }
+function options(id, entries) {
+  const select=$(id), old=select.value, key=JSON.stringify(entries);
+  if (select.dataset.key === key) return false;
+  select.dataset.key=key; select.replaceChildren(...entries.map(([value,label]) => new Option(label,String(value))));
+  if (entries.some(([value]) => String(value) === old)) select.value=old;
+  return old !== select.value;
+}
+function fmt(ns) { const s = Math.floor(ns / 1e9); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
+function teamClass(t) { return t === 'Red' ? 'team-red' : 'team-blue'; }
+async function command(cmd) {
+  try {
+    const r = await fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cmd) });
+    const j = await r.json();
+    $('error').textContent = j.error || '';
+  } catch (e) { $('error').textContent = String(e); }
+  await refresh();
+}
+function referee(c) { return command({ Referee: c }); }
+function skip(seconds) { return referee({ SkipTo: { match_time_ns: seconds * 1e9 } }); }
+function togglePause() { return command({ Pause: { paused: !paused } }); }
+function describe(ev) {
+  if (typeof ev === 'string') return ev;
+  const [name, v] = Object.entries(ev)[0];
+  switch (name) {
+    case 'RuneStage': return `rune stage: ${v}`;
+    case 'RuneOpportunity': return `${v.team} gets a ${v.stage} rune opportunity (${v.total})`;
+    case 'RuneActivating': return `${v.team} rune activating`;
+    case 'RuneActivationExpired': return `${v.team} rune activation expired`;
+    case 'RuneActivated': return `${v.team} activated the ${v.stage} rune: ${v.arms} arms, avg ring ${v.average_ring.toFixed(1)}, atk ${v.buff.attack_pct}% def ${v.buff.defense_pct}% cooling x${v.buff.cooling_multiplier} for ${fmt(v.buff.expires_ns - v.buff.started_ns)}`;
+    case 'BuffExpired': return `${v.team} buff expired`;
+    case 'RobotDamaged': return `robot ${v.robot} -${v.amount} HP (${v.hp})` + (v.shooter == null ? '' : ` by robot ${v.shooter}`);
+    case 'RobotDefeated': return `robot ${v.robot} defeated`;
+    case 'RobotRevived': return `robot ${v.robot} revived`;
+    case 'RobotJoined': return `robot ${v.robot} joined ${v.team}`;
+    case 'RobotLeft': return `robot ${v.robot} left`;
+    case 'OutpostDestroyed': return `${v.team} outpost ${v.outpost} destroyed`;
+    default: return JSON.stringify(ev);
+  }
+}
+function render(state) {
+  latest = state;
+  const s = state.field, r = s.referee;
+  paused = state.paused;
+  $('pause').textContent = paused ? 'Resume' : 'Pause';
+  $('conn').textContent = `tick ${s.tick}${paused ? ' (paused)' : ''}`;
+  if (!r) { $('phase').textContent = 'no referee on this field'; return; }
+  if (r.gameplay) {
+    const g=r.gameplay, p=g.settings;
+    $('policyStatus').textContent=`Current: ammo limits ${p.enforce_allowance?'on':'off'}, income ${p.economy_enabled?'on':'off'}, initial ammo ${p.initial_allowance.join('/')}, income ${p.initial_gold}/${p.minute_gold}/${p.final_minute_gold}, ammo prices ${p.ammo_price.join('/')}.`;
+    $('resources').textContent=`Red ${g.gold[0]} gold · Blue ${g.gold[1]} gold. Free-camera 17/42 mm fired ${g.unassigned_shots.join('/')}. ` + g.robots.map(b=>`#${b.id}: ${b.allowance.join('/')} left, ${b.shots.join('/')} fired`).join(' · ');
+    if(options('resourceRobot',g.robots.map(b=>[b.id,`${b.team} #${b.id}`]))) loadRobot();
+    if(!settingsLoaded) { loadSettings(); settingsLoaded=true; }
+  }
+  if(options('editOutpost',s.outposts.map((o,i)=>[i,`${r.outpost_teams[i]} #${i}`]))) loadOutpost();
+  $('clock').textContent = r.phase === 'Idle' ? '--:--' : fmt(r.remaining_ns);
+  $('phase').textContent = `${r.phase} · ${r.stage} rune stage`;
+  $('runes').innerHTML = r.teams.map((t, i) => {
+    const rune = s.runes[r.rune_teams.indexOf(t.team)];
+    const state = rune ? rune.state : 'none';
+    const act = t.rune_activating_since_ns != null ? ` · activating for ${fmt(r.match_time_ns - t.rune_activating_since_ns)}` : '';
+    const buff = t.buff ? ` · buff atk ${t.buff.attack_pct}% def ${t.buff.defense_pct}% ×${t.buff.cooling_multiplier} cooling, ${fmt(Math.max(0, t.buff.expires_ns - r.match_time_ns))} left` : '';
+    return `<div><b class="${teamClass(t.team)}">${t.team}</b> rune ${state} · ${t.rune_opportunities} opportunit${t.rune_opportunities === 1 ? 'y' : 'ies'} · ${t.big_rune_activations} big activations${act}${buff}</div>`;
+  }).join('');
+  $('bots').innerHTML = (state.bots || []).map(id=>`Bot #${id} <button onclick="command({RemoveBot:{chassis:${id}}})">Remove</button>`).join(' · ');
+  $('robots').innerHTML = '<tr><th>id</th><th>team</th><th>kind</th><th>HP</th><th></th></tr>' + r.robots.map(b =>
+    `<tr><td>${b.id}</td><td class="${teamClass(b.team)}">${b.team}</td><td>${b.kind}</td>
+     <td style="min-width:120px">${b.hp}/${b.max_hp}<div class="bar"><i style="width:${100 * b.hp / b.max_hp}%"></i></div></td>
+     <td><button onclick="referee({DamageRobot:{robot:${b.id},amount:Number($('dmg').value)}})">hit</button>
+         <button onclick="referee({ReviveRobot:{robot:${b.id}}})">revive</button></td></tr>`).join('');
+  $('mechanismState').textContent = ['Red','Blue'].map((team,i)=>`${team}: base ${r.base_open[i]?'open':'closed'}, dart door ${r.dart_door_open[i]?'open':'closed'}`).join('; ');
+  $('bases').innerHTML = '<tr><th>Team</th><th>HP</th><th>Shield</th></tr>' + (s.bases || []).map(b=>`<tr><td>${b.config.team}</td><td>${b.hp}/5000</td><td>${b.shield_hp}</td></tr>`).join('');
+  $('outposts').innerHTML = '<tr><th>#</th><th>team</th><th>HP</th></tr>' + s.outposts.map((o, i) =>
+    `<tr><td>${i}</td><td class="${teamClass(r.outpost_teams[i])}">${r.outpost_teams[i]}</td>
+     <td style="min-width:120px">${o.hp}/1500${o.destroyed ? ' destroyed' : ''}<div class="bar"><i style="width:${100 * o.hp / 1500}%"></i></div></td></tr>`).join('');
+  $('events').textContent = r.events.slice().reverse().map(e =>
+    `${e.match_time_ns != null ? fmt(e.match_time_ns) : ' idle'}  ${describe(e.event)}`).join('\n');
+}
+async function refresh() {
+  try {
+    const r = await fetch('/api/state');
+    render(await r.json());
+  } catch (e) { $('conn').textContent = 'disconnected'; }
+}
+setInterval(refresh, 250);
+refresh();
+</script>
+</body>
+</html>

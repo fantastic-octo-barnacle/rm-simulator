@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 hxyulin <hxyulin@proton.me>
+name: Lightweight CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: lightweight-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  checks:
+    name: Repository checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          shared-key: repository-checks
+          cache-targets: false
+          cache-directories: ~/.cache/prek
+      - uses: taiki-e/install-action@v2.87.4
+        with:
+          tool: prek@0.4.14,cargo-deny@0.20.2
+      - name: Formatting and repository hooks
+        run: |
+          prek run --all-files --show-diff-on-failure
+          cargo fmt --all -- --check
+      - name: Architecture and dependency policy
+        run: |
+          python3 scripts/check-module-dependencies.py
+          python3 scripts/check-mpl-compliance.py
+          cargo deny check advisories bans licenses sources
+      - name: Verify field LFS pointers against the pinned inventory
+        run: python3 scripts/stage-release-field.py --verify-only --allow-lfs-pointers
+      - name: Python regression tests
+        run: |
+          python3 -m unittest discover -s scripts/tests
+          python3 -m doctest scripts/check-mpl-compliance.py
+  required:
+    name: CI required
+    if: always()
+    needs: checks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require successful checks
+        env:
+          CHECKS_RESULT: ${{ needs.checks.result }}
+        run: test "$CHECKS_RESULT" = success

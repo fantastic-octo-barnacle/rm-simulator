@@ -1,0 +1,29 @@
+{
+  "name": "high-1080p",
+  "resolution": [
+    1920,
+    1080
+  ],
+  "graphics": {
+    "preset": "High",
+    "overrides": {
+      "vsync": false
+    }
+  },
+  "camera_position_flu_m": [
+    10,
+    0,
+    0.7
+  ],
+  "camera_target_flu_m": [
+    0,
+    0,
+    0.7
+  ],
+  "vertical_fov_deg": 60,
+  "geometry": "normal",
+  "stadium": true,
+  "warmup_seconds": 10,
+  "sample_seconds": 20,
+  "timeout_seconds": 120
+}

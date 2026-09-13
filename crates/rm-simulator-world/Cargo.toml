@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 hxyulin <hxyulin@proton.me>
+[package]
+name = "rm-simulator-world"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rm-simulator-gameplay = { version = "0.1.0", path = "../rm-simulator-gameplay" }
+rm-simulator-physics = { version = "0.1.0", path = "../rm-simulator-physics" }
+serde.workspace = true
+thiserror.workspace = true

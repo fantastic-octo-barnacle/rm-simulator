@@ -1,0 +1,7 @@
+field collision: 178245 ground triangles, 14380 fixture triangles, 57240 equipment triangles (source tessellations or CAD visual meshes); load=0.373s; matches=1; pilots/match=8; samples=1000; batch=16 ticks
+CAD root=/Users/hxyulin/dev/RM/rm-simulator/local-assets/field
+Concurrent run wall time 2.649s, simulated seconds per match 16.000
+match 0: 0/1000 step batches exceed 16 ms
+step: median=2.748 p95=3.308 p99=3.481 max=4.576 ms
+snapshot: median=0.002 p95=0.005 p99=0.006 max=0.009 ms
+restore: median=0.058 p95=0.081 p99=0.081 max=0.081 ms

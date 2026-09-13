@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 hxyulin <hxyulin@proton.me>
+name: Bug report
+description: Report a reproducible problem.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For security vulnerabilities, follow SECURITY.md instead of opening a public issue.
+        Remove passwords, tokens, private addresses and personal paths from attachments.
+        Do not upload external CAD packages or the Steamworks SDK.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include relevant command-line options or menu choices, with private values removed.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      value: |
+        Version or commit:
+        OS and version:
+        CPU architecture:
+        GPU and driver, if rendering is involved:
+        Mode: local / host / client / headless server
+        Transport, if multiplayer: GNS UDP / TCP
+        Field package version, if relevant:
+        Rust version, if built from source:
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs or screenshots
+      description: Optional. Include only relevant, sanitized output.

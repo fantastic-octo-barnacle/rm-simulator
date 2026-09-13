@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "name": "smoke-single",
+  "seed": 2026,
+  "warmup_s": 1,
+  "duration_s": 8,
+  "recovery_s": 2,
+  "sample_hz": 4,
+  "clients": [
+    {
+      "name": "impaired",
+      "team": "blue",
+      "upstream": {
+        "delay_ms": 25,
+        "loss_percent": 1,
+        "rate_kbps": 256,
+        "blackouts": [
+          [
+            3,
+            0.5
+          ]
+        ]
+      },
+      "downstream": {
+        "delay_ms": 25,
+        "jitter_ms": 15,
+        "rate_kbps": 512
+      }
+    }
+  ],
+  "events": [
+    {
+      "at_s": 0,
+      "client": "impaired",
+      "command": {
+        "type": "capture",
+        "captured": true
+      }
+    },
+    {
+      "at_s": 0.1,
+      "client": "impaired",
+      "command": {
+        "type": "key",
+        "key": "a",
+        "pressed": true
+      }
+    },
+    {
+      "at_s": 0.2,
+      "client": "impaired",
+      "command": {
+        "type": "mouse_button",
+        "button": "left",
+        "pressed": true
+      }
+    },
+    {
+      "at_s": 5.2,
+      "client": "impaired",
+      "command": {
+        "type": "release_inputs"
+      }
+    }
+  ],
+  "expectations": {
+    "baseline_tolerance": 0.25,
+    "checks": [
+      {
+        "name": "no_unresolved_shot_outcomes",
+        "metric": "unresolved_shot_outcomes_delta",
+        "op": "==",
+        "value": 0,
+        "per_client": true
+      },
+      {
+        "name": "checkpoint_gap_bounded",
+        "metric": "checkpoint_gap_ms.max",
+        "op": "<=",
+        "value": 10000,
+        "per_client": true,
+        "on_missing": "skip"
+      },
+      {
+        "name": "remote_presentation_not_starved",
+        "metric": "remote_underruns_delta",
+        "op": "<=",
+        "value": 1000,
+        "per_client": true,
+        "on_missing": "skip"
+      },
+      {
+        "name": "clients_were_sampled",
+        "metric": "active_samples",
+        "op": ">=",
+        "value": 16,
+        "per_client": true
+      },
+      {
+        "name": "console_stayed_responsive",
+        "metric": "sample_gaps",
+        "op": "<=",
+        "value": 5,
+        "per_client": true
+      }
+    ]
+  }
+}

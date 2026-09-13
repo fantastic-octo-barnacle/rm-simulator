@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 hxyulin <hxyulin@proton.me>
+[graph]
+all-features = true
+
+[advisories]
+ignore = [
+    # `ttf-parser` is unmaintained, with no vulnerability and no fixed version. Bevy's Linux
+    # winit window decorations pull it through sctk-adwaita. Revisit when winit replaces it.
+    "RUSTSEC-2026-0192",
+    # Optional steamworks 0.13.1 requires paste. This advisory is maintenance-only,
+    # with no vulnerability or fixed published upgrade. Revisit on binding upgrades.
+    "RUSTSEC-2024-0436",
+]
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+# The workspace itself is MIT OR Apache-2.0, covered by the allowlist above.
+# Nothing here needs an exception for our own crates.
+
+# Approved for Flair's CSS implementation. Keep the general allowlist permissive-only.
+# MPL-2.0 is file-level copyleft, not viral across the workspace: these crates stay
+# unmodified, and NOTICE.md carries the source offer MPL-2.0 section 3.2 requires.
+# scripts/check-mpl-compliance.py holds this list and that notice in sync.
+[[licenses.exceptions]]
+name = "cssparser"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "cssparser-color"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "cssparser-macros"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "dtoa-short"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "selectors"
+allow = ["MPL-2.0"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

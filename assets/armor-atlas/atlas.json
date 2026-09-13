@@ -1,0 +1,291 @@
+{
+  "schema_version": 1,
+  "image": "atlas.png",
+  "size_px": [
+    2048,
+    2048
+  ],
+  "image_sha256": "4a8215b3b1cd6dd84a47b285a00a55864d266bec4c0a22072f275ead00bb1bf5",
+  "recipe": "SVG rasterization, enclosed transparent region fill at alpha < 128, white RGBA, aspect-preserving Lanczos resize, 8 px gutters",
+  "provenance": "Vision2027/assets/armor, copied from DataLabelX; same sources used by rm-vision-sim",
+  "qualification": "Artwork placement is a visual fit, not calibrated module geometry.",
+  "redistribution": "Source artwork rights not established by conversion.",
+  "sprites": {
+    "1": {
+      "source": "sources/1.svg",
+      "source_sha256": "79a1e1e151ff3f578465b339f416c9b9cf01cc9b7a0a844caaef09bfc78c3d24",
+      "source_size_px": [
+        871,
+        478
+      ],
+      "seed_px": [
+        [
+          362,
+          152
+        ]
+      ],
+      "rect_px": [
+        8,
+        8,
+        496,
+        272
+      ]
+    },
+    "2": {
+      "source": "sources/2.svg",
+      "source_sha256": "a4d0f427739567adb5564c7c1667acf4c19ec7f74532ab9ce0fbb1db7aeba8ae",
+      "source_size_px": [
+        556,
+        515
+      ],
+      "seed_px": [
+        [
+          273,
+          267
+        ]
+      ],
+      "rect_px": [
+        520,
+        8,
+        496,
+        459
+      ]
+    },
+    "3": {
+      "source": "sources/3.svg",
+      "source_sha256": "40bdf313e6e447cd1ef24d9a2c1b0d70f6715de99821b921fafd1940c4109ba8",
+      "source_size_px": [
+        556,
+        515
+      ],
+      "seed_px": [
+        [
+          300,
+          90
+        ]
+      ],
+      "rect_px": [
+        1032,
+        8,
+        496,
+        459
+      ]
+    },
+    "4": {
+      "source": "sources/4.svg",
+      "source_sha256": "c202fd7030f98343ac2aa9752728acbc71ee00cb24034046cf9b3b2c4ff5b69c",
+      "source_size_px": [
+        556,
+        515
+      ],
+      "seed_px": [
+        [
+          330,
+          326
+        ]
+      ],
+      "rect_px": [
+        1544,
+        8,
+        496,
+        459
+      ]
+    },
+    "5": {
+      "source": "sources/5.svg",
+      "source_sha256": "4e6b973002afadd7d6d28300f7c1b7f3d3fb2a93841eb9adecc5daa44f1c8424",
+      "source_size_px": [
+        556,
+        515
+      ],
+      "seed_px": [
+        [
+          270,
+          262
+        ]
+      ],
+      "rect_px": [
+        8,
+        520,
+        496,
+        459
+      ]
+    },
+    "Gs": {
+      "source": "sources/Gs.svg",
+      "source_sha256": "bd07938e9dfcb4c456806061e3f7f7078ec39bfe5ae73a3c4b6c459158887a81",
+      "source_size_px": [
+        556,
+        515
+      ],
+      "seed_px": [
+        [
+          106,
+          190
+        ],
+        [
+          310,
+          358
+        ]
+      ],
+      "rect_px": [
+        520,
+        520,
+        496,
+        459
+      ]
+    },
+    "Gb": {
+      "source": "sources/Gb.svg",
+      "source_sha256": "d75f31ee071a865161067f371179a65ab9d4c3d8fe3634c7f4d5c415f4cec843",
+      "source_size_px": [
+        871,
+        478
+      ],
+      "seed_px": [
+        [
+          564,
+          186
+        ],
+        [
+          463,
+          338
+        ]
+      ],
+      "rect_px": [
+        1032,
+        520,
+        496,
+        272
+      ]
+    },
+    "O": {
+      "source": "sources/O.svg",
+      "source_sha256": "e6999780cbe41a5e37d4c5df06d280555f85b69096103b7f5000f2b694e806d1",
+      "source_size_px": [
+        556,
+        515
+      ],
+      "seed_px": [
+        [
+          215,
+          150
+        ],
+        [
+          277,
+          137
+        ],
+        [
+          277,
+          240
+        ]
+      ],
+      "rect_px": [
+        1544,
+        520,
+        496,
+        459
+      ]
+    },
+    "Bs": {
+      "source": "sources/Bs.svg",
+      "source_sha256": "b7d28597d8d862191ff0fafb95e13fd41a55461b4cc9f721f27f6d55bbbf37c4",
+      "source_size_px": [
+        556,
+        515
+      ],
+      "seed_px": [
+        [
+          351,
+          272
+        ]
+      ],
+      "rect_px": [
+        8,
+        1032,
+        496,
+        459
+      ]
+    },
+    "Bb": {
+      "source": "sources/Bb.svg",
+      "source_sha256": "c6de01bddb9b4e047eb178ae7f9151f0a1b2cec2f855621d5c06a294da2a77e4",
+      "source_size_px": [
+        871,
+        478
+      ],
+      "seed_px": [
+        [
+          439,
+          287
+        ]
+      ],
+      "rect_px": [
+        520,
+        1032,
+        496,
+        272
+      ]
+    },
+    "B3": {
+      "source": "sources/B3.svg",
+      "source_sha256": "e1978a1e9d978c07394560a93ea391392af7b06a352a075c3d36c41b4da4f9b7",
+      "source_size_px": [
+        871,
+        478
+      ],
+      "seed_px": [
+        [
+          485,
+          276
+        ]
+      ],
+      "rect_px": [
+        1032,
+        1032,
+        496,
+        272
+      ]
+    },
+    "B4": {
+      "source": "sources/B4.svg",
+      "source_sha256": "2c14d6e03a99ace3fcdbd4b022e5fa4df5426775d49069bb6f4b08d09563fb6d",
+      "source_size_px": [
+        871,
+        478
+      ],
+      "seed_px": [
+        [
+          473,
+          320
+        ]
+      ],
+      "rect_px": [
+        1544,
+        1032,
+        496,
+        272
+      ]
+    },
+    "B5": {
+      "source": "sources/B5.svg",
+      "source_sha256": "061dc318fa097444d34baa3bcd09fa1b01d17abaf6f9bd7186cd78aed2b9508b",
+      "source_size_px": [
+        870,
+        477
+      ],
+      "seed_px": [
+        [
+          433,
+          244
+        ]
+      ],
+      "rect_px": [
+        8,
+        1544,
+        496,
+        272
+      ]
+    }
+  }
+}

@@ -1,0 +1,143 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 hxyulin <hxyulin@proton.me>
+name: Native build and test
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: Bundle and smoke-test release ZIPs
+        type: boolean
+        default: true
+      validate:
+        description: Compile and execute the full Rust check suite
+        type: boolean
+        default: true
+      version:
+        type: string
+        required: true
+      channel:
+        type: string
+        default: stable
+      number:
+        type: string
+        default: '1'
+permissions:
+  contents: read
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_CHANNEL: ${{ inputs.channel }}
+      RELEASE_NUMBER: ${{ inputs.number }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/native-dependencies
+      - name: Set release version
+        id: version
+        run: python scripts/release-version.py --stamp
+      - uses: ./.github/actions/native-cache
+        id: cache
+      - name: Build standalone app and server
+        run: cargo build --release --locked -p rm-simulator-app -p rm-simulator-server
+      - name: Compile workspace tests
+        if: inputs.validate
+        run: cargo test --release --workspace --all-features --locked --no-run
+      - name: Clippy with all features and targets
+        if: inputs.validate && runner.os == 'Linux'
+        run: cargo clippy --release --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Build field inspector
+        run: cargo build --release --locked -p rm-simulator-server --example inspect_assets
+      - name: Remove rebuildable native cache downloads
+        if: runner.os == 'Windows'
+        run: python scripts/prune-build-cache.py --apply
+      - name: Save completed build before testing
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.cache.outputs.paths }}
+          key: ${{ steps.cache.outputs.key }}
+  package:
+    needs: build
+    name: Test and package (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_CHANNEL: ${{ inputs.channel }}
+      RELEASE_NUMBER: ${{ inputs.number }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          lfs: true
+      - uses: ./.github/actions/native-dependencies
+      - name: Set release version
+        id: version
+        run: python scripts/release-version.py --stamp
+      - uses: ./.github/actions/native-cache
+      - name: Stage verified LFS field package
+        if: inputs.package
+        run: python scripts/stage-release-field.py
+      # Cache eviction is allowed; Cargo rebuilds missing artifacts if necessary.
+      - name: Restore standalone binaries
+        if: inputs.package
+        run: cargo build --release --locked -p rm-simulator-app -p rm-simulator-server
+      - name: Test workspace
+        if: inputs.validate
+        run: cargo test --release --workspace --all-features --locked
+      - name: Verify field with the real loader
+        if: inputs.package
+        run: cargo run --release --locked -p rm-simulator-server --example inspect_assets -- dist/field
+      - name: Bundle and smoke-test binaries
+        if: inputs.package
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+          PACKAGE_TARGET: ${{ matrix.target }}
+        run: python scripts/package-release.py --version "$PACKAGE_VERSION" --target "$PACKAGE_TARGET"
+      - uses: actions/upload-artifact@v4
+        if: inputs.package
+        with:
+          name: package-${{ matrix.target }}
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error
+          retention-days: 7

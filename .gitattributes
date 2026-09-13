@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 hxyulin <hxyulin@proton.me>
+# Match the LF policy enforced by prek, including Windows launch scripts.
+* text=auto eol=lf
+
+# Artwork and external binary formats must not receive text conversions.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.glb binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.7z binary
+
+# Versioned exported field data; keep the upstream ownership notice readable.
+/field/** filter=lfs diff=lfs merge=lfs -text
+/field/CAD-NOTICE.md -filter -diff -merge text eol=lf

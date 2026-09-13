@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "input_visual_sha256": "a046e934ea970d640dbcc246197728145e8f91380fb11fb8e3eeadb388ce0f0e",
+  "frame": "Selected GLB scene before instance placement, metres",
+  "evidence": "Centers and axes fitted to the broad front faces of the pinned CAD armor modules. Canvas heights are visual fits, not rulebook dimensions.",
+  "surface_offset_m": 0.0006,
+  "placements": [
+    {
+      "id": "base.artwork.upper.0",
+      "parent_id": "base.unclassified.1",
+      "center_m": [
+        -0.2235638,
+        -0.0002894,
+        0.8824261
+      ],
+      "right": [
+        0,
+        -1,
+        0
+      ],
+      "up": [
+        0.8870105,
+        0,
+        0.4617492
+      ],
+      "canvas_height_m": 0.113,
+      "sprite": "Bs"
+    },
+    {
+      "id": "base.artwork.upper.1",
+      "parent_id": "base.unclassified.1",
+      "center_m": [
+        -0.0273447,
+        -0.1135702,
+        0.8823674
+      ],
+      "right": [
+        0.8660179,
+        0.500013,
+        0
+      ],
+      "up": [
+        -0.4435168,
+        0.7681669,
+        0.4617493
+      ],
+      "canvas_height_m": 0.113,
+      "sprite": "Bs"
+    },
+    {
+      "id": "base.artwork.upper.2",
+      "parent_id": "base.unclassified.1",
+      "center_m": [
+        -0.0274534,
+        0.1130467,
+        0.8824063
+      ],
+      "right": [
+        -0.8660329,
+        0.499987,
+        0
+      ],
+      "up": [
+        -0.4434939,
+        -0.7681806,
+        0.4617485
+      ],
+      "canvas_height_m": 0.113,
+      "sprite": "Bs"
+    },
+    {
+      "id": "base.artwork.dart",
+      "parent_id": "base.dart_target.carriage",
+      "center_m": [
+        -0.0897557,
+        -0.00025,
+        1.1237517
+      ],
+      "right": [
+        0,
+        -1,
+        0
+      ],
+      "up": [
+        0.8870112,
+        0,
+        0.4617479
+      ],
+      "canvas_height_m": 0.113,
+      "sprite": "Bs"
+    },
+    {
+      "id": "base.artwork.lower.0",
+      "parent_id": "base.reconstructed.armor.0",
+      "center_m": [
+        -0.0218159,
+        0.1541668,
+        0.3600632
+      ],
+      "right": [
+        -0.8660254,
+        0.5,
+        0
+      ],
+      "up": [
+        -0.0274814,
+        -0.0475991,
+        0.9984884
+      ],
+      "canvas_height_m": 0.1,
+      "sprite": "Bs"
+    },
+    {
+      "id": "base.artwork.lower.1",
+      "parent_id": "base.reconstructed.armor.1",
+      "center_m": [
+        -0.289321,
+        -0.0002227,
+        0.3600632
+      ],
+      "right": [
+        0,
+        -1,
+        0
+      ],
+      "up": [
+        0.0549627,
+        0,
+        0.9984884
+      ],
+      "canvas_height_m": 0.1,
+      "sprite": "Bs"
+    },
+    {
+      "id": "base.artwork.lower.2",
+      "parent_id": "base.reconstructed.armor.2",
+      "center_m": [
+        -0.0218632,
+        -0.1546941,
+        0.3600632
+      ],
+      "right": [
+        0.8660254,
+        0.5,
+        0
+      ],
+      "up": [
+        -0.0274814,
+        0.0475991,
+        0.9984884
+      ],
+      "canvas_height_m": 0.1,
+      "sprite": "Bs"
+    }
+  ]
+}

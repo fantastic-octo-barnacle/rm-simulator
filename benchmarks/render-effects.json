@@ -1,0 +1,359 @@
+{
+  "base": {
+    "name": "ultra",
+    "resolution": [
+      1920,
+      1080
+    ],
+    "graphics": {
+      "preset": "Ultra",
+      "overrides": {
+        "vsync": false,
+        "shadows": true,
+        "shadow_map_size": 4096,
+        "shadow_cascades": 4,
+        "shadow_distance_m": 60,
+        "msaa_samples": 4,
+        "bloom": true,
+        "depth_prepass": false,
+        "occlusion_culling": false
+      }
+    },
+    "camera_position_flu_m": [
+      10,
+      0,
+      0.7
+    ],
+    "camera_target_flu_m": [
+      0,
+      0,
+      0.7
+    ],
+    "vertical_fov_deg": 60,
+    "geometry": "normal",
+    "stadium": true,
+    "warmup_seconds": 5,
+    "sample_seconds": 10,
+    "timeout_seconds": 90
+  },
+  "cases": [
+    {
+      "name": "1080p-baseline",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "graphics": {
+        "overrides": {}
+      }
+    },
+    {
+      "name": "1080p-no-shadows",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "graphics": {
+        "overrides": {
+          "shadows": false
+        }
+      }
+    },
+    {
+      "name": "1080p-shadow-2048",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "graphics": {
+        "overrides": {
+          "shadow_map_size": 2048
+        }
+      }
+    },
+    {
+      "name": "1080p-shadow-1024",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "graphics": {
+        "overrides": {
+          "shadow_map_size": 1024
+        }
+      }
+    },
+    {
+      "name": "1080p-cascades-2",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "graphics": {
+        "overrides": {
+          "shadow_cascades": 2
+        }
+      }
+    },
+    {
+      "name": "1080p-cascades-1",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "graphics": {
+        "overrides": {
+          "shadow_cascades": 1
+        }
+      }
+    },
+    {
+      "name": "1080p-shadow-distance-40",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "graphics": {
+        "overrides": {
+          "shadow_distance_m": 40
+        }
+      }
+    },
+    {
+      "name": "1080p-msaa-1",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "graphics": {
+        "overrides": {
+          "msaa_samples": 1
+        }
+      }
+    },
+    {
+      "name": "1080p-msaa-2",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "graphics": {
+        "overrides": {
+          "msaa_samples": 2
+        }
+      }
+    },
+    {
+      "name": "1080p-no-bloom",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "graphics": {
+        "overrides": {
+          "bloom": false
+        }
+      }
+    },
+    {
+      "name": "1080p-depth-prepass",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "graphics": {
+        "overrides": {
+          "depth_prepass": true
+        }
+      }
+    },
+    {
+      "name": "1080p-occlusion",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "graphics": {
+        "overrides": {
+          "occlusion_culling": true
+        }
+      }
+    },
+    {
+      "name": "1080p-sparse",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "geometry": "sparse"
+    },
+    {
+      "name": "1080p-no-stadium",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "stadium": false
+    },
+    {
+      "name": "4k-baseline",
+      "resolution": [
+        3840,
+        2160
+      ],
+      "graphics": {
+        "overrides": {}
+      }
+    },
+    {
+      "name": "4k-no-shadows",
+      "resolution": [
+        3840,
+        2160
+      ],
+      "graphics": {
+        "overrides": {
+          "shadows": false
+        }
+      }
+    },
+    {
+      "name": "4k-shadow-2048",
+      "resolution": [
+        3840,
+        2160
+      ],
+      "graphics": {
+        "overrides": {
+          "shadow_map_size": 2048
+        }
+      }
+    },
+    {
+      "name": "4k-shadow-1024",
+      "resolution": [
+        3840,
+        2160
+      ],
+      "graphics": {
+        "overrides": {
+          "shadow_map_size": 1024
+        }
+      }
+    },
+    {
+      "name": "4k-cascades-2",
+      "resolution": [
+        3840,
+        2160
+      ],
+      "graphics": {
+        "overrides": {
+          "shadow_cascades": 2
+        }
+      }
+    },
+    {
+      "name": "4k-cascades-1",
+      "resolution": [
+        3840,
+        2160
+      ],
+      "graphics": {
+        "overrides": {
+          "shadow_cascades": 1
+        }
+      }
+    },
+    {
+      "name": "4k-shadow-distance-40",
+      "resolution": [
+        3840,
+        2160
+      ],
+      "graphics": {
+        "overrides": {
+          "shadow_distance_m": 40
+        }
+      }
+    },
+    {
+      "name": "4k-msaa-1",
+      "resolution": [
+        3840,
+        2160
+      ],
+      "graphics": {
+        "overrides": {
+          "msaa_samples": 1
+        }
+      }
+    },
+    {
+      "name": "4k-msaa-2",
+      "resolution": [
+        3840,
+        2160
+      ],
+      "graphics": {
+        "overrides": {
+          "msaa_samples": 2
+        }
+      }
+    },
+    {
+      "name": "4k-no-bloom",
+      "resolution": [
+        3840,
+        2160
+      ],
+      "graphics": {
+        "overrides": {
+          "bloom": false
+        }
+      }
+    },
+    {
+      "name": "4k-depth-prepass",
+      "resolution": [
+        3840,
+        2160
+      ],
+      "graphics": {
+        "overrides": {
+          "depth_prepass": true
+        }
+      }
+    },
+    {
+      "name": "4k-occlusion",
+      "resolution": [
+        3840,
+        2160
+      ],
+      "graphics": {
+        "overrides": {
+          "occlusion_culling": true
+        }
+      }
+    },
+    {
+      "name": "4k-sparse",
+      "resolution": [
+        3840,
+        2160
+      ],
+      "geometry": "sparse"
+    },
+    {
+      "name": "4k-no-stadium",
+      "resolution": [
+        3840,
+        2160
+      ],
+      "stadium": false
+    }
+  ],
+  "repeats": 2,
+  "seed": 20260912
+}

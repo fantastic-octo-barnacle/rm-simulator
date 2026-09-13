@@ -1,0 +1,103 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 hxyulin <hxyulin@proton.me>
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Build and validate everything without creating a tag or release
+        type: boolean
+        default: true
+      force-validation:
+        description: Run full validation even if this commit already passed
+        type: boolean
+        default: false
+      version:
+        description: 'Base version, for example 0.2.0 (no v prefix)'
+        required: true
+        type: string
+      channel:
+        description: Release channel
+        required: true
+        type: choice
+        options: [stable, alpha, beta, rc]
+        default: alpha
+      number:
+        description: 'Prerelease identifier, for example 1 or rc1; ignored for stable'
+        required: true
+        type: string
+        default: '1'
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Validate version and refuse existing tags
+        id: version
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+          RELEASE_NUMBER: ${{ inputs.number }}
+        run: |
+          version=$(python scripts/release-version.py)
+          if git show-ref --verify --quiet "refs/tags/v$version"; then
+            echo "Release tag already exists: v$version" >&2
+            exit 1
+          fi
+  verify:
+    needs: prepare
+    uses: ./.github/workflows/full-check.yml
+    with:
+      force: ${{ inputs.force-validation }}
+  package:
+    needs: [prepare, verify]
+    uses: ./.github/workflows/package.yml
+    with:
+      version: ${{ inputs.version }}
+      channel: ${{ inputs.channel }}
+      number: ${{ inputs.number }}
+      validate: false
+  publish:
+    needs: [prepare, verify, package]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify archive checksums
+        working-directory: release-assets
+        run: |
+          test "$(find . -name '*.zip' | wc -l)" -eq 4
+          cat ./*.sha256 > SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+      - name: Create draft, upload all files, then publish
+        if: ${{ !inputs.dry-run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          args=()
+          if [ "$CHANNEL" != stable ]; then args+=(--prerelease); fi
+          gh release create "$TAG" release-assets/*.zip release-assets/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" --title "rm-simulator $TAG" --draft \
+            --generate-notes --notes-file docs/release-notes.md "${args[@]}"
+          gh release edit "$TAG" --draft=false
+      - name: Report successful dry run
+        if: inputs.dry-run
+        run: echo "Dry run passed. All four ZIPs and checksums were verified; no tag or release was created." >> "$GITHUB_STEP_SUMMARY"

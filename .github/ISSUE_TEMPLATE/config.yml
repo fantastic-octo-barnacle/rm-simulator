@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 hxyulin <hxyulin@proton.me>
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability privately
+    url: mailto:hxyulin@proton.me
+    about: Email the maintainer. Do not disclose vulnerabilities in public issues.

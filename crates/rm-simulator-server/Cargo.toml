@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 hxyulin <hxyulin@proton.me>
+[package]
+name = "rm-simulator-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "rm-simulator-server"
+path = "src/main.rs"
+
+[dependencies]
+rm-simulator-world = { version = "0.1.0", path = "../rm-simulator-world" }
+anyhow.workspace = true
+clap.workspace = true
+serde = { workspace = true, features = ["std"] }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+sha2.workspace = true
+game-networking-sockets = "0.3.0"
+miniz_oxide = "0.8"
+if-addrs = "0.15"

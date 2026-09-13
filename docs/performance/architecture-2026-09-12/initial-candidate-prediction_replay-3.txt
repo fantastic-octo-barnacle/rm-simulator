@@ -1,0 +1,4 @@
+32 ms replay: median 0.25 ms, max 0.30 ms; max correction 0.000000 m
+64 ms replay: median 0.54 ms, max 0.62 ms; max correction 0.000000 m
+128 ms replay: median 0.88 ms, max 1.32 ms; max correction 0.000088 m
+200 ms replay: median 1.95 ms, max 2.25 ms; max correction 0.000078 m

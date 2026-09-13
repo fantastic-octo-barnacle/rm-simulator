@@ -1,0 +1,177 @@
+{
+  "profile": "release",
+  "build_command": "cargo build --release --locked -p rm-simulator-world --example step_cost -p rm-simulator-server --example match_cost --example prediction_replay",
+  "power_before": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=22610019)\t58%; discharging; 2:14 remaining present: true\n",
+  "runs": [
+    {
+      "command": [
+        "/tmp/rm-architecture-baseline/bin/step_cost"
+      ],
+      "output": "control-step_cost-1.txt",
+      "exit_code": 0,
+      "binary_sha256": "f87d0383deca357143c80c342e5358dc2f2f54169d5225578256b1fc8166c4e2"
+    },
+    {
+      "command": [
+        "/tmp/rm-architecture-baseline/bin/match_cost",
+        "/Users/hxyulin/dev/RM/rm-simulator/local-assets/field",
+        "1",
+        "8",
+        "1000"
+      ],
+      "output": "control-match_cost-1.txt",
+      "exit_code": 0,
+      "binary_sha256": "c53f2e1e5d8a70027eb5fd951dbea4f3214e66bdc79f8bd48a0e2f13386ca4be"
+    },
+    {
+      "command": [
+        "/tmp/rm-architecture-baseline/bin/prediction_replay"
+      ],
+      "output": "control-prediction_replay-1.txt",
+      "exit_code": 0,
+      "binary_sha256": "c7afa29bd9c3461a3858af5d0f02f593a893c72f32250caf30e379cd723d5c7b"
+    },
+    {
+      "command": [
+        "target/release/examples/step_cost"
+      ],
+      "output": "candidate-step_cost-1.txt",
+      "exit_code": 0,
+      "binary_sha256": "58abb5a118f07ab7d63180e58cc7ae44bf1a62d40d711d9d6e8bddb2cdb4ae9d"
+    },
+    {
+      "command": [
+        "target/release/examples/match_cost",
+        "/Users/hxyulin/dev/RM/rm-simulator/local-assets/field",
+        "1",
+        "8",
+        "1000"
+      ],
+      "output": "candidate-match_cost-1.txt",
+      "exit_code": 0,
+      "binary_sha256": "2bfc698705ee7b69012dd9239ce7d9bc71c2d38f6f765ad88b3a558006a7451d"
+    },
+    {
+      "command": [
+        "target/release/examples/prediction_replay"
+      ],
+      "output": "candidate-prediction_replay-1.txt",
+      "exit_code": 0,
+      "binary_sha256": "2bda8da7794e78dc2ab4b3166f8033168677ef8d39f2129ee637963dc8794fc2"
+    },
+    {
+      "command": [
+        "/tmp/rm-architecture-baseline/bin/step_cost"
+      ],
+      "output": "control-step_cost-2.txt",
+      "exit_code": 0,
+      "binary_sha256": "f87d0383deca357143c80c342e5358dc2f2f54169d5225578256b1fc8166c4e2"
+    },
+    {
+      "command": [
+        "/tmp/rm-architecture-baseline/bin/match_cost",
+        "/Users/hxyulin/dev/RM/rm-simulator/local-assets/field",
+        "1",
+        "8",
+        "1000"
+      ],
+      "output": "control-match_cost-2.txt",
+      "exit_code": 0,
+      "binary_sha256": "c53f2e1e5d8a70027eb5fd951dbea4f3214e66bdc79f8bd48a0e2f13386ca4be"
+    },
+    {
+      "command": [
+        "/tmp/rm-architecture-baseline/bin/prediction_replay"
+      ],
+      "output": "control-prediction_replay-2.txt",
+      "exit_code": 0,
+      "binary_sha256": "c7afa29bd9c3461a3858af5d0f02f593a893c72f32250caf30e379cd723d5c7b"
+    },
+    {
+      "command": [
+        "target/release/examples/step_cost"
+      ],
+      "output": "candidate-step_cost-2.txt",
+      "exit_code": 0,
+      "binary_sha256": "58abb5a118f07ab7d63180e58cc7ae44bf1a62d40d711d9d6e8bddb2cdb4ae9d"
+    },
+    {
+      "command": [
+        "target/release/examples/match_cost",
+        "/Users/hxyulin/dev/RM/rm-simulator/local-assets/field",
+        "1",
+        "8",
+        "1000"
+      ],
+      "output": "candidate-match_cost-2.txt",
+      "exit_code": 0,
+      "binary_sha256": "2bfc698705ee7b69012dd9239ce7d9bc71c2d38f6f765ad88b3a558006a7451d"
+    },
+    {
+      "command": [
+        "target/release/examples/prediction_replay"
+      ],
+      "output": "candidate-prediction_replay-2.txt",
+      "exit_code": 0,
+      "binary_sha256": "2bda8da7794e78dc2ab4b3166f8033168677ef8d39f2129ee637963dc8794fc2"
+    },
+    {
+      "command": [
+        "/tmp/rm-architecture-baseline/bin/step_cost"
+      ],
+      "output": "control-step_cost-3.txt",
+      "exit_code": 0,
+      "binary_sha256": "f87d0383deca357143c80c342e5358dc2f2f54169d5225578256b1fc8166c4e2"
+    },
+    {
+      "command": [
+        "/tmp/rm-architecture-baseline/bin/match_cost",
+        "/Users/hxyulin/dev/RM/rm-simulator/local-assets/field",
+        "1",
+        "8",
+        "1000"
+      ],
+      "output": "control-match_cost-3.txt",
+      "exit_code": 0,
+      "binary_sha256": "c53f2e1e5d8a70027eb5fd951dbea4f3214e66bdc79f8bd48a0e2f13386ca4be"
+    },
+    {
+      "command": [
+        "/tmp/rm-architecture-baseline/bin/prediction_replay"
+      ],
+      "output": "control-prediction_replay-3.txt",
+      "exit_code": 0,
+      "binary_sha256": "c7afa29bd9c3461a3858af5d0f02f593a893c72f32250caf30e379cd723d5c7b"
+    },
+    {
+      "command": [
+        "target/release/examples/step_cost"
+      ],
+      "output": "candidate-step_cost-3.txt",
+      "exit_code": 0,
+      "binary_sha256": "58abb5a118f07ab7d63180e58cc7ae44bf1a62d40d711d9d6e8bddb2cdb4ae9d"
+    },
+    {
+      "command": [
+        "target/release/examples/match_cost",
+        "/Users/hxyulin/dev/RM/rm-simulator/local-assets/field",
+        "1",
+        "8",
+        "1000"
+      ],
+      "output": "candidate-match_cost-3.txt",
+      "exit_code": 0,
+      "binary_sha256": "2bfc698705ee7b69012dd9239ce7d9bc71c2d38f6f765ad88b3a558006a7451d"
+    },
+    {
+      "command": [
+        "target/release/examples/prediction_replay"
+      ],
+      "output": "candidate-prediction_replay-3.txt",
+      "exit_code": 0,
+      "binary_sha256": "2bda8da7794e78dc2ab4b3166f8033168677ef8d39f2129ee637963dc8794fc2"
+    }
+  ],
+  "rust_sources_sha256": "1e24347da0dea85de3fcbe998d9d38adbe9398df8170029e5de76f7ad4ec7bf9",
+  "power_after": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=22610019)\t58%; discharging; 2:14 remaining present: true\n"
+}

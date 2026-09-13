@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 hxyulin <hxyulin@proton.me>
+name: Native build dependencies
+description: Install the native dependencies used by the locked GNS and Bevy crates.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake libclang-dev pkg-config protobuf-compiler libprotobuf-dev libssl-dev libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libx11-dev libxrandr-dev libxi-dev patchelf
+    - if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        brew install cmake pkg-config protobuf@21 openssl@3
+        echo "CMAKE_PREFIX_PATH=$(brew --prefix protobuf@21):$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+        echo "PKG_CONFIG_PATH=$(brew --prefix protobuf@21)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig" >> "$GITHUB_ENV"
+        echo "$(brew --prefix protobuf@21)/bin" >> "$GITHUB_PATH"
+    - if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+        "GNS_VCPKG_BUILDTREES_ROOT=C:\gns-build" >> $env:GITHUB_ENV
+        $target = Join-Path ([IO.Path]::GetPathRoot($env:GITHUB_WORKSPACE)) 'rm-target'
+        $relativeTarget = [IO.Path]::GetRelativePath($env:GITHUB_WORKSPACE, $target)
+        "CARGO_TARGET_DIR=$target" >> $env:GITHUB_ENV
+        "RM_CACHE_WORKSPACE=. -> $relativeTarget" >> $env:GITHUB_ENV
+        git config --global core.longpaths true

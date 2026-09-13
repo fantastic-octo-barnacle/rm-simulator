@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "budgets": {
+    "visual": 500000,
+    "collision": 100000
+  },
+  "defaults": {
+    "visual_error_mm": 12,
+    "collision_error_mm": 30,
+    "visual_sampled_limit_mm": 16,
+    "collision_sampled_limit_mm": 35,
+    "deviation_samples": 1024
+  },
+  "assets": {
+    "floor": {
+      "enabled": false
+    },
+    "outpost-footing": {
+      "enabled": false
+    },
+    "arena-static": {
+      "enabled": false
+    },
+    "centre-platform": {
+      "enabled": false
+    },
+    "base": {
+      "visual_preserve": [
+        {
+          "node": "base/dart_target/carriage",
+          "primitive": 1
+        },
+        {
+          "node": "base/dart_target/carriage",
+          "primitive": 2
+        }
+      ],
+      "collision_preserve": [
+        {
+          "node": "base/dart_target/carriage",
+          "primitive": 1
+        },
+        {
+          "node": "base/dart_target/carriage",
+          "primitive": 2
+        }
+      ]
+    },
+    "dart-station": {
+      "visual_preserve": [
+        {
+          "node": "source_13267655_0013_1_1",
+          "primitive": 4
+        }
+      ],
+      "collision_preserve": [
+        {
+          "node": "source_13267655_0013_1_1",
+          "primitive": 4
+        }
+      ]
+    }
+  }
+}

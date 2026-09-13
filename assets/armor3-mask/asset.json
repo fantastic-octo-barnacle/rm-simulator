@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "source": "/Users/hxyulin/dev/RM/Vision/Vision2027/assets/armor/3.svg",
+  "source_sha256": "40bdf313e6e447cd1ef24d9a2c1b0d70f6715de99821b921fafd1940c4109ba8",
+  "image": "digit.png",
+  "image_sha256": "9fe1918cc13e2191c5e38fbf7f2c9c19f9eebfd0782cc5e6802e89d98640cf41",
+  "recipe": "enclosed transparent region flood fill to white; preserve source canvas",
+  "recipe_version": 1,
+  "seed_px": [
+    300,
+    90
+  ],
+  "alpha_threshold": 128,
+  "width": 556,
+  "height": 515,
+  "filled_pixels": 55703,
+  "qualification": "candidate appearance; metric artwork placement uncalibrated",
+  "redistribution": "source artwork rights not established by this conversion",
+  "rasterizer": "/nix/store/nk89n3xdamhz18wl04klxxrdq0h0h8wx-librsvg-2.62.3/bin/rsvg-convert"
+}

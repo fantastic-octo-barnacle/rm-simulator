@@ -1,0 +1,105 @@
+{
+  "revision": "4d6214beab1fea1bc8c7c6948a4352c14d0c123f",
+  "compiler": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+  "hardware": "Apple M3 Pro\n19327352832\n",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83\n",
+  "power": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=22610019)\t71%; discharging; 4:05 remaining present: true\n",
+  "assets": "/Users/hxyulin/dev/RM/rm-simulator/local-assets/field",
+  "manifest_sha256": "78860dc0bb74f671a827436751ca322ee22593902c7f0e1f34d34bf273e1425b",
+  "equipment_manifest_sha256": "12af4b63d916f1ca0e143428d798bd826e55dae929f817bb3148d8392991099d",
+  "profile": "release",
+  "runs": [
+    {
+      "command": [
+        "target/release/examples/step_cost"
+      ],
+      "output": "step-1.txt",
+      "exit_code": 0,
+      "binary_sha256": "f87d0383deca357143c80c342e5358dc2f2f54169d5225578256b1fc8166c4e2"
+    },
+    {
+      "command": [
+        "target/release/examples/match_cost",
+        "/Users/hxyulin/dev/RM/rm-simulator/local-assets/field",
+        "1",
+        "8",
+        "1000"
+      ],
+      "output": "match-1.txt",
+      "exit_code": 0,
+      "binary_sha256": "c53f2e1e5d8a70027eb5fd951dbea4f3214e66bdc79f8bd48a0e2f13386ca4be"
+    },
+    {
+      "command": [
+        "target/release/examples/prediction_replay"
+      ],
+      "output": "replay-1.txt",
+      "exit_code": 0,
+      "binary_sha256": "c7afa29bd9c3461a3858af5d0f02f593a893c72f32250caf30e379cd723d5c7b"
+    },
+    {
+      "command": [
+        "target/release/examples/step_cost"
+      ],
+      "output": "step-2.txt",
+      "exit_code": 0,
+      "binary_sha256": "f87d0383deca357143c80c342e5358dc2f2f54169d5225578256b1fc8166c4e2"
+    },
+    {
+      "command": [
+        "target/release/examples/match_cost",
+        "/Users/hxyulin/dev/RM/rm-simulator/local-assets/field",
+        "1",
+        "8",
+        "1000"
+      ],
+      "output": "match-2.txt",
+      "exit_code": 0,
+      "binary_sha256": "c53f2e1e5d8a70027eb5fd951dbea4f3214e66bdc79f8bd48a0e2f13386ca4be"
+    },
+    {
+      "command": [
+        "target/release/examples/prediction_replay"
+      ],
+      "output": "replay-2.txt",
+      "exit_code": 0,
+      "binary_sha256": "c7afa29bd9c3461a3858af5d0f02f593a893c72f32250caf30e379cd723d5c7b"
+    },
+    {
+      "command": [
+        "target/release/examples/step_cost"
+      ],
+      "output": "step-3.txt",
+      "exit_code": 0,
+      "binary_sha256": "f87d0383deca357143c80c342e5358dc2f2f54169d5225578256b1fc8166c4e2"
+    },
+    {
+      "command": [
+        "target/release/examples/match_cost",
+        "/Users/hxyulin/dev/RM/rm-simulator/local-assets/field",
+        "1",
+        "8",
+        "1000"
+      ],
+      "output": "match-3.txt",
+      "exit_code": 0,
+      "binary_sha256": "c53f2e1e5d8a70027eb5fd951dbea4f3214e66bdc79f8bd48a0e2f13386ca4be"
+    },
+    {
+      "command": [
+        "target/release/examples/prediction_replay"
+      ],
+      "output": "replay-3.txt",
+      "exit_code": 0,
+      "binary_sha256": "c7afa29bd9c3461a3858af5d0f02f593a893c72f32250caf30e379cd723d5c7b"
+    }
+  ],
+  "renderer": {
+    "command": "target/release/rm-simulator-bench --cad-assets local-assets/field --case benchmarks/render-case.json --backend metal --cpu-only --headless --detail raw --screenshot --output /tmp/rm-architecture-baseline/render",
+    "binary_sha256": "28bd729eb8e7f73008f5b551af4ccdc7245b96776593b743ceb5eba855111984",
+    "source_revision": "4d6214beab1fea1bc8c7c6948a4352c14d0c123f",
+    "report": "render-baseline.json",
+    "raw_capture": "/tmp/rm-architecture-baseline/render",
+    "power_after": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=22610019)\t65%; discharging; 3:25 remaining present: true\n"
+  }
+}

@@ -1,0 +1,171 @@
+{
+  "base": {
+    "name": "ultra",
+    "resolution": [
+      1920,
+      1080
+    ],
+    "graphics": {
+      "preset": "Ultra",
+      "overrides": {
+        "vsync": false,
+        "shadows": true,
+        "shadow_map_size": 4096,
+        "shadow_cascades": 4,
+        "shadow_distance_m": 60,
+        "msaa_samples": 4,
+        "bloom": true,
+        "depth_prepass": false,
+        "occlusion_culling": false
+      }
+    },
+    "camera_position_flu_m": [
+      10,
+      0,
+      0.7
+    ],
+    "camera_target_flu_m": [
+      0,
+      0,
+      0.7
+    ],
+    "vertical_fov_deg": 60,
+    "geometry": "normal",
+    "stadium": true,
+    "warmup_seconds": 10,
+    "sample_seconds": 10,
+    "timeout_seconds": 90
+  },
+  "cases": [
+    {
+      "name": "1080p-medium-original",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "graphics": {
+        "preset": "Medium",
+        "overrides": {
+          "shadow_map_size": 1024,
+          "shadow_cascades": 2,
+          "shadow_distance_m": 40,
+          "msaa_samples": 2
+        }
+      }
+    },
+    {
+      "name": "1080p-medium-candidate",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "graphics": {
+        "preset": "Medium",
+        "overrides": {
+          "shadow_map_size": 1024,
+          "shadow_cascades": 1,
+          "shadow_distance_m": 40,
+          "msaa_samples": 2
+        }
+      }
+    },
+    {
+      "name": "1080p-high-original",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "graphics": {
+        "preset": "High",
+        "overrides": {
+          "shadow_map_size": 2048,
+          "shadow_cascades": 2,
+          "shadow_distance_m": 40,
+          "msaa_samples": 4
+        }
+      }
+    },
+    {
+      "name": "1080p-high-candidate",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "graphics": {
+        "preset": "High",
+        "overrides": {
+          "shadow_map_size": 2048,
+          "shadow_cascades": 1,
+          "shadow_distance_m": 40,
+          "msaa_samples": 4
+        }
+      }
+    },
+    {
+      "name": "1080p-ultra-original",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "graphics": {
+        "preset": "Ultra",
+        "overrides": {
+          "shadow_map_size": 4096,
+          "shadow_cascades": 4,
+          "shadow_distance_m": 60,
+          "msaa_samples": 4
+        }
+      }
+    },
+    {
+      "name": "1080p-ultra-candidate",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "graphics": {
+        "preset": "Ultra",
+        "overrides": {
+          "shadow_map_size": 4096,
+          "shadow_cascades": 2,
+          "shadow_distance_m": 60,
+          "msaa_samples": 4
+        }
+      }
+    },
+    {
+      "name": "4k-ultra-original",
+      "resolution": [
+        3840,
+        2160
+      ],
+      "graphics": {
+        "preset": "Ultra",
+        "overrides": {
+          "shadow_map_size": 4096,
+          "shadow_cascades": 4,
+          "shadow_distance_m": 60,
+          "msaa_samples": 4
+        }
+      }
+    },
+    {
+      "name": "4k-ultra-candidate",
+      "resolution": [
+        3840,
+        2160
+      ],
+      "graphics": {
+        "preset": "Ultra",
+        "overrides": {
+          "shadow_map_size": 4096,
+          "shadow_cascades": 2,
+          "shadow_distance_m": 60,
+          "msaa_samples": 4
+        }
+      }
+    }
+  ],
+  "repeats": 2,
+  "seed": 20260913
+}

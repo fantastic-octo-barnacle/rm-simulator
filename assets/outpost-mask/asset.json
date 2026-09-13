@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "source": "/Users/hxyulin/dev/RM/Vision/DataLabelX/assets/armor/O.svg",
+  "source_sha256": "e6999780cbe41a5e37d4c5df06d280555f85b69096103b7f5000f2b694e806d1",
+  "image": "digit.png",
+  "image_sha256": "82245db03f2c88eb6c3e84cec11d558c433ae8a0888677f647a61323347040ee",
+  "recipe": "enclosed transparent region flood fill to white; preserve source canvas",
+  "recipe_version": 2,
+  "seed_px": [
+    215,
+    150
+  ],
+  "additional_seeds_px": [
+    [
+      277,
+      137
+    ],
+    [
+      277,
+      240
+    ]
+  ],
+  "alpha_threshold": 128,
+  "width": 556,
+  "height": 515,
+  "filled_pixels": 32240,
+  "qualification": "candidate appearance; metric artwork placement uncalibrated",
+  "redistribution": "source artwork rights not established by this conversion",
+  "rasterizer": "/nix/store/hgx8p7zbscg55knamhzfpg21g07jgpxl-librsvg-2.62.3/bin/rsvg-convert"
+}

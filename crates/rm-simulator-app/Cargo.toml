@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 hxyulin <hxyulin@proton.me>
+[package]
+name = "rm-simulator-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "rm-simulator"
+path = "src/main.rs"
+
+[features]
+default = []
+steam = ["dep:steamworks"]
+
+[build-dependencies]
+sha2.workspace = true
+
+[dependencies]
+rm-simulator-world = { version = "0.1.0", path = "../rm-simulator-world" }
+rm-simulator-render = { version = "0.1.0", path = "../rm-simulator-render" }
+rm-simulator-server = { version = "0.1.0", path = "../rm-simulator-server" }
+anyhow.workspace = true
+bevy = { workspace = true, features = ["bevy_feathers", "bevy_ui_widgets", "serialize"] }
+bevy_flair = "0.8.1"
+clap.workspace = true
+serde = { workspace = true, features = ["std"] }
+serde_json.workspace = true
+sha2.workspace = true
+
+steamworks = { version = "=0.13.1", optional = true }
+
+[dev-dependencies]
+rm-simulator-physics = { version = "0.1.0", path = "../rm-simulator-physics" }

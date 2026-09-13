@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 hxyulin <hxyulin@proton.me>
+[workspace]
+resolver = "3"
+members = [
+    "crates/rm-simulator-gameplay",
+    "crates/rm-simulator-world",
+    "crates/rm-simulator-physics",
+    "crates/rm-simulator-render",
+    "crates/rm-simulator-server",
+    "crates/rm-simulator-app",
+    "crates/rm-simulator-bench",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[workspace.dependencies]
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+thiserror = "2"
+clap = { version = "4.6", features = ["derive"] }
+anyhow = "1"
+serde_json = "1"
+sha2 = "0.10"
+bevy = { version = "0.19.1", default-features = false, features = ["3d", "ui", "default_font"] }
+
+# Bevy is unusably slow unoptimized; keep the app itself debuggable.
+[profile.dev.package."*"]
+opt-level = 3
+# Keep workspace debug information, but omit third-party dependency symbols.
+debug = 0
+
+[profile.dev]
+opt-level = 1

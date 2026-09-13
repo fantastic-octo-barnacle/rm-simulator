@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 hxyulin <hxyulin@proton.me>
+target/
+
+# Local dependency caches.
+.cache/
+
+# Editors and local tools.
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS metadata.
+.DS_Store
+Thumbs.db
+*:Zone.Identifier
+
+# Python caches.
+__pycache__/
+
+# Bevy Chrome profiler output.
+trace-*.json
+
+/local-assets/
+
+# Valve SDK, development identity and generated packages.
+/vendor/steamworks-sdk/
+/dist/
+steam_appid.txt
+
+# Remembered Windows join address.
+/scripts/windows/server.txt
+
+# Python environments, test and lint caches.
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.py[cod]
+.coverage
+.coverage.*
+htmlcov/
+
+# Local environment variables and credentials. Keep sanitized examples shareable.
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime logs and crash dumps. Recorded benchmark .txt/.json files stay tracked.
+*.log
+*.dmp
