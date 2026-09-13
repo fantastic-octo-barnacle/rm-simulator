@@ -25,6 +25,10 @@ struct LocalFlight {
 pub(super) struct LocalShots {
     /// Wall time from sending a shot to the host accepting it, in ms.
     pub last_confirmation_ms: Option<f64>,
+    /// Individual confirmation delays, retained independently of console polling.
+    pub confirmation_samples: rm_simulator_server::network_trace::EventSamples,
+    /// Individual available host execution offsets, in ms.
+    pub execution_samples: rm_simulator_server::network_trace::EventSamples,
     /// Own launches confirmed exactly once, including snapshot recovery.
     pub confirmed_launches: u64,
     /// Host execution time minus the client's predicted launch time, in ms.
@@ -193,6 +197,12 @@ impl Session {
                         self.shots.last_execution_offset_ms = result
                             .executed_time_ns
                             .map(|t| (t as f64 - flight.flight.launched_ns as f64) / 1e6);
+                        self.shots
+                            .confirmation_samples
+                            .record(self.shots.last_confirmation_ms.unwrap());
+                        if let Some(offset) = self.shots.last_execution_offset_ms {
+                            self.shots.execution_samples.record(offset);
+                        }
                     }
                     flight.flight.authoritative = Some(id);
                     if let Some(executed) = result.executed_time_ns {
@@ -444,6 +454,10 @@ mod tests {
         };
         session.reconcile_shots(&state);
         session.reconcile_shots(&state);
+        let confirmations = serde_json::to_value(&session.shots.confirmation_samples).unwrap();
+        let executions = serde_json::to_value(&session.shots.execution_samples).unwrap();
+        assert_eq!(confirmations["total"], 1);
+        assert_eq!(executions["values"], serde_json::json!([[1, 10.]]));
         assert_eq!(session.reserved_ammo(session.weapon.shot.caliber), 0);
         assert_eq!(session.pending_shots(), 0);
     }

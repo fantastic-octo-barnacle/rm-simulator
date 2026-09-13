@@ -96,7 +96,10 @@ def main():
                                 stalls[0] += 1
                                 time.sleep(stall_s)
                             state = {'ready': True, 'shots_fired':0,
-                                     'network': {'rtt_ms':42, 'checkpoint_gap_ms':
+                                     'network': {'event_samples':{'rtt_ms':{
+                                         'total':replies[0],
+                                         'values':[(i,42) for i in range(max(1,replies[0]-255),replies[0]+1)]}},
+                                                 'rtt_ms':42, 'checkpoint_gap_ms':
                                                  (time.monotonic() - received_at[0]) * 1000}}
                             stream.write((json.dumps({'id':message['id'], 'ok':True,'result':state})+'\n').encode())
                             stream.flush()
