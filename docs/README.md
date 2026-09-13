@@ -11,6 +11,7 @@ design decisions for their named revision, not current API guarantees.
 
 | Topic | Guide |
 |---|---|
+| Open networking issues and measurement gaps | [Known issues](../KNOWN_ISSUES.md) |
 | Crate ownership, ticks, restore and ECS | [Simulation architecture](architecture-refactor.md) |
 | Standalone physics and optional rendering | [Physics reuse](physics-reuse.md) |
 | Contribution workflow and checks | [Contributing](../CONTRIBUTING.md) |
@@ -33,6 +34,9 @@ counts and performance values are specific to the package hashes and revisions
 recorded with them; do not assume a local package still matches those captures.
 
 ## Implementation records and historical investigations
+
+- [Bandwidth experiments](bandwidth-experiments.md) records the isolated trials,
+  the protocol 29 integration of experiments 0/1/7 and remaining validation.
 
 - [UDP impairment and version compatibility tests](network-stress-2026-09-13.md)
 

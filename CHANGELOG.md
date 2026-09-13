@@ -4,6 +4,12 @@
 
 ## Unreleased
 
+- Reduce UDP bandwidth with acknowledged owner configuration references and
+  lossless input batch compaction. Preserve update cadence, input redundancy and
+  full-precision dynamics; require matching protocol 29 builds.
+- Add a deterministic production-codec bandwidth probe and record the isolated
+  bandwidth experiments, their measured savings and outstanding acceptance work.
+
 - Replace embedded owner TCP with bounded typed channels and avoid opening a
   gameplay listener in standalone play. Keep host ordering and authority intact.
 - Add opt-in bounded networking traces, local traffic/work counters, host encoding

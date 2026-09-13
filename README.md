@@ -649,7 +649,13 @@ unavailable when the wrapper cannot identify packet loss. The display adds no
 server requests. The UDP transport sends independent owner corrections and uses acknowledged
 baselines for world deltas. Set `RM_NET_FULL_CHECKPOINTS=1` on the host to compare
 full checkpoints under the same pacing. Owner and input numeric state retains f64
-precision, while shot intents use bounded compression. Application pacing defaults
+precision, while shot intents use bounded compression. RMO4 owner anchors reference
+a configuration delivered reliably and explicitly acknowledged by the client.
+RMI3 input batches share identity fields and encode exact value changes without
+reducing input redundancy. World and owner publication cadence is unchanged.
+See [bandwidth experiments](docs/bandwidth-experiments.md) for isolated savings
+and [known issues](KNOWN_ISSUES.md) for the remaining bandwidth target.
+Application pacing defaults
 to 64 KiB/s upstream and 512 KiB/s downstream per peer with the default LAN
 profile. Set `RM_NET_PROFILE=limited` on the host to retain the original 40 KiB/s
 downstream budget and 10 KiB/s upstream on clients using that profile. Native
@@ -694,7 +700,7 @@ diagnostics. HP, registered hits, command/life state and chassis reconciliation
 values are preserved. HTTP referee diagnostics keep full precision and detail;
 TCP sends the same compact checkpoints, each independent of the last.
 
-The current protocol version is 26, defined by `PROTOCOL_VERSION` in
+The current protocol version is 29, defined by `PROTOCOL_VERSION` in
 `crates/rm-simulator-server/src/protocol.rs`. It schedules pilot control transitions
 and includes shot results and projectile restore state in snapshots. GNS sends redundant controls
 and retried shot intents unreliably; scheduling receipts and terminal shot results

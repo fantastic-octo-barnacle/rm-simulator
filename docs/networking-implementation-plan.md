@@ -76,6 +76,13 @@ two-client acceptance gate remains outstanding.
 
 ### Stages 1–4 delivery
 
+Protocol 29 follow-up: owner anchors now use RMO4 configuration references after
+an explicit acknowledgement of reliable configuration delivery; compact RMI3
+input batches preserve exact values, sample selection and redundancy. Cadence
+and pacing are unchanged. The protocol 20 configuration encoding described below
+is historical. See [bandwidth experiments](bandwidth-experiments.md) for the
+integration status and measured experimental revisions.
+
 Local stats and input execution telemetry are implemented. Protocol 19 adds a
 separate owner datagram, capped at 1,000 application bytes including its tag.
 Protocol 20 packs dynamic f64 values directly and compresses the configuration.
