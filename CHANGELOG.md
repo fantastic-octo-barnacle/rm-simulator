@@ -4,6 +4,9 @@
 
 ## Unreleased
 
+- Stream scored contacts during simulation advancement so long manual steps
+  cannot discard reliable hit feedback when snapshot history expires.
+
 - Disable incompatible lobby rows and show actionable version mismatch errors
   when connecting directly, including to the first release.
 

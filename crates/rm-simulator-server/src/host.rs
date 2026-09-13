@@ -336,7 +336,6 @@ impl Host {
                     next_id: 1,
                     next_sequence: 0,
                     next_snapshot_id: 1,
-                    hit_cursor_ns: 0,
                     next_hit_id: 1,
                     clock: None,
                     time,
@@ -427,7 +426,6 @@ struct Owner {
     next_id: u32,
     next_sequence: u64,
     next_snapshot_id: u64,
-    hit_cursor_ns: u64,
     next_hit_id: u64,
     clock: Option<Clock>,
     /// The only wall clock this worker reads.
@@ -439,7 +437,6 @@ impl Owner {
         while !self.control.stop.wait(Duration::ZERO) {
             // Check the deadline between requests, even under a command flood.
             self.advance_clock()?;
-            self.publish_hits();
             for result in self.simulation.take_completed_shots() {
                 if let Some(client) = self
                     .peers
@@ -475,12 +472,13 @@ impl Owner {
             return Ok(());
         }
         let ready = self.control.ready.load(Ordering::Acquire);
-        if ready && clock.ready {
-            let delta_ns = u64::try_from((now - clock.last).as_nanos()).unwrap_or(u64::MAX);
-            self.simulation
-                .advance(delta_ns)
+        let delta_ns = (ready && clock.ready)
+            .then(|| u64::try_from((now - clock.last).as_nanos()).unwrap_or(u64::MAX));
+        if let Some(delta_ns) = delta_ns {
+            self.observe_simulation(|simulation, hits| simulation.advance_observed(delta_ns, hits))
                 .map_err(|error| error.to_string())?;
         }
+        let clock = self.clock.as_mut().expect("running clock");
         clock.ready = ready;
         clock.last = now;
         clock.next = now + CLOCK_PERIOD;
@@ -577,7 +575,7 @@ impl Owner {
             sequence: self.next_sequence,
             tick: self.simulation.field().tick(),
         };
-        self.simulation.apply(&command)?;
+        self.observe_simulation(|simulation, hits| simulation.apply_observed(&command, hits))?;
         self.next_sequence = next_sequence;
         Ok(receipt)
     }
@@ -595,25 +593,27 @@ impl Owner {
             peer.push(Arc::new(Outbound::new(message)), false);
         }
     }
-    fn publish_hits(&mut self) {
-        let field = self.simulation.field();
-        let now = field.time_ns();
-        let hits: Vec<_> = field
-            .recent_hits()
-            .iter()
-            .filter(|hit| hit.time_ns > self.hit_cursor_ns)
-            .cloned()
-            .collect();
-        self.hit_cursor_ns = now;
-        for hit in hits {
-            let event_id = self.next_hit_id;
-            self.next_hit_id = event_id.checked_add(1).expect("hit event id overflow");
-            self.broadcast(ServerMessage::Hit {
-                epoch: self.simulation.input_epoch(),
+    /// Stream scored contacts into bounded peer outboxes during simulation work.
+    /// Snapshot history is recovery data, never the source of reliable delivery.
+    fn observe_simulation<T>(
+        &mut self,
+        run: impl FnOnce(&mut Simulation, &mut dyn FnMut(&rm_simulator_world::ArmorHit)) -> T,
+    ) -> T {
+        let epoch = self.simulation.input_epoch();
+        let peers = &self.peers;
+        let next_hit_id = &mut self.next_hit_id;
+        run(&mut self.simulation, &mut |hit| {
+            let event_id = *next_hit_id;
+            *next_hit_id = event_id.checked_add(1).expect("hit event id overflow");
+            let frame = Arc::new(Outbound::new(ServerMessage::Hit {
+                epoch,
                 event_id,
-                hit,
-            });
-        }
+                hit: hit.clone(),
+            }));
+            for peer in peers {
+                peer.push(frame.clone(), false);
+            }
+        })
     }
     fn publish_snapshot(&mut self, owner_only: bool) {
         if !self.peers.iter().any(|peer| !owner_only || peer.owner) {
@@ -954,6 +954,11 @@ mod tests {
 
     #[test]
     fn contacts_leave_as_reliable_events_without_a_snapshot_broadcast() {
+        for ticks in [100, 2_500] {
+            assert_contact_delivery(ticks);
+        }
+    }
+    fn assert_contact_delivery(ticks: u64) {
         use rm_simulator_world::{BaseConfig, Caliber, Pose, Shot, Team};
         let field = Field::new(&FieldConfig {
             bases: vec![BaseConfig {
@@ -981,7 +986,7 @@ mod tests {
                 },
             })
             .unwrap();
-        handle.apply(&Command::Step { ticks: 100 }).unwrap();
+        handle.apply(&Command::Step { ticks }).unwrap();
         settle(&handle);
         let event = next(&messages);
         assert!(!event.periodic);
@@ -990,7 +995,18 @@ mod tests {
         };
         assert_eq!(*event_id, 1);
         assert!(hit.detected);
-        assert_eq!(handle.snapshot().unwrap().hits[0], *hit);
+        let snapshot = handle.snapshot().unwrap();
+        if ticks < 1_000 {
+            assert_eq!(snapshot.hits[0], *hit);
+        } else {
+            assert!(snapshot.hits.is_empty(), "history should have expired");
+        }
+        handle.apply(&Command::Step { ticks: 1 }).unwrap();
+        settle(&handle);
+        assert!(
+            messages.try_recv().is_none(),
+            "contacts must not be republished"
+        );
     }
 
     #[test]

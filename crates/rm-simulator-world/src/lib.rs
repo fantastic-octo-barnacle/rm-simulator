@@ -715,19 +715,6 @@ impl Field {
     pub fn tick(&self) -> u64 {
         self.tick
     }
-    /// Armor contacts retained for the last second of simulation time, in scoring order.
-    /// Reading these does not drain snapshot recovery history or advance the world.
-    ///
-    /// ```
-    /// use rm_simulator_world::{Field, FieldConfig};
-    /// let field = Field::new(&FieldConfig::default()).unwrap();
-    /// assert!(field.recent_hits().is_empty());
-    /// assert_eq!(field.tick(), 0);
-    /// ```
-    pub fn recent_hits(&self) -> &[ArmorHit] {
-        &self.hits
-    }
-
     /// `tick` times `TICK_NS`: the field's own clock, never the host's.
     pub fn time_ns(&self) -> u64 {
         self.tick * TICK_NS
@@ -856,6 +843,27 @@ impl Field {
     /// assert_eq!(whole.snapshot().runes, split.snapshot().runes);
     /// ```
     pub fn step(&mut self, ticks: u64) -> Result<(), FieldError> {
+        self.step_with_hits(ticks, &mut |_| {})
+    }
+
+    /// Step `ticks` explicit 1 ms ticks, reporting each scored contact in order.
+    /// The observer runs after scoring and before snapshot retention can remove
+    /// the contact. It sees only new contacts, never restored history, and must
+    /// not block. No event queue is retained by the field.
+    ///
+    /// ```
+    /// use rm_simulator_world::{Field, FieldConfig};
+    /// let mut field = Field::new(&FieldConfig::default()).unwrap();
+    /// let mut contacts = Vec::new();
+    /// field.step_with_hits(2_000, &mut |hit| contacts.push(hit.clone())).unwrap();
+    /// assert_eq!(field.tick(), 2_000);
+    /// assert!(contacts.is_empty());
+    /// ```
+    pub fn step_with_hits(
+        &mut self,
+        ticks: u64,
+        observer: &mut dyn FnMut(&ArmorHit),
+    ) -> Result<(), FieldError> {
         let end = self
             .tick
             .checked_add(ticks)
@@ -926,6 +934,7 @@ impl Field {
                 if let Some(referee) = &mut self.referee {
                     referee.observe_hit(&hit);
                 }
+                observer(&hit);
                 self.hits.push(hit);
             }
             if let Some(referee) = &mut self.referee {
