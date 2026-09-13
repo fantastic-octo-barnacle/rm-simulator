@@ -19,6 +19,38 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Bounded event measurements in milliseconds, with monotonic sample identities.
+/// Console readers may poll repeatedly without counting one event twice. A reader
+/// detects overwritten samples from gaps in the identities (the newest 256 remain).
+///
+/// ```
+/// use rm_simulator_server::network_trace::EventSamples;
+/// let mut samples = EventSamples::default();
+/// samples.record(12.5);
+/// let json = serde_json::to_value(&samples).unwrap();
+/// assert_eq!(json["total"], 1);
+/// assert_eq!(json["values"][0][1], 12.5);
+/// ```
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct EventSamples {
+    total: u64,
+    values: std::collections::VecDeque<(u64, f64)>,
+}
+impl EventSamples {
+    /// Records one finite event duration or signed execution offset in ms.
+    /// Equal values still represent separate events; non-finite values are ignored.
+    pub fn record(&mut self, value_ms: f64) {
+        if !value_ms.is_finite() {
+            return;
+        }
+        self.total += 1;
+        if self.values.len() == 256 {
+            self.values.pop_front();
+        }
+        self.values.push_back((self.total, value_ms));
+    }
+}
+
 const CAPACITY: usize = 2048;
 const FILE_LIMIT: u64 = 64 * 1024 * 1024;
 static NEXT_FILE: AtomicU64 = AtomicU64::new(1);
@@ -417,6 +449,19 @@ fn write_trace(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn event_samples_keep_equal_events_and_bound_retention() {
+        let mut samples = super::EventSamples::default();
+        for _ in 0..300 {
+            samples.record(4.);
+        }
+        samples.record(f64::NAN);
+        assert_eq!(samples.total, 300);
+        assert_eq!(samples.values.len(), 256);
+        assert_eq!(samples.values.front(), Some(&(45, 4.)));
+        assert_eq!(samples.values.back(), Some(&(300, 4.)));
+    }
+
     use super::*;
     #[test]
     fn counters_do_not_invent_wire_bytes_and_busy_reads_never_wait() {

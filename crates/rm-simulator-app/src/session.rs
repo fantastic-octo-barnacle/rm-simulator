@@ -1033,6 +1033,12 @@ impl Session {
             "remote_buffer": { "automatic": self.remote_buffer.automatic,
                 "delay_ms": self.remote_buffer.delay_ms(), "view_age_ms": self.remote_buffer.view_age_ms,
                 "underruns": self.remote_buffer.underruns },
+            "event_samples": {
+                "shot_confirmation_ms": self.shots.confirmation_samples,
+                "shot_execution_offset_ms": self.shots.execution_samples,
+                "rtt_ms": self.client.round_trip_samples(),
+                "checkpoint_arrival_interval_ms": self.client.checkpoint_interval_samples(),
+            },
             "shot_confirmation_ms": self.shots.last_confirmation_ms,
             "shot_execution_offset_ms": self.shots.last_execution_offset_ms,
             "collision_context_gap_ms": self.time.since(self.last_context).as_secs_f64() * 1000.,

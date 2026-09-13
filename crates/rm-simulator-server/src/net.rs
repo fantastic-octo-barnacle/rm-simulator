@@ -502,6 +502,7 @@ struct Incoming {
     finished_shots: Vec<(u32, u64, Option<String>)>,
     snapshot: Option<Box<SimulationState>>,
     received_at: Option<Instant>,
+    checkpoint_intervals: crate::network_trace::EventSamples,
     time_sample: Option<(u64, u64, bool, Instant)>,
     roster: Option<Vec<PlayerInfo>>,
     notices: Vec<String>,
@@ -603,7 +604,12 @@ impl ClientInbox {
                 None
             }
             ServerMessage::Snapshot(snapshot) => {
-                data.received_at = Some(self.time.now());
+                let now = self.time.now();
+                if let Some(previous) = data.received_at {
+                    data.checkpoint_intervals
+                        .record(now.saturating_duration_since(previous).as_secs_f64() * 1000.);
+                }
+                data.received_at = Some(now);
                 data.snapshot.replace(snapshot).map(ServerMessage::Snapshot)
             }
             ServerMessage::Roster(roster) => data.roster.replace(roster).map(ServerMessage::Roster),
@@ -1019,6 +1025,19 @@ impl Client {
     pub fn round_trip_ns(&self) -> Option<u64> {
         self.timing.rtts.back().copied()
     }
+    /// Bounded individual probe round trips in ms, identified independently of value.
+    pub fn round_trip_samples(&self) -> &crate::network_trace::EventSamples {
+        &self.timing.rtt_samples
+    }
+    /// Intervals in ms between decoded complete checkpoint arrivals, before inbox
+    /// coalescing. Returns `None` instead of waiting for a transport worker's lock.
+    pub fn checkpoint_interval_samples(&self) -> Option<crate::network_trace::EventSamples> {
+        self.inbox
+            .data
+            .try_lock()
+            .ok()
+            .map(|data| data.checkpoint_intervals.clone())
+    }
     /// Includes the lower bound from an unanswered probe, useful during upstream gaps.
     pub fn response_delay_ns(&self) -> Option<u64> {
         self.round_trip_ns()
@@ -1377,6 +1396,38 @@ mod tests {
         ChassisCommand, ChassisConfig, Field, FieldConfig, MatchPhase, RefereeCommand,
         RefereeConfig,
     };
+
+    #[test]
+    fn checkpoint_arrival_samples_survive_inbox_coalescing() {
+        let clock = crate::clock::ManualTime::new();
+        let inbox = ClientInbox::with_time(clock.source());
+        let state = Simulation::new(Field::new(&FieldConfig::default()).unwrap(), true).state();
+        for delay in [0, 32, 64] {
+            clock.advance_ms(delay);
+            inbox
+                .publish(ServerMessage::Snapshot(Box::new(state.clone())))
+                .unwrap();
+        }
+        let data = inbox.data.lock().unwrap();
+        let samples = serde_json::to_value(&data.checkpoint_intervals).unwrap();
+        assert_eq!(samples["total"], 2);
+        assert_eq!(samples["values"], serde_json::json!([[1, 32.], [2, 64.]]));
+    }
+
+    #[test]
+    fn probe_samples_count_equal_rtts_once_per_answer() {
+        let clock = crate::clock::ManualTime::new();
+        let mut timing = ClientTiming::new(clock.source());
+        for nonce in [1, 2] {
+            timing.pending = Some((nonce, clock.now()));
+            clock.advance_ms(5);
+            let reply = (nonce, 0, true, clock.now());
+            timing.sample(reply);
+            timing.sample(reply);
+        }
+        let samples = serde_json::to_value(&timing.rtt_samples).unwrap();
+        assert_eq!(samples["values"], serde_json::json!([[1, 5.], [2, 5.]]));
+    }
 
     fn host() -> (Server, HostHandle) {
         let config = FieldConfig {
@@ -2403,6 +2454,7 @@ struct ClientTiming {
     last_probe: Instant,
     pending: Option<(u64, Instant)>,
     rtts: std::collections::VecDeque<u64>,
+    rtt_samples: crate::network_trace::EventSamples,
     clock: presentation_clock::ClockEstimate,
     input_lead: presentation_clock::InputLead,
     fixed_input_lead: bool,
@@ -2421,6 +2473,7 @@ impl ClientTiming {
             last_probe: now,
             pending: None,
             rtts: Default::default(),
+            rtt_samples: Default::default(),
             clock: Default::default(),
             input_lead: Default::default(),
             fixed_input_lead: std::env::var_os("RM_NET_FIXED_INPUT_LEAD").is_some_and(|v| v == "1"),
@@ -2461,6 +2514,7 @@ impl ClientTiming {
             self.rtts.pop_front();
         }
         self.rtts.push_back(rtt);
+        self.rtt_samples.record(rtt as f64 / 1e6);
         // Prefer uncongested samples; symmetry is an estimate, not a guarantee.
         if rtt
             <= self

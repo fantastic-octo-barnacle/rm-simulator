@@ -364,6 +364,7 @@ class ExpectationTests(unittest.TestCase):
         rows = []
         for index in range(30):
             rows.append(sample('pilot', index * .25, {
+                'event_samples':{'rtt_ms':{'total':index, 'values':[(index,10+index)]}},
                 'rtt_ms':10+index, 'checkpoint_gap_ms':40., 'unresolved_shot_outcomes':0,
                 'remote_underruns':index, 'shot_confirmation_ms':12.5,
                 'shot_execution_offset_ms':-2., 'collision_context_age_ms':4.,
@@ -371,7 +372,7 @@ class ExpectationTests(unittest.TestCase):
                 'prediction_results_discarded':index, 'prediction_held_moving_frames':2 * index,
                 'stats':{'loss_percent':1.5, 'native':{'transport_rtt_ms':8.}}},
                 shots_fired=index, hits_detected=0, pending_shots=1))
-            rows.append(sample('peer', index * .25, {'rtt_ms':200., 'unresolved_shot_outcomes':index}))
+            rows.append(sample('peer', index * .25, {'event_samples':{'rtt_ms':{'total':index, 'values':[(index,200.)]}}, 'rtt_ms':200., 'unresolved_shot_outcomes':index}))
         return runner.summarize(rows, [], 10, gaps)
 
     def test_schema_accepts_a_documented_block(self):
@@ -458,6 +459,8 @@ class ExpectationTests(unittest.TestCase):
 class SummaryFieldTests(unittest.TestCase):
     def report(self, **kwargs):
         rows = [sample('pilot', index * .25, {
+            'event_samples':{key:{'total':index, 'values':[(index,value)]}
+                             for key,value in [('shot_confirmation_ms',index),('shot_execution_offset_ms',-1.)]},
             'shot_confirmation_ms':index, 'shot_execution_offset_ms':-1.,
             'collision_context_age_ms':3., 'collision_context_coherent':index < 15,
             'prediction_results_discarded':index, 'prediction_held_moving_frames':3 * index,
@@ -470,7 +473,7 @@ class SummaryFieldTests(unittest.TestCase):
         metrics = self.report()['clients']['pilot']['metrics']
         for key in ('shot_confirmation_ms', 'shot_execution_offset_ms', 'collision_context_age_ms',
                     'transport_loss_percent', 'pending_shots'):
-            self.assertEqual(metrics[key]['count'], 20, key)
+            self.assertEqual(metrics[key]['count'], 19 if key.startswith('shot_') else 20, key)
         self.assertEqual(metrics['shot_confirmation_ms']['max'], 19)
 
     def test_counter_deltas_include_prediction_and_context_coherence(self):
@@ -498,6 +501,51 @@ class SummaryFieldTests(unittest.TestCase):
         self.assertEqual(report['clients']['pilot']['sample_gaps'], 1)
         self.assertEqual(report['clients']['absent']['sample_gaps'], 1)
         self.assertEqual(report['clients']['absent']['active_samples'], 0)
+
+
+class EventMeasurementTests(unittest.TestCase):
+    def rows(self, histories):
+        return [sample('pilot', i, {'event_samples':{'shot_confirmation_ms':history},
+                                   'shot_confirmation_ms':999.})
+                for i, history in enumerate(histories)]
+
+    def test_repeated_polls_do_not_duplicate_events_but_equal_values_do(self):
+        first = {'total':2, 'values':[(1,900.),(2,900.)]}
+        next_ = {'total':4, 'values':[(1,900.),(2,900.),(3,10.),(4,10.)]}
+        result, missed = runner.event_distribution(self.rows([first,next_,next_,next_]), 'shot_confirmation_ms')
+        self.assertEqual((result['count'],result['p50'],missed), (2,10.,0))
+        self.assertIsNone(result['p95'])
+
+    def test_overwrite_is_reported_and_missing_poll_preserves_cursor(self):
+        rows = self.rows([{'total':1,'values':[(1,5.)]}, None,
+                          {'total':5,'values':[(4,6.),(5,7.)]}])
+        result, missed = runner.event_distribution(rows, 'shot_confirmation_ms')
+        self.assertEqual((result['count'],missed), (2,2))
+
+    def test_legacy_last_values_are_not_per_event_measurements(self):
+        report = runner.summarize([sample('pilot',0,{'shot_confirmation_ms':30.}),
+                                   sample('pilot',1,{'shot_confirmation_ms':30.})],[],2)
+        self.assertEqual(report['clients']['pilot']['metrics']['shot_confirmation_ms']['count'],0)
+        self.assertIn('per_shot_execution_and_confirmation_delay',report['unavailable'])
+
+    def test_counter_reset_is_refused(self):
+        with self.assertRaises(ValueError):
+            runner.event_distribution(self.rows([{'total':2,'values':[]},
+                                                  {'total':1,'values':[]}]), 'shot_confirmation_ms')
+
+    def test_old_last_value_summary_cannot_be_compared_as_events(self):
+        old = {'clients':{'pilot':{'metrics':{'rtt_ms':{'p50':1.,'max':2.}}}}}
+        new = {**old, 'event_metric_schema':1}
+        result = runner.compare_baseline(new,old,.25)
+        self.assertEqual(result['compared'],0)
+        self.assertEqual(result['regressions'],0)
+        self.assertEqual(result['comparisons'][0]['detail'],'incompatible event measurement schema')
+
+    def test_freshness_median_does_not_gate_arrival_latency(self):
+        old = {'clients':{'pilot':{'metrics':{'checkpoint_gap_ms':{'p50':.5,'max':30.}}}}}
+        new = {'clients':{'pilot':{'metrics':{'checkpoint_gap_ms':{'p50':17.,'max':60.}}}}}
+        result = runner.compare_baseline(new,old,.25)
+        self.assertEqual(result['regressions'],1)  # The maximum freshness age still gates.
 
 
 class BaselineTests(unittest.TestCase):
@@ -630,8 +678,9 @@ class RunnerProcessTests(unittest.TestCase):
     def test_baseline_regression_fails_and_improvement_passes(self):
         baseline = self.root / 'baseline.json'
         stats = {'p50':1, 'p95':None, 'p99':None, 'max':1}
-        baseline.write_text(json.dumps({'clients':{name:{'metrics':{'rtt_ms':stats}}}
-                                        for name in ('healthy','impaired')}))
+        baseline.write_text(json.dumps({'event_metric_schema':1,
+                                        'clients':{name:{'metrics':{'rtt_ms':stats}}
+                                                   for name in ('healthy','impaired')}}))
         result, report = self.run_harness('--baseline', str(baseline))
         self.assertEqual(result.returncode, 1, result.stdout+result.stderr)
         self.assertEqual(report['status'], 'failed')

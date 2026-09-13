@@ -300,13 +300,45 @@ def distribution(values):
 
 
 # Distributions collected straight from the console's `state.network` subtree.
-NETWORK_METRICS = ('rtt_ms', 'checkpoint_gap_ms', 'prediction_backlog_ms', 'input_lead_ms',
+NETWORK_METRICS = ('checkpoint_gap_ms', 'prediction_backlog_ms', 'input_lead_ms',
                    'correction_position_m', 'input_execution_lateness_ms',
                    'correction_orientation_rad', 'correction_velocity_m_s', 'correction_aim_rad',
                    'remote_view_age_ms', 'remote_buffer_delay_ms', 'remote_underruns',
-                   'shot_confirmation_ms', 'shot_execution_offset_ms',
                    'collision_context_age_ms', 'collision_context_gap_ms',
                    'snapshot_clock_offset_ms')
+# Event distributions never fall back to the last-value console gauges.
+EVENT_METRICS = ('rtt_ms', 'shot_confirmation_ms', 'shot_execution_offset_ms',
+                 'checkpoint_arrival_interval_ms')
+
+
+def event_distribution(rows, metric):
+    """Count event IDs once over the first-to-last active observation window.
+
+    The first available history establishes a cursor, excluding setup/warmup.
+    Missing histories do not reset it. Gaps report overwritten events rather
+    than silently claiming complete coverage; equal-valued events remain distinct.
+    """
+    cursor, values, missed = None, [], 0
+    for row in rows:
+        series = ((row['state'].get('network') or {}).get('event_samples') or {}).get(metric)
+        if series is None:
+            continue
+        total = series['total']
+        if cursor is None:
+            cursor = total
+            continue
+        if total < cursor:
+            raise ValueError('event sample counter reset during a client session')
+        fresh = [(identity, value) for identity, value in series['values'] if identity > cursor]
+        for identity, value in fresh:
+            missed += max(0, identity - cursor - 1)
+            values.append(value)
+            cursor = identity
+        missed += max(0, total - cursor)
+        cursor = total
+    return distribution(values), missed
+
+
 # `state.network.stats.native`, absent unless the native transport reports.
 NATIVE_METRICS = ('transport_rtt_ms', 'send_bytes_per_s', 'receive_bytes_per_s', 'send_queue_ms')
 # `state.network.stats`; the provider may leave loss_percent null with a reason.
@@ -347,6 +379,9 @@ def summarize(samples, proxies, duration, gaps=(), schedule_skips=0):
         def network(row):
             return row['state'].get('network') or {}
         metrics = {key: distribution([network(row).get(key) for row in rows]) for key in NETWORK_METRICS}
+        event_losses = {}
+        for key in EVENT_METRICS:
+            metrics[key], event_losses[key] = event_distribution(rows, key)
         for key in NATIVE_METRICS:
             metrics[key] = distribution([((network(row).get('stats') or {}).get('native') or {}).get(key)
                                          for row in rows])
@@ -362,6 +397,7 @@ def summarize(samples, proxies, duration, gaps=(), schedule_skips=0):
         positions = [p for p in positions if p is not None]
         movement = max((sum((a-b)**2 for a, b in zip(p, positions[0]))**0.5 for p in positions), default=None)
         clients[name] = {'active_samples': len(rows), 'metrics': metrics,
+                         'event_samples_missed': event_losses,
                          'max_displacement_m': movement,
                          'console_query_ms': distribution([(row['received_s'] - row['elapsed_s']) * 1000
                                                             for row in rows]),
@@ -393,7 +429,7 @@ def summarize(samples, proxies, duration, gaps=(), schedule_skips=0):
                 }
     def collected(keys):
         return any(client['metrics'][key]['count'] for client in clients.values() for key in keys)
-    return {'clients': clients, 'proxy_rates': rates,
+    return {'event_metric_schema': 1, 'clients': clients, 'proxy_rates': rates,
             'sample_gap_total': len(gaps),
             'sample_schedule_skips': schedule_skips,
             'sample_gap_detail': gaps[-64:],
@@ -402,7 +438,9 @@ def summarize(samples, proxies, duration, gaps=(), schedule_skips=0):
             'proxy_final': proxies[-1] if proxies else None,
             'unavailable': sorted(label for label, keys in AVAILABILITY.items() if not collected(keys))
                            + list(NEVER_COLLECTED),
-            'notes': ['rtt_ms is the existing reliable application probe, not transport RTT.',
+            'notes': ['rtt_ms counts individual reliable application probes, not repeated console readings.',
+                      'Event distributions cover first-to-last available active histories; missing IDs are reported.',
+                      'checkpoint_gap_ms and collision_context_gap_ms are sampled receive ages, not arrival intervals.',
                       'shots_fired is global authoritative state, not per-player shot acceptance;'
                       " confirmed_launches counts this client's accepted launches.",
                       'Shot deltas span first to last sampled value, not the entire active interval.',
@@ -481,9 +519,15 @@ def compare_baseline(report, baseline, tolerance):
                 new = values.get(stat)
                 old = ((reference or {}).get('metrics') or {}).get(metric, {}).get(stat)
                 row = {'client': name, 'metric': path, 'baseline': old, 'observed': new}
-                if old is None or new is None:
+                if metric in EVENT_METRICS and report.get('event_metric_schema') != baseline.get('event_metric_schema'):
+                    row['status'] = 'skipped'
+                    row['detail'] = 'incompatible event measurement schema'
+                elif old is None or new is None:
                     row['status'] = 'skipped'
                     row['detail'] = 'missing in baseline' if old is None else 'missing in run'
+                elif metric in ('checkpoint_gap_ms', 'collision_context_gap_ms') and stat != 'max':
+                    row['status'] = 'skipped'
+                    row['detail'] = 'sample-phase-dependent receive age; compare arrival intervals instead'
                 else:
                     limit = old * (1 + tolerance)
                     row['limit'] = limit
@@ -751,12 +795,18 @@ def run(args, scenario):
                 cleanup_errors.append(f'baseline: {exc}')
                 report['cleanup_errors'] = cleanup_errors
                 status = report['status'] = 'failed'
+        for name, client in report['clients'].items():
+            missed = sum(client['event_samples_missed'].values())
+            report['checks'].append({'name': 'event_history_complete', 'client': name,
+                                     'metric': 'event_samples_missed', 'operator': '==', 'threshold': 0,
+                                     'observed': missed, 'status': 'failed' if missed else 'passed',
+                                     'detail': 'event histories must cover the observation window'})
         failures = [row for row in report['checks'] if row['status'] == 'failed']
         regressions = (report['baseline'] or {}).get('regressions', 0)
         if status != 'failed':
             if failures or regressions:
                 status = 'failed'
-            elif report['checks'] or report['baseline']:
+            elif expectations.get('checks') or report['baseline']:
                 status = 'passed'
         report['status'] = status
         report['checks_failed'] = len(failures)
