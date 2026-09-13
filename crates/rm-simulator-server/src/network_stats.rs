@@ -48,6 +48,27 @@ pub struct TransportStats {
     pub missing_baselines: u64,
 }
 
+/// Cumulative encoding costs before pacing; these are produced bytes, not wire traffic.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct EncodingStats {
+    /// Periodic world snapshots encoded, excluding those skipped for native backlog.
+    pub world_updates: u64,
+    /// World snapshots skipped because the native transport was congested.
+    pub skipped_world_updates: u64,
+    /// JSON checkpoint bytes before delta encoding/compression, when deltas are enabled.
+    pub raw_world_bytes: u64,
+    /// Encoded world bytes including application fragment headers, before pacing drops.
+    pub framed_world_bytes: u64,
+    /// Owner datagrams produced, before replacement or pacing drops.
+    pub owner_updates: u64,
+    /// Owner datagram bytes produced, before replacement or pacing drops.
+    pub owner_bytes: u64,
+    /// Compressed independent bytes considered by the baseline codec for comparison.
+    pub independent_bytes: u64,
+    /// Compressed full/delta bytes selected by the baseline codec, before fragment headers.
+    pub selected_bytes: u64,
+}
+
 /// One connection's diagnostics report, combining the client's own timing with
 /// whatever native transport sample is available.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -58,8 +79,7 @@ pub struct NetworkStats {
     /// Client id from this session's welcome, monotonically assigned by the
     /// host, so a reconnecting peer reads as a new generation.
     pub connection_generation: u64,
-    /// Transport that produced the sample: `gns`, or `tcp_or_local` when no
-    /// native sample exists.
+    /// Transport that produced the sample: `gns`, `tcp`, or in-process `local`.
     pub transport: String,
     /// Elapsed milliseconds on the reporting side when this report was built.
     pub sampled_elapsed_ms: f64,

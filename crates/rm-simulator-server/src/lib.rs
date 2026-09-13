@@ -33,6 +33,8 @@ pub mod input_stream;
 
 pub mod network_stats;
 
+pub mod network_trace;
+
 pub mod owner_stream;
 
 pub mod pacing;

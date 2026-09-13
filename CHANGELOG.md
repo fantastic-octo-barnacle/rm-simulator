@@ -4,6 +4,11 @@
 
 ## Unreleased
 
+- Replace embedded owner TCP with bounded typed channels and avoid opening a
+  gameplay listener in standalone play. Keep host ordering and authority intact.
+- Add opt-in bounded networking traces, local traffic/work counters, host encoding
+  diagnostics, trace status in the detailed overlay and an offline summary tool.
+
 - Stream scored contacts during simulation advancement so long manual steps
   cannot discard reliable hit feedback when snapshot history expires.
 

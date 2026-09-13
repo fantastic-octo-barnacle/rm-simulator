@@ -246,12 +246,16 @@ impl Session {
             .with_weapon_limits(args.weapon_limits())
             .map_err(anyhow::Error::msg)?;
             let address = args.listen.as_deref().unwrap_or("127.0.0.1:0");
-            let server = match args.transport {
-                rm_simulator_server::net::Transport::Gns => {
-                    Server::bind_udp_suspended(address, simulation)
-                }
-                rm_simulator_server::net::Transport::Tcp => {
-                    Server::bind_suspended(address, simulation)
+            let server = if args.listen.is_none() && args.lobby_name.is_none() {
+                Server::in_process(simulation, false)
+            } else {
+                match args.transport {
+                    rm_simulator_server::net::Transport::Gns => {
+                        Server::bind_udp_suspended(address, simulation)
+                    }
+                    rm_simulator_server::net::Transport::Tcp => {
+                        Server::bind_suspended(address, simulation)
+                    }
                 }
             }?;
             server.spawn_clock()?;
@@ -1043,6 +1047,7 @@ impl Session {
             "correction": correction,
             "stats": self.network_stats(),
             "downstream_queues": self.client.delivery_stats(),
+            "trace": self.client.trace_report(),
             "checkpoint_gap_ms": self.time.since(self.last_checkpoint).as_secs_f64() * 1000.,
             "rtt_ms": self.client.round_trip_ns().map(|ns| ns as f64 / 1e6),
             "input_lead_ms": self.client.input_lead_ns() as f64 / 1e6,
@@ -1455,9 +1460,17 @@ mod tests {
         session.apply(Command::Step { ticks: 16 });
         wait_for_session(&mut session, Session::commands_confirmed);
         assert_eq!(session.snapshot.tick, before + 16);
-        let address = session.host.as_ref().unwrap().server.local_addr();
+        assert!(
+            session
+                .host
+                .as_ref()
+                .unwrap()
+                .server
+                .listening_addr()
+                .is_none()
+        );
+        assert_eq!(session.client.network_stats().transport, "local");
         drop(session);
-        let _rebound = std::net::TcpListener::bind(address).unwrap();
     }
 
     #[test]

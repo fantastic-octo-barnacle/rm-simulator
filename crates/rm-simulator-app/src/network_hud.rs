@@ -176,6 +176,22 @@ pub fn update(
         number(tx)
     );
     if ui.network_stats == NetworkStatsMode::Detailed {
+        let trace = &detail["trace"];
+        let status = if trace["error"].is_string() {
+            "failed"
+        } else if trace["capped"].as_bool() == Some(true) {
+            "size limit reached"
+        } else if trace["path"].is_string() {
+            "recording"
+        } else {
+            "off"
+        };
+        value.push_str(&format!(
+            "\nTrace {status}   Dropped {}   Contended {}",
+            trace["dropped"].as_u64().unwrap_or(0),
+            trace["contended"].as_u64().unwrap_or(0)
+        ));
+
         let frame = diagnostics
             .get(&FrameTimeDiagnosticsPlugin::FRAME_TIME)
             .and_then(|d| d.smoothed());

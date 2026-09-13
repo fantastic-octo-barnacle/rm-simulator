@@ -345,6 +345,7 @@ pub(crate) struct PeerCodec {
     pacer: Pacer,
     encoder: crate::udp_snapshot::Encoder,
     full_checkpoints: bool,
+    encoding: crate::network_stats::EncodingStats,
 }
 impl PeerCodec {
     /// Creates the host codec for a peer the carrier admitted at `admitted`.
@@ -359,6 +360,7 @@ impl PeerCodec {
             pacer: Pacer::new(rate_bytes_per_s),
             encoder: crate::udp_snapshot::Encoder::default(),
             full_checkpoints,
+            encoding: Default::default(),
         }
     }
     /// When the carrier accepted this peer; the pacer and the hello timeout both
@@ -442,26 +444,32 @@ impl PeerCodec {
         {
             // Oversize anchors never fragment. Full checkpoints remain the recovery path.
             if let Ok(bytes) = anchor.encode() {
+                self.encoding.owner_updates += 1;
+                self.encoding.owner_bytes += bytes.len() as u64;
                 self.pacer.owner(self.elapsed(now), bytes);
             }
         }
         if frame.periodic && pending_bytes > CONGESTED_PENDING_BYTES {
+            self.encoding.skipped_world_updates += 1;
             return Ok(());
         }
         let compressed = if frame.periodic
             && !self.full_checkpoints
             && let ServerMessage::Snapshot(state) = frame.message()
         {
-            self.encoder.snapshot(
-                state.input_epoch,
-                &crate::snapshot_codec::encode_player_message(frame.message()),
-            )?
+            let raw = crate::snapshot_codec::encode_player_message(frame.message());
+            self.encoding.raw_world_bytes += raw.len() as u64;
+            self.encoder.snapshot(state.input_epoch, &raw)?
         } else {
             frame.compressed().to_vec()
         };
         let revision = self.next_revision()?;
         let frames = packets(revision, !frame.periodic, &compressed)?;
         if frame.periodic {
+            self.encoding.world_updates += 1;
+            self.encoding.framed_world_bytes += frames.iter().map(|p| p.len() as u64).sum::<u64>();
+            self.encoding.independent_bytes = self.encoder.full_bytes;
+            self.encoding.selected_bytes = self.encoder.sent_bytes;
             self.pacer.world(self.elapsed(now), frames);
         } else {
             self.pacer
@@ -615,7 +623,8 @@ impl HostPeer {
         if self.seat.is_some()
             && now.saturating_duration_since(self.last_delivery_report) >= Duration::from_secs(1)
         {
-            let stats = self.codec.pacer.stats(self.codec.elapsed(now));
+            let mut stats = self.codec.pacer.stats(self.codec.elapsed(now));
+            stats.encoding = Some(self.codec.encoding.clone());
             self.codec.send(
                 &Outbound::new(ServerMessage::DeliveryStats(stats)),
                 now,

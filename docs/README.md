@@ -18,6 +18,7 @@ design decisions for their named revision, not current API guarantees.
 | Implemented live rules and assumptions | [Referee rules](referee-rules.md) |
 | Standalone gameplay and its live integration | [Gameplay](gameplay.md) |
 | App automation, headless rendering and screenshots | [Console](console.md) |
+| Packet metadata and local channel diagnostics | [Network tracing](network-tracing.md) |
 | Network trials and diagnostics | [Harness and stats](network-harness-and-stats.md) |
 | Asset contracts and composition | [Semantic assets](semantic-assets.md) |
 | Reproducible simplification and installation | [Field detail](field-detail.md) |

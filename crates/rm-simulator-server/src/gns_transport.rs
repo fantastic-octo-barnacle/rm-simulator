@@ -66,7 +66,11 @@ fn send<S: IsReady>(
     connection: GnsConnection,
     bytes: Vec<u8>,
     reliable: bool,
+    observer: &crate::network_trace::Observer,
+    peer: Option<u32>,
 ) -> io::Result<()> {
+    observer.packet("submit_native", peer, &bytes);
+    let length = bytes.len();
     let flags = if reliable {
         SendFlags::RELIABLE | SendFlags::NO_NAGLE
     } else {
@@ -80,7 +84,15 @@ fn send<S: IsReady>(
         Ok(_) => {}
         // NO_DELAY may discard a congested periodic fragment. The next
         // independent snapshot repairs that loss without disconnecting.
-        Err(gns::GnsError::Api(gns::sys::EResult::k_EResultIgnored)) if !reliable => {}
+        Err(gns::GnsError::Api(gns::sys::EResult::k_EResultIgnored)) if !reliable => {
+            observer.record(crate::network_trace::Event {
+                stage: "discard_native",
+                kind: "unreliable",
+                bytes: Some(length),
+                peer,
+                ..Default::default()
+            });
+        }
         Err(error) => return Err(io_error(error)),
     }
     Ok(())
@@ -195,6 +207,8 @@ fn serve(
     handle: &HostHandle,
     stop: &Stop,
 ) -> io::Result<()> {
+    let observer =
+        crate::network_trace::Observer::new("gns-host", crate::clock::TimeSource::system());
     let mut peers = BTreeMap::<GnsConnection, HostPeer>::new();
     let result = (|| {
         while !stop.wait(POLL) {
@@ -242,7 +256,11 @@ fn serve(
                 let Some(peer) = peers.get_mut(&connection) else {
                     continue;
                 };
-                if let Err(error) = peer.deliver(message.payload(), Instant::now()) {
+                observer.packet("receive", peer.client_id(), message.payload());
+                let started = Instant::now();
+                let result = peer.deliver(message.payload(), started);
+                observer.work("host_decode_submit", started.elapsed());
+                if let Err(error) = result {
                     remove(&socket, &mut peers, connection, &error.to_string());
                 }
             }
@@ -260,14 +278,21 @@ fn serve(
                 }
                 // Limit work per peer, including native pending bytes. Never move
                 // an unbounded application backlog into the library's send buffer.
+                let started = Instant::now();
                 let result = backlog(&socket, connection)
-                    .and_then(|pending| peer.pump(Instant::now(), pending, 16, 16));
+                    .and_then(|pending| peer.pump(started, pending, 16, 16));
+                observer.work("host_encode_pace", started.elapsed());
                 match result {
                     Ok(()) => {
                         for packet in peer.take_outgoing() {
-                            if let Err(error) =
-                                send(&socket, connection, packet.bytes, packet.reliable)
-                            {
+                            if let Err(error) = send(
+                                &socket,
+                                connection,
+                                packet.bytes,
+                                packet.reliable,
+                                &observer,
+                                peer.client_id(),
+                            ) {
                                 closing.push((connection, error.to_string()));
                                 break;
                             }
@@ -353,7 +378,10 @@ impl Client {
         let connection = socket.connection();
         configure(global, connection)?;
         let stop = Stop::default();
-        let inbox = Arc::new(ClientInbox::default());
+        let inbox = Arc::new(ClientInbox::for_transport(
+            "gns",
+            crate::clock::TimeSource::system(),
+        ));
         let (outbox, commands) =
             mpsc::sync_channel::<Option<QueuedCommand>>(CLIENT_COMMAND_CAPACITY);
         let (welcome_tx, welcome_rx) = mpsc::sync_channel(1);
@@ -366,7 +394,7 @@ impl Client {
             .name("rm-gns-client".into())
             .spawn(move || {
                 let result = (|| {
-                    send(&socket, connection, hello, true)?;
+                    send(&socket, connection, hello, true, &incoming.observer, None)?;
                     let mut codec = ClientCodec::new(
                         epoch,
                         crate::pacing::configured_rate("RM_NET_UP_KIB_S", crate::pacing::upstream_default()),
@@ -388,7 +416,11 @@ impl Client {
                             }
                         }
                         for message in socket.receive_messages::<256>().map_err(io_error)? {
-                            match codec.receive(message.payload(), Instant::now())? {
+                            incoming.observer.packet("receive", None, message.payload());
+                            let started = Instant::now();
+                            let decoded = codec.receive(message.payload(), started);
+                            incoming.observer.work("client_decode", started.elapsed());
+                            match decoded? {
                                 Some(ClientEvent::Welcome(welcome)) => {
                                     welcome_tx.try_send(Ok(*welcome)).map_err(io_error)?
                                 }
@@ -445,13 +477,19 @@ impl Client {
                             {
                                 return Err(io_error("GNS command backlog"));
                             }
-                            codec.submit(queued, Instant::now())?;
+                            if let Some(command) = queued.command {
+                                incoming.observer.client("dequeue", None, &ClientMessage::Command(command), None);
+                            }
+                            let started = Instant::now();
+                            let result = codec.submit(queued, started);
+                            incoming.observer.work("client_encode", started.elapsed());
+                            result?;
                         }
                         for _ in 0..16 {
                             let Some(packet) = codec.next(Instant::now())? else {
                                 break;
                             };
-                            send(&socket, connection, packet.bytes, packet.reliable)?;
+                            send(&socket, connection, packet.bytes, packet.reliable, &incoming.observer, None)?;
                         }
                     }
                     Ok(())
@@ -676,6 +714,8 @@ mod tests {
                 connection,
                 serde_json::to_vec(&message).unwrap(),
                 true,
+                &crate::network_trace::Observer::new("test", crate::clock::TimeSource::system()),
+                None,
             )
             .unwrap();
         }

@@ -148,3 +148,8 @@ a spectator or referee.
 The typed `ConsoleCommand` handler runs on the app thread independently of
 socket parsing. A future in-game console can translate text into these commands
 and use the same completion handling.
+
+The `state` reply includes `network.trace`: cumulative stage/class counters,
+trace path, dropped observations, contention and writer errors. Host-produced
+snapshot/owner byte counters are under `network.downstream_queues.encoding`.
+See [network tracing](network-tracing.md) for recording and accounting details.

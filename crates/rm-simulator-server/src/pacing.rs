@@ -17,6 +17,9 @@ pub struct Datagram {
 /// Queue occupancy and service for control, owner and world classes, in that order.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct QueueStats {
+    /// Optional host encoding counters; older senders omit them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<crate::network_stats::EncodingStats>,
     /// Bytes awaiting transport submission in each class, including pending world data.
     pub queued_bytes: [usize; 3],
     /// Age in milliseconds of each class's oldest queued packet; zero when empty.
@@ -108,6 +111,7 @@ impl Pacer {
         let age =
             |at: Option<Duration>| at.map_or(0., |at| now.saturating_sub(at).as_secs_f64() * 1000.);
         QueueStats {
+            encoding: None,
             queued_bytes: [
                 control_bytes,
                 owner_bytes,

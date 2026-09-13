@@ -338,6 +338,7 @@ impl Host {
                     next_snapshot_id: 1,
                     next_hit_id: 1,
                     clock: None,
+                    observer: crate::network_trace::Observer::new("simulation", time.clone()),
                     time,
                     control: control.clone(),
                 };
@@ -421,6 +422,7 @@ impl Clock {
     }
 }
 struct Owner {
+    observer: crate::network_trace::Observer,
     simulation: Simulation,
     peers: Vec<Peer>,
     next_id: u32,
@@ -583,12 +585,14 @@ impl Owner {
         self.peers.iter().map(|peer| peer.info.clone()).collect()
     }
     fn broadcast(&self, message: ServerMessage) {
+        self.observer.server("host_publish", &message);
         let message = Arc::new(Outbound::new(message));
         for peer in &self.peers {
             peer.push(message.clone(), false);
         }
     }
     fn send_to(&self, id: u32, message: ServerMessage) {
+        self.observer.server("host_publish", &message);
         if let Some(peer) = self.peers.iter().find(|peer| peer.info.client_id == id) {
             peer.push(Arc::new(Outbound::new(message)), false);
         }
@@ -601,6 +605,7 @@ impl Owner {
     ) -> T {
         let epoch = self.simulation.input_epoch();
         let peers = &self.peers;
+        let observer = &self.observer;
         let next_hit_id = &mut self.next_hit_id;
         run(&mut self.simulation, &mut |hit| {
             let event_id = *next_hit_id;
@@ -610,6 +615,7 @@ impl Owner {
                 event_id,
                 hit: hit.clone(),
             }));
+            observer.server("host_publish", frame.message());
             for peer in peers {
                 peer.push(frame.clone(), false);
             }
@@ -648,6 +654,7 @@ impl Owner {
             }
         }
         let mut outbound = Outbound::new(ServerMessage::Snapshot(Box::new(state)));
+        self.observer.server("host_publish", outbound.message());
         outbound.periodic = true;
         let frame = Arc::new(outbound);
         for peer in &self.peers {
@@ -771,6 +778,12 @@ impl Owner {
         }
     }
     fn client_message(&mut self, id: u32, message: ClientMessage) {
+        self.observer.client(
+            "host_receive",
+            Some(id),
+            &message,
+            Some(self.simulation.field().time_ns()),
+        );
         let Some(peer) = self.peers.iter().find(|peer| peer.info.client_id == id) else {
             return;
         };
@@ -860,6 +873,16 @@ impl Owner {
                 let result = refused.map_or_else(
                     || self.apply(command).map(|_| ()),
                     |reason| Err(reason.into()),
+                );
+                self.observer.client(
+                    if result.is_ok() {
+                        "host_accept"
+                    } else {
+                        "host_reject"
+                    },
+                    Some(id),
+                    &ClientMessage::Command(command),
+                    Some(self.simulation.field().time_ns()),
                 );
                 if authorized
                     && result.is_ok()
