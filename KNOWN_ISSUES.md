@@ -76,6 +76,41 @@ outcomes does not make a one-second confirmation delay playable. Queue-wait drop
 were observed in the constrained trials, but the contribution of each application
 and native transport queue still needs measurement.
 
+### Matched short blackout trial after bandwidth integration
+
+The failure also occurs in the baseline. A matched real-UDP two-client trial
+used baseline `3a41fcc` (protocol 27) and the integrated bandwidth changes at
+`5c4891a` (protocol 29), both with the same event measurement instrumentation
+subsequently committed as `f31160e`. Each run used seed 2026, 1 s warmup,
+12 s active and 3 s recovery. One client had a clean link; the other had 35 ms
+per-direction delay plus up to 15 ms jitter, 2% loss, downstream reordering and
+duplication, and a 500 ms blackout starting at 3 s. Movement was released during
+the blackout; firing resumed afterward. Setup and warmup were unimpaired.
+
+| Impaired-client metric | Baseline | Integrated |
+|---|---:|---:|
+| Unresolved shot outcomes | 6 | 7 |
+| Longest complete-checkpoint arrival interval | 593 ms | 590 ms |
+| Per-shot confirmation p95 | 157 ms | 170 ms |
+| Presentation underruns | 10 | 10 |
+
+Both runs failed the zero-unresolved-outcomes gate. Counts remained 6 and 7 at
+the final recovery sample; both healthy clients had zero unresolved outcomes.
+No event-history samples were lost. The evidence establishes an existing
+blackout-recovery failure, but one run per build cannot establish whether the
+one-outcome difference is meaningful or identify the cause. An unresolved local
+outcome does not by itself establish that an authoritative hit was lost.
+
+This is **not a blocker to continuing the remaining bandwidth trials**. Keep
+NET-003 open and preserve the failed gate; reproducing it on the baseline does
+not turn either trial into a pass or establish impaired-link acceptance. The
+hit-focused trial, reconnect/setup-loss coverage and broader recovery validation
+remain outstanding.
+
+Raw artifacts remain outside Git in `/tmp/rm-short-two-client-blackout-baseline`
+and `/tmp/rm-short-two-client-blackout-run`; each contains the scenario, binary
+hashes, samples and summary. They are local captures, not permanent report URLs.
+
 Use the new traces to locate backlog, then test traffic reduction and pacing
 changes under bandwidth caps, loss, jitter and blackouts. Keep reliable outcomes
 ordered and preserve world-update progress. Repeat across seeds and client counts;
