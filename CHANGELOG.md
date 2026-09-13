@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- Fix intermittent native release validation failures by waiting for deferred
+  UDP socket cleanup, isolating lobby tests from process-wide packet impairment,
+  and giving the TCP backpressure test a separate deadline after admission.
+
 - Drop Intel macOS from native validation and release packages. Supported release
   targets are Windows x64, Linux x64 and macOS Apple Silicon.
 

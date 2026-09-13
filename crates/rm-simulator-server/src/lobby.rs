@@ -302,6 +302,9 @@ mod tests {
 
     #[test]
     fn password_admission_covers_both_transports_and_owner_bypass() {
+        let _serial = crate::net::NATIVE_TEST
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         for transport in [Transport::Tcp, Transport::Gns] {
             let simulation = Simulation::new(Field::new(&FieldConfig::default()).unwrap(), true)
                 .with_password("secret".into());

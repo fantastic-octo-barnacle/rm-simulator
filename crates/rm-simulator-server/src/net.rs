@@ -29,6 +29,11 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Serialize native GNS tests, including lobby admission, because packet loss
+/// and lag configuration affect every GNS socket in this process.
+#[cfg(test)]
+pub(crate) static NATIVE_TEST: Mutex<()> = Mutex::new(());
+
 /// Gameplay transport. TCP remains available for protocol tools and comparisons.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Transport {
@@ -2085,9 +2090,13 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(server.peer_count(), 1);
+        // Give backpressure its own deadline after admission. Yield between
+        // broadcasts so the producer cannot starve the socket writer on CI.
+        let deadline = Instant::now() + Duration::from_secs(20);
         // Never read: the socket fills, then the outbox, then the peer goes.
         while server.peer_count() == 1 && Instant::now() < deadline {
             server.broadcast_snapshot();
+            thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(server.peer_count(), 0);
         drop(stream);
