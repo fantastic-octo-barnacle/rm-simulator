@@ -47,6 +47,9 @@ jobs:
       CARGO_TERM_COLOR: always
       CARGO_PROFILE_RELEASE_DEBUG: '0'
       CARGO_INCREMENTAL: '0'
+      # The static GNS library and Steam DLL import library collide on MSVC.
+      # Windows tests cover the shipped standalone build; check Steam separately.
+      TEST_FEATURES: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '--no-default-features' || '--all-features' }}
       RELEASE_VERSION: ${{ inputs.version }}
       RELEASE_CHANNEL: ${{ inputs.channel }}
       RELEASE_NUMBER: ${{ inputs.number }}
@@ -62,7 +65,10 @@ jobs:
         run: cargo build --release --locked -p rm-simulator-app -p rm-simulator-server
       - name: Compile workspace tests
         if: inputs.validate
-        run: cargo test --release --workspace --all-features --locked --no-run
+        run: cargo test --release --workspace "$TEST_FEATURES" --locked --no-run
+      - name: Check optional Steam code on Windows
+        if: inputs.validate && runner.os == 'Windows'
+        run: cargo check --release --workspace --all-targets --all-features --locked
       - name: Clippy with all features and targets
         if: inputs.validate && runner.os == 'Linux'
         run: cargo clippy --release --workspace --all-targets --all-features --locked -- -D warnings
@@ -101,6 +107,9 @@ jobs:
       CARGO_TERM_COLOR: always
       CARGO_PROFILE_RELEASE_DEBUG: '0'
       CARGO_INCREMENTAL: '0'
+      # The static GNS library and Steam DLL import library collide on MSVC.
+      # Windows tests cover the shipped standalone build; check Steam separately.
+      TEST_FEATURES: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '--no-default-features' || '--all-features' }}
       RELEASE_VERSION: ${{ inputs.version }}
       RELEASE_CHANNEL: ${{ inputs.channel }}
       RELEASE_NUMBER: ${{ inputs.number }}
@@ -122,7 +131,7 @@ jobs:
         run: cargo build --release --locked -p rm-simulator-app -p rm-simulator-server
       - name: Test workspace
         if: inputs.validate
-        run: cargo test --release --workspace --all-features --locked
+        run: cargo test --release --workspace "$TEST_FEATURES" --locked
       - name: Verify field with the real loader
         if: inputs.package
         run: cargo run --release --locked -p rm-simulator-server --example inspect_assets -- dist/field

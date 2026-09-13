@@ -4,6 +4,11 @@
 
 ## Unreleased
 
+- Unblock standalone Windows release validation by testing without the optional
+  Steam feature, whose native library conflicts with static GameNetworkingSockets
+  on MSVC. Keep an all-feature compile check on Windows and all-feature tests on
+  Linux and macOS; Steam-enabled Windows linking remains unsupported.
+
 - Version the approved runtime field in Git LFS, preserving the upstream CAD
   ownership notice and import provenance. Check file hashes and LFS pointers in
   lightweight CI, hydrate the package for native tests and releases, and stage

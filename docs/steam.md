@@ -19,6 +19,17 @@ Debug builds use Spacewar's ID 480 when neither is set. Release builds have no
 fallback ID. For distribution, supply your application's ID; the packaging script
 requires `--development` to accept 480 and never includes `steam_appid.txt`.
 
+## Windows limitation
+
+The current Steam-enabled app does not link on Windows MSVC. The static
+GameNetworkingSockets library and `steam_api64.lib` define overlapping
+`SteamAPI_*` networking symbols, producing LNK2005 and LNK1169 errors.
+The standalone Windows release does not enable Steam and builds successfully.
+Native CI runs its workspace tests without optional features on Windows and
+checks all-feature code with `cargo check`, which does not link an executable.
+Linux and macOS retain all-feature tests. A Windows Steam package requires
+resolving the native library collision first.
+
 ## Build and stage the runtime
 
 This script stages the executable and Steam runtime for development and local
