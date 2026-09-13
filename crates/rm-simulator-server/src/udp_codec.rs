@@ -442,7 +442,7 @@ impl PeerCodec {
         {
             // Oversize anchors never fragment. Full checkpoints remain the recovery path.
             if let Ok(bytes) = anchor.encode() {
-                self.pacer.owner(bytes);
+                self.pacer.owner(self.elapsed(now), bytes);
             }
         }
         if frame.periodic && pending_bytes > CONGESTED_PENDING_BYTES {
@@ -494,6 +494,7 @@ pub struct HostPeer {
     seat: Option<(u32, outbox::Receiver)>,
     welcome: Option<Welcome>,
     outgoing: Vec<Datagram>,
+    last_delivery_report: Instant,
 }
 impl HostPeer {
     /// `admitted` is when the carrier accepted this peer; the hello timeout and
@@ -510,6 +511,7 @@ impl HostPeer {
             seat: None,
             welcome: None,
             outgoing: Vec::new(),
+            last_delivery_report: admitted,
         }
     }
     /// When the carrier accepted this peer.
@@ -555,7 +557,10 @@ impl HostPeer {
                     return Err(io_error("expected hello"));
                 };
                 if protocol != crate::protocol::PROTOCOL_VERSION {
-                    return Err(io_error("incompatible protocol"));
+                    return Err(io_error(crate::protocol::version_mismatch(
+                        crate::protocol::PROTOCOL_VERSION,
+                        protocol,
+                    )));
                 }
                 self.join(name, team, role, password)
             }
@@ -606,6 +611,17 @@ impl HostPeer {
                 };
                 self.codec.send(&frame, now, pending_bytes)?;
             }
+        }
+        if self.seat.is_some()
+            && now.saturating_duration_since(self.last_delivery_report) >= Duration::from_secs(1)
+        {
+            let stats = self.codec.pacer.stats(self.codec.elapsed(now));
+            self.codec.send(
+                &Outbound::new(ServerMessage::DeliveryStats(stats)),
+                now,
+                pending_bytes,
+            )?;
+            self.last_delivery_report = now;
         }
         for _ in 0..datagrams {
             let Some(packet) = self.codec.next(now)? else {
@@ -738,10 +754,10 @@ impl ClientCodec {
             while self.recent_inputs.len() > 32 {
                 self.recent_inputs.pop_front();
             }
-            self.pacer.owner(input_batch(&select_inputs(
-                &self.recent_inputs,
-                self.history_limit,
-            ))?);
+            self.pacer.owner(
+                self.elapsed(now),
+                input_batch(&select_inputs(&self.recent_inputs, self.history_limit))?,
+            );
             return Ok(());
         }
         if queued.confirmation.is_none()

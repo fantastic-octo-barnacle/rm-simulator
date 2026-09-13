@@ -279,7 +279,7 @@ fn talk(
                 write_message(
                     &mut stream,
                     &ServerMessage::Rejected {
-                        reason: format!("protocol {protocol} is not {PROTOCOL_VERSION}"),
+                        reason: crate::protocol::version_mismatch(PROTOCOL_VERSION, protocol),
                     },
                 )?;
                 return Ok(());
@@ -357,8 +357,10 @@ fn write_all_lines(stream: &mut TcpStream, inbox: &outbox::Receiver) -> io::Resu
 struct Incoming {
     transport_stats: Option<crate::network_stats::TransportStats>,
     host_telemetry: Option<crate::network_stats::HostTelemetry>,
+    delivery_stats: Option<crate::pacing::QueueStats>,
     owner_anchor: Option<crate::owner_stream::OwnerAnchor>,
     shot_results: Vec<crate::protocol::ShotResult>,
+    hits: Vec<(u64, u64, rm_simulator_world::ArmorHit)>,
     scheduled_shots: Vec<(u32, u64, u64)>,
     finished_shots: Vec<(u32, u64, Option<String>)>,
     snapshot: Option<Box<SimulationState>>,
@@ -406,6 +408,21 @@ impl ClientInbox {
             ));
         }
         let replaced = match message {
+            ServerMessage::DeliveryStats(stats) => {
+                data.delivery_stats = Some(stats);
+                None
+            }
+            ServerMessage::Hit {
+                epoch,
+                event_id,
+                hit,
+            } => {
+                if data.hits.len() >= CLIENT_NOTICE_CAPACITY {
+                    return Err(io::Error::other("too many unread hit events"));
+                }
+                data.hits.push((epoch, event_id, hit));
+                None
+            }
             ServerMessage::Telemetry(stats) => {
                 data.host_telemetry = Some(stats);
                 None
@@ -517,6 +534,7 @@ pub struct Client {
     timing: ClientTiming,
     transport_stats: Option<crate::network_stats::TransportStats>,
     host_telemetry: Option<crate::network_stats::HostTelemetry>,
+    delivery_stats: Option<crate::pacing::QueueStats>,
     owner_anchor: Option<crate::owner_stream::OwnerAnchor>,
     outbox: SyncSender<Option<QueuedCommand>>,
     inbox: Arc<ClientInbox>,
@@ -614,6 +632,7 @@ impl Client {
             timing: ClientTiming::default(),
             transport_stats: None,
             host_telemetry: None,
+            delivery_stats: None,
             owner_anchor: None,
             acknowledged: 0,
         };
@@ -718,6 +737,9 @@ impl Client {
             return;
         };
         self.acknowledged = data.acknowledged;
+        if let Some(stats) = data.delivery_stats.take() {
+            self.delivery_stats = Some(stats);
+        }
         if let Some(stats) = data.host_telemetry.take() {
             let initial = self.initial_input_lead_ns();
             self.timing.input_lead.observe(stats, initial);
@@ -771,6 +793,17 @@ impl Client {
         self.inbox.try_data().map_or_else(Vec::new, |mut data| {
             std::mem::take(&mut data.scheduled_shots)
         })
+    }
+    /// Latest host downstream queue report, absent for TCP and embedded peers.
+    pub fn delivery_stats(&self) -> Option<&crate::pacing::QueueStats> {
+        self.delivery_stats.as_ref()
+    }
+    /// Drain reliable contact events as `(epoch, event id, scored contact)` in
+    /// host order. Snapshot coalescing never replaces these events.
+    pub fn take_hits(&self) -> Vec<(u64, u64, rm_simulator_world::ArmorHit)> {
+        self.inbox
+            .try_data()
+            .map_or_else(Vec::new, |mut data| std::mem::take(&mut data.hits))
     }
     /// Drain executed or rejected shot results, oldest first.
     pub fn take_shot_results(&self) -> Vec<crate::protocol::ShotResult> {
@@ -1126,6 +1159,7 @@ impl Client {
             timing: ClientTiming::new(time),
             transport_stats: None,
             host_telemetry: None,
+            delivery_stats: None,
             owner_anchor: None,
             outbox,
             inbox: leg.inbox.clone(),
@@ -1641,6 +1675,7 @@ mod tests {
                 timing: ClientTiming::default(),
                 transport_stats: None,
                 host_telemetry: None,
+                delivery_stats: None,
                 owner_anchor: None,
                 acknowledged: 0,
             },

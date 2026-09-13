@@ -439,11 +439,16 @@ fn chassis_appearance(chassis: &ChassisSnapshot, flash: &[bool]) -> ChassisAppea
 /// detected armor hits keep the grey strike flash for `hit_flash_ns`, an app
 /// setting rather than a rule constant.
 pub fn publish_scene(
-    session: Res<Session>,
+    mut session: ResMut<Session>,
     drive: Option<Res<Drive>>,
     mut input: ResMut<SceneInput>,
     capture: Option<Res<crate::screenshot::ScreenshotRequest>>,
 ) {
+    if capture.is_none() {
+        let now = session.time.now();
+        let duration_ns = session.flash.hit_flash_ns;
+        session.hit_feedback.present(now, duration_ns);
+    }
     let visual = session.visual_snapshot();
     let snapshot = &visual;
     let live_presentation = capture.is_none();
@@ -454,11 +459,19 @@ pub fn publish_scene(
     } else {
         snapshot.time_ns
     };
-    let mut scene = scene_state_at(snapshot, session.flash, time_ns);
+    let hits: Vec<_> = if live_presentation {
+        session
+            .hit_feedback
+            .visible(session.time.now(), session.flash.hit_flash_ns)
+            .collect()
+    } else {
+        flashing(snapshot, session.flash.hit_flash_ns).collect()
+    };
+    let mut scene = scene_state_with_hits(snapshot, session.flash, time_ns, &hits);
     let own = drive.map(|drive| drive.chassis_id);
     let mut armor_flash: HashMap<u32, [bool; rm_simulator_world::chassis::ARMOR_COUNT]> =
         HashMap::new();
-    for hit in flashing(snapshot, session.flash.hit_flash_ns) {
+    for hit in &hits {
         if let ArmorTarget::Chassis { chassis, plate } = hit.target
             && let Some(flag) = armor_flash
                 .entry(chassis)
@@ -546,14 +559,25 @@ fn scene_state(snapshot: &FieldSnapshot, flash: FlashSettings) -> SceneState {
     scene_state_at(snapshot, flash, snapshot.time_ns)
 }
 
+#[cfg(test)]
 fn scene_state_at(
     snapshot: &FieldSnapshot,
     flash: FlashSettings,
     presentation_ns: u64,
 ) -> SceneState {
+    let hits: Vec<_> = flashing(snapshot, flash.hit_flash_ns).collect();
+    scene_state_with_hits(snapshot, flash, presentation_ns, &hits)
+}
+
+fn scene_state_with_hits(
+    snapshot: &FieldSnapshot,
+    flash: FlashSettings,
+    presentation_ns: u64,
+    hits: &[&ArmorHit],
+) -> SceneState {
     let mut rune_flash: HashMap<u32, [bool; 5]> = HashMap::new();
     let mut outpost_flash: HashMap<u32, [bool; outpost::FACE_COUNT]> = HashMap::new();
-    for hit in flashing(snapshot, flash.hit_flash_ns) {
+    for hit in hits {
         match hit.target {
             ArmorTarget::Rune { rune, blade } => {
                 if let Some(flag) = rune_flash.entry(rune).or_default().get_mut(blade as usize) {
@@ -582,7 +606,7 @@ fn scene_state_at(
                 disabled: base.hp == 0,
                 plates: std::array::from_fn(|plate| pose_flu(base.pose(plate, presentation_ns))),
                 hit_flash: std::array::from_fn(|plate| {
-                    flashing(snapshot, flash.hit_flash_ns).any(|hit| {
+                    hits.iter().any(|hit| {
                         hit.target
                             == ArmorTarget::Base {
                                 base: index as u32,

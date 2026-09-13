@@ -16,7 +16,23 @@ use std::io::{self, BufRead, Read, Write};
 /// Version 25 adds host-enforced lobby passwords to Hello.
 /// Version 26 adds per-pilot weapon updates, separate host caps, seeded angular
 /// spread, speed variation and actual launch-speed feedback.
-pub const PROTOCOL_VERSION: u32 = 26;
+/// Version 27 delivers authoritative armor contacts independently of snapshots.
+pub const PROTOCOL_VERSION: u32 = 27;
+
+/// Explains incompatible host and client wire versions and how to resolve them.
+///
+/// ```
+/// use rm_simulator_server::protocol::version_mismatch;
+/// let message = version_mismatch(27, 26);
+/// assert!(message.contains("host protocol 27, your protocol 26"));
+/// assert!(message.contains("Update both games"));
+/// ```
+pub fn version_mismatch(host: u32, client: u32) -> String {
+    format!(
+        "Version mismatch: host protocol {host}, your protocol {client}. Update both games to the same version."
+    )
+}
+
 /// Default listen port for the game transport, TCP and UDP.
 pub const DEFAULT_PORT: u16 = 7700;
 /// Default listen port for the referee HTTP panel.
@@ -757,6 +773,18 @@ pub struct ShotResult {
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ServerMessage {
+    /// Host downstream application queues sampled independently of input execution.
+    DeliveryStats(crate::pacing::QueueStats),
+    /// Ordered authoritative contact feedback. Native reliable delivery retries
+    /// this event independently of replaceable world snapshots.
+    Hit {
+        /// Input epoch at detection; events cannot cross pause/reset boundaries.
+        epoch: u64,
+        /// Monotonic event identity for this host connection, never reused.
+        event_id: u64,
+        /// Scored contact, including projectile, shooter, target and simulation time.
+        hit: rm_simulator_world::ArmorHit,
+    },
     /// Local diagnostics for the sender's connection. Missing native
     /// measurements stay missing rather than being reported as zero.
     Telemetry(crate::network_stats::HostTelemetry),

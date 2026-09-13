@@ -4,6 +4,24 @@
 
 ## Unreleased
 
+- Stream scored contacts during simulation advancement so long manual steps
+  cannot discard reliable hit feedback when snapshot history expires.
+
+- Disable incompatible lobby rows and show actionable version mismatch errors
+  when connecting directly, including to the first release.
+
+- Deliver confirmed armor-hit feedback independently of replaceable world
+  snapshots and time each flash from receipt. Require matching protocol 27 builds.
+- Sample current aim for every shot, submit prediction after controls, and acquire
+  auto-aim targets from displayed poses. Report why auto-fire waits and stop it
+  on stale target observations.
+- Raise the default LAN allowances to 512 KiB/s downstream and 64 KiB/s
+  upstream per peer, retain the
+  40 KiB/s `limited` profile, bound packet bypass to preserve world progress,
+  expose host queue diagnostics, and recover interpolation delay faster.
+- Repair console capture across OS focus transitions and make the direct network
+  trial fail unless the robot moves and rounds actually launch.
+
 - Keep closed-PR metadata checks from cancelling main CI, and explicitly fetch
   PR commits before validating their messages after branch updates.
 

@@ -527,15 +527,20 @@ mod tests {
 }
 
 fn window_focus(
+    automation: Option<Res<crate::console::ConsoleInputs>>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut ui: ResMut<HudState>,
 ) {
-    let unfocused = windows
-        .iter()
-        .any(|window| window.visible && !window.focused);
+    let captured = automation.is_some_and(|input| input.captured);
+    let unfocused = !captured
+        && windows
+            .iter()
+            .any(|window| window.visible && !window.focused);
     if ui.unfocused != unfocused {
         ui.unfocused = unfocused;
-        ui.consumed = true;
+        if !captured {
+            ui.consumed = true;
+        }
     }
 }
 

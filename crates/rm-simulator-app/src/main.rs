@@ -20,6 +20,7 @@ mod debug;
 mod debug_panel;
 mod frames;
 mod graphics;
+mod hit_feedback;
 mod hud;
 mod interpolation;
 mod loading;
@@ -139,18 +140,20 @@ fn main() -> AppExit {
             hud::sync_menus.after(mouse_capture).after(hud::menu_input),
         )
         .add_systems(Startup, scene::setup_camera)
-        // Refresh the world, then sample the camera before drive and fire. A shot
-        // uses the aim displayed this frame. The capturing click still cannot fire.
+        // Poll, sample mouse/assist, submit controls and shots, then exchange
+        // prediction and place the physical camera. A capturing click cannot fire.
         .add_systems(
             Update,
             (
                 advance_world,
-                drive_camera.run_if(resource_exists::<Drive>),
+                controls::sample_drive_aim.run_if(resource_exists::<Drive>),
                 fly_camera.run_if(not(resource_exists::<Drive>)),
                 auto_aim::update,
                 drive_chassis.run_if(resource_exists::<Drive>),
                 session::advance_shots,
                 fire_gun,
+                session::predict_frame,
+                drive_camera.run_if(resource_exists::<Drive>),
                 publish_scene,
             )
                 .chain()

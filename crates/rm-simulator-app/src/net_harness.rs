@@ -363,6 +363,61 @@ mod tests {
 
     /// 3.2 s of driving and firing over an unimpaired 30 ms round trip.
     #[test]
+    fn delayed_contact_event_and_snapshot_recovery_flash_once() {
+        let mut trace = Trace::open(
+            2026,
+            false,
+            Impairment::default(),
+            Impairment {
+                delay: Duration::from_millis(100),
+                ..Default::default()
+            },
+        );
+        let snapshot = trace.handle.snapshot().unwrap();
+        let plate = snapshot.outposts[0].armors[0].pose;
+        let rotation = crate::frames::dquat(plate.rotation_wxyz);
+        let muzzle = rm_simulator_world::Pose {
+            translation_m: (bevy::math::DVec3::from_array(plate.translation_m)
+                + rotation * bevy::math::DVec3::X * 0.05)
+                .to_array(),
+            rotation_wxyz: crate::frames::wxyz(
+                rotation * bevy::math::DQuat::from_rotation_z(std::f64::consts::PI),
+            ),
+        };
+        trace
+            .handle
+            .apply(&Command::SpawnProjectile {
+                muzzle,
+                shot: rm_simulator_world::Shot {
+                    caliber: rm_simulator_world::Caliber::Mm17,
+                    speed_m_s: 20.,
+                },
+            })
+            .unwrap();
+        let mut flashes = 0;
+        let mut was_visible = false;
+        for _ in 0..400 {
+            trace.step(|session, _| session.poll().unwrap());
+            let visible = trace
+                .session
+                .hit_feedback
+                .visible(trace.clock.now(), 50_000_000)
+                .next()
+                .is_some();
+            if visible && !was_visible {
+                flashes += 1;
+            }
+            was_visible = visible;
+        }
+        assert!(trace.handle.snapshot().unwrap().hits_detected > snapshot.hits_detected);
+        assert_eq!(
+            flashes, 1,
+            "reliable event and snapshot recovery share one flash"
+        );
+        assert!(!was_visible);
+    }
+
+    #[test]
     fn a_clean_link_predicts_within_bounds_and_resolves_every_shot() {
         let mut trace = Trace::open(1, true, clean(), clean());
         let chassis = trace.chassis;

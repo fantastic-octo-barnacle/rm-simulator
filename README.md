@@ -410,7 +410,7 @@ module, and loses 20 or 200 HP from 1500 (×1.5 in the 10 mm centre square); the
 rotor stops when destroyed. Chassis armor detects the same way and costs its
 robot 10 or 100 HP (Table 5-2).
 Rune targets register only 17 mm strikes above 12 m/s inside the 300 mm
-effective disk. A struck module's lights turn grey for 50 ms
+effective disk. A struck module's lights turn grey for 50 ms after confirmed feedback arrives
 (`--hit-flash-ms`). Bullet trails and contact-point markers are not displayed.
 
 ## Referee and match
@@ -649,16 +649,35 @@ server requests. The UDP transport sends independent owner corrections and uses 
 baselines for world deltas. Set `RM_NET_FULL_CHECKPOINTS=1` on the host to compare
 full checkpoints under the same pacing. Owner and input numeric state retains f64
 precision, while shot intents use bounded compression. Application pacing defaults
-to 10 KiB/s upstream and 40 KiB/s downstream per peer. For development comparisons,
+to 64 KiB/s upstream and 512 KiB/s downstream per peer with the default LAN
+profile. Set `RM_NET_PROFILE=limited` on the host to retain the original 40 KiB/s
+downstream budget and 10 KiB/s upstream on clients using that profile. Native
+congestion control remains active. For comparisons,
 set `RM_NET_UP_KIB_S` and `RM_NET_DOWN_KIB_S` to integer values from 4 to 2048.
 Input lead adapts to host-observed arrival margins within 32–150 ms. UDP repeats
 the newest four samples plus useful older movement transitions, up to twelve
 samples in one packet. For development comparisons, `RM_NET_FIXED_INPUT_LEAD=1`
 on the client keeps the previous RTT-based lead, and `RM_NET_INPUT_HISTORY=4`
 keeps four-sample redundancy. The harness records these overrides. F3 provides automatic or manual remote
-interpolation buffering; it does not alter local input lead.
+interpolation buffering; it does not alter local input lead. Automatic buffering
+releases excess delay at up to 50 ms per second after the two-second jitter
+window improves. The console reports host downstream queue bytes, age and service
+for control, owner and world traffic.
 These application budgets exclude native retransmissions and framing; proxy rates
 remain the wire-capacity reference. Invalid overrides use the defaults.
+
+Protocol 27 sends authoritative armor contacts reliably, independently of world
+snapshots. Recent contacts recovered from snapshots also display once; repeated
+snapshots cannot restart their flash. Feedback more than 250 ms old is discarded
+instead of replayed after a long interruption. Damage and HP remain host-owned.
+Both host and clients must use matching protocol builds.
+
+Auto-aim runs locally. Acquisition follows displayed robot poses, while the impact
+solution uses the latest timestamped motion. Auto-fire requires an observation
+no more than 150 ms old at intended execution; tracking stops at 300 ms. Its HUD
+reports stale observations, motor alignment, blocked paths, weapon cadence and
+rune confirmation. Every shot samples current controls even between normal
+16 ms input refreshes.
 
 Host handles own their listeners and workers. Shutdown closes active connections,
 including incomplete handshakes and HTTP requests, and waits for workers to finish.

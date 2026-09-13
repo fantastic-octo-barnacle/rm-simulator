@@ -122,7 +122,7 @@ pub struct Gun {
     /// Shortest simulation-time gap between shots, in nanoseconds.
     pub interval_ns: u64,
     /// World time at which the next shot may leave.
-    next_shot_ns: u64,
+    pub(crate) next_shot_ns: u64,
     /// The trigger was pressed while the mouse was captured and is still held.
     trigger_held: bool,
 }
@@ -272,21 +272,16 @@ fn driving_cradle(
     gimbal_poses(pose_flu(chassis.pose), pose_flu(chassis.turret)).1
 }
 
-/// Put the gameplay camera and the pilot's eye where the presented chassis
-/// holds them: at the turret's camera block in first person, or behind and
-/// above the turret in third person. Mouse motion aims only while capture is
-/// held and no panel blocks input. Runs before `drive_chassis` and `fire_gun`,
-/// so a shot this frame uses the aim displayed this frame.
+/// Sample mouse aim and camera mode before assist and chassis input. Mouse
+/// motion applies only while capture is held and no panel blocks input.
 #[allow(clippy::too_many_arguments)]
-pub fn drive_camera(
+pub fn sample_drive_aim(
     ui: Res<HudState>,
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Option<Res<ButtonInput<MouseButton>>>,
     motion: Res<AccumulatedMouseMotion>,
-    session: Res<Session>,
     mut drive: ResMut<Drive>,
     mut player: ResMut<Player>,
-    mut camera: Single<&mut Transform, With<PlayerCamera>>,
 ) {
     if !ui.blocks_input()
         && ui
@@ -300,6 +295,17 @@ pub fn drive_camera(
         player.pitch_rad -= motion.delta.y * ui.controls.vertical_sensitivity(ui.sensitivity);
     }
     player.pitch_rad = player.pitch_rad.clamp(DRIVE_PITCH_RAD.0, DRIVE_PITCH_RAD.1);
+}
+
+/// Place the camera from the accepted predicted motor pose after this frame's
+/// mouse/assist sample and prediction exchange. Never substitute commanded aim
+/// for physical barrel orientation.
+pub fn drive_camera(
+    session: Res<Session>,
+    drive: Res<Drive>,
+    mut player: ResMut<Player>,
+    mut camera: Single<&mut Transform, With<PlayerCamera>>,
+) {
     let Some(chassis) = session.presented_chassis() else {
         return;
     };

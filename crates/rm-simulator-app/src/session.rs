@@ -48,6 +48,7 @@ struct PredictionState {
     inputs: rm_simulator_server::prediction::InputHistory,
     chassis: Option<ChassisSnapshot>,
     time_ns: u64,
+    last_frame_time_ns: u64,
     moving_frames: u64,
     held_moving_frames: u64,
     results_accepted: u64,
@@ -76,6 +77,8 @@ pub struct Session {
     /// carries it so the host aims the shot where the client did.
     pub(crate) last_input_frame: Option<rm_simulator_server::input_stream::InputFrame>,
     last_input_sent: std::time::Instant,
+    sampled_drive: Option<(u32, ChassisCommand)>,
+    pub(crate) hit_feedback: crate::hit_feedback::HitFeedback,
     next_shot_id: u64,
     /// Whether own-chassis prediction is enabled. False with `--no-prediction`
     /// and for a screenshot run, which present host state directly.
@@ -385,6 +388,7 @@ impl Session {
                 inputs: Default::default(),
                 chassis: None,
                 time_ns: 0,
+                last_frame_time_ns: 0,
                 moving_frames: 0,
                 held_moving_frames: 0,
                 results_accepted: 0,
@@ -395,6 +399,8 @@ impl Session {
             },
             shots,
             time,
+            sampled_drive: None,
+            hit_feedback: Default::default(),
             last_checkpoint: now,
             last_context: now,
             owner_anchor: None,
@@ -546,6 +552,7 @@ impl Session {
     /// the boundary carries the newest aim. Frame rate is not input rate; see
     /// the "Input" row of docs/multiplayer-networking.md.
     pub fn drive(&mut self, chassis: u32, command: ChassisCommand, transition: bool) {
+        self.sampled_drive = Some((chassis, command));
         if transition || self.input_refresh_due() {
             self.apply(Command::Chassis { chassis, command });
         }
@@ -632,6 +639,11 @@ impl Session {
     /// provisional shots. An `Err` means the embedded host failed; a remote
     /// disconnect is reported through `connection_toast` instead.
     pub fn poll(&mut self) -> Result<(), String> {
+        self.poll_inputs()?;
+        self.predict_frame();
+        Ok(())
+    }
+    fn poll_inputs(&mut self) -> Result<(), String> {
         if let Some(error) = self.host.as_ref().and_then(|host| host.server.failure()) {
             return Err(format!("embedded server failed: {error}"));
         }
@@ -737,20 +749,27 @@ impl Session {
                 .iter()
                 .any(|c| Some(c.id) != self.chassis_id),
         );
-        let previous_prediction_time_ns = self.prediction.time_ns;
-        self.update_prediction();
-        if !self.paused
-            && self
-                .prediction
-                .chassis
-                .as_ref()
-                .is_some_and(|state| state.velocity_m_s.iter().map(|v| v * v).sum::<f64>() > 0.01)
-        {
-            self.prediction.moving_frames += 1;
-            if previous_prediction_time_ns == self.prediction.time_ns {
-                self.prediction.held_moving_frames += 1;
-            }
+        let result = self
+            .prediction
+            .worker
+            .as_ref()
+            .and_then(|worker| worker.take_result());
+        self.accept_prediction(result);
+        let now = self.time.now();
+        self.hit_feedback.observe_epoch(self.input_epoch);
+        for (epoch, id, hit) in self.client.take_hits() {
+            self.hit_feedback
+                .receive(epoch, id, hit, now, self.frame_time_ns);
         }
+        if self.prediction.context_input_epoch == self.input_epoch {
+            self.hit_feedback.recover(
+                self.prediction.context_input_epoch,
+                &self.snapshot,
+                now,
+                self.frame_time_ns,
+            );
+        }
+
         let now = self.snapshot.time_ns;
         self.notices
             .retain(|(at, _)| now.saturating_sub(*at) < NOTICE_NS);
@@ -867,6 +886,16 @@ impl Session {
             inputs: self.prediction.inputs.inputs().unwrap_or_default(),
         };
         let result = worker.exchange(self.prediction.epoch, replay);
+        self.accept_prediction(result);
+    }
+    fn accept_prediction(
+        &mut self,
+        result: Option<(
+            u64,
+            rm_simulator_server::prediction::PredictionProof,
+            ChassisSnapshot,
+        )>,
+    ) {
         if result.is_some() {
             self.prediction.results_discarded += 1;
         }
@@ -918,11 +947,12 @@ impl Session {
                 proof.snapshot_id >= old.snapshot_id && proof.target_time_ns >= old.target_time_ns
             })
     }
-    /// True while a checkpoint arrived in the last 300 ms. Aim assist waits
+    /// True while a full target checkpoint arrived in the last 300 ms. Owner
+    /// anchors cannot extend enemy observation freshness. Aim assist waits
     /// for fresh observation instead of firing on stale state.
     pub fn aim_observation_fresh(&self) -> bool {
         self.client.disconnected().is_none()
-            && self.time.since(self.last_checkpoint) < std::time::Duration::from_millis(300)
+            && self.time.since(self.last_context) < std::time::Duration::from_millis(300)
     }
     /// Read-only scenery for aim-assist visibility; no reduced physics world.
     pub fn aim_geometry(&self) -> Option<rm_simulator_world::StaticGeometry> {
@@ -1012,6 +1042,7 @@ impl Session {
             "correction_position_m": correction.as_ref().and_then(|s| s.position_m),
             "correction": correction,
             "stats": self.network_stats(),
+            "downstream_queues": self.client.delivery_stats(),
             "checkpoint_gap_ms": self.time.since(self.last_checkpoint).as_secs_f64() * 1000.,
             "rtt_ms": self.client.round_trip_ns().map(|ns| ns as f64 / 1e6),
             "input_lead_ms": self.client.input_lead_ns() as f64 / 1e6,
@@ -1025,6 +1056,8 @@ impl Session {
             "prediction_backlog_ms": self.input_time_ns().saturating_sub(self.prediction.time_ns) as f64 / 1e6,
             "prediction_limited": self.prediction_limited(),
             "unresolved_shot_outcomes": self.shots.unresolved_outcomes,
+            "confirmed_launches": self.shots.confirmed_launches,
+            "hit_feedback": self.hit_feedback.diagnostics(self.time.now()),
             "rejections": self.shot_rejection_count,
             "last_rejection": self.last_shot_rejection,
         })
@@ -1171,7 +1204,7 @@ pub fn advance_world(
 }
 /// A failed poll ends the match, not the app: the title screen shows why.
 fn poll_session(session: &mut Session, commands: &mut Commands) {
-    if let Err(error) = session.poll() {
+    if let Err(error) = session.poll_inputs() {
         commands.insert_resource(crate::loading::LeaveRequest(Some(error)));
     }
 }
@@ -1197,6 +1230,30 @@ fn connection_warning(
 pub fn advance_shots(mut session: ResMut<Session>) {
     session.advance_local_shots();
 }
+/// Exchange a whole-field replay after sampling this frame's controls and shots.
+pub fn predict_frame(mut session: ResMut<Session>) {
+    session.predict_frame();
+}
+impl Session {
+    fn predict_frame(&mut self) {
+        let previous_prediction_time_ns = self.prediction.last_frame_time_ns;
+        self.update_prediction();
+        self.prediction.last_frame_time_ns = self.prediction.time_ns;
+        if !self.paused
+            && self
+                .prediction
+                .chassis
+                .as_ref()
+                .is_some_and(|state| state.velocity_m_s.iter().map(|v| v * v).sum::<f64>() > 0.01)
+        {
+            self.prediction.moving_frames += 1;
+            if previous_prediction_time_ns == self.prediction.time_ns {
+                self.prediction.held_moving_frames += 1;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn test_session(paused: bool) -> Session {
     test_session_mode(paused, false, TimeSource::system())
@@ -1469,6 +1526,36 @@ mod tests {
         );
         // The frame at the boundary carries the aim sampled for it.
         assert_eq!(sent.command.aim_yaw_rad, aim_yaw_rad);
+    }
+
+    #[test]
+    fn firing_flushes_aim_between_refreshes() {
+        let time = rm_simulator_server::clock::ManualTime::new();
+        let mut session = test_session_mode(true, false, time.source());
+        let chassis = session.chassis_id.unwrap();
+        session.drive(chassis, ChassisCommand::default(), true);
+        time.advance(std::time::Duration::from_millis(1));
+        session.drive(
+            chassis,
+            ChassisCommand {
+                aim_yaw_rad: 0.5,
+                ..Default::default()
+            },
+            false,
+        );
+        assert_eq!(session.last_input_frame.unwrap().command.aim_yaw_rad, 0.);
+        session.begin_local_shot(chassis).unwrap();
+        assert_eq!(session.last_input_frame.unwrap().command.aim_yaw_rad, 0.5);
+        assert_eq!(session.pending_shot_samples()[0].aim.aim_yaw_rad, 0.5);
+    }
+
+    #[test]
+    fn owner_updates_do_not_refresh_enemy_observations() {
+        let time = rm_simulator_server::clock::ManualTime::new();
+        let mut session = test_session_mode(true, false, time.source());
+        time.advance(std::time::Duration::from_millis(301));
+        session.last_checkpoint = time.source().now();
+        assert!(!session.aim_observation_fresh());
     }
 
     #[test]

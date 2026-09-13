@@ -71,7 +71,14 @@ Replies echo the unsigned integer ID:
 {"id":2,"ok":false,"error":"pause the simulation before stepping"}
 ~~~
 
-State replies include additional camera, chassis, role and UI fields.
+State replies include camera, chassis, role and UI fields. `ui.unfocused` and
+`ui.consumed` identify focus and one-frame input blocking. `auto_aim` reports the
+selected target/status, execution time, observation age and fire permission.
+`network.confirmed_launches` counts this client's accepted launches once, unlike
+the global `shots_fired` counter. `network.downstream_queues` reports control,
+owner and world queue bytes, oldest age in ms and cumulative bytes sent.
+`network.hit_feedback` reports event count, impact tick, receipt age and the last
+receipt-to-scene interval in ms. Scene submission does not measure GPU scanout.
 Requests are executed sequentially, including pipelined requests. There is at
 most one command in progress. Malformed requests get an error; unparsable IDs
 are returned as `null`. Unknown fields and commands are errors.
@@ -113,7 +120,7 @@ positive pitch looks up. Camera pitch follows the existing gameplay limits.
 | `mouse_button` | `button: "left"`, `"right"` or `"middle"`, `pressed: bool` | Press or release a button in gameplay and UI picking |
 | `mouse_motion` | `dx`, `dy` | Relative mouse motion in pixels; aiming requires capture and no blocking panel |
 | `cursor` | `x`, `y` | Set pointer position in logical pixels from the upper-left corner, for UI picking |
-| `capture` | `captured: bool` | Set gameplay mouse capture for automation without grabbing the OS cursor |
+| `capture` | `captured: bool` | Set gameplay mouse capture for automation without grabbing the OS cursor; explicit capture bypasses OS focus blocking until release or disconnect |
 | `release_inputs` | None | Release all console-held keys/buttons and gameplay capture |
 | `inspect` | Optional `debug_panel`, `wireframe`, `render_stats` booleans, `collision_view: "hidden"`, `"overlay"` or `"alone"` | Set runtime inspection options |
 | `world` | `command`: multiplayer protocol `Command` object | Submit a world command through the existing session, with its normal host permissions |

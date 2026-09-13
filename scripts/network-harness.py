@@ -314,7 +314,8 @@ STATS_METRICS = {'transport_loss_percent': 'loss_percent'}
 # Top-level console state fields.
 STATE_METRICS = {'pending_shots': 'pending_shots'}
 # Cumulative counters reduced to first-to-last deltas.
-NETWORK_COUNTERS = {'local_rejections_delta': 'rejections',
+NETWORK_COUNTERS = {'confirmed_launches_delta': 'confirmed_launches',
+                    'local_rejections_delta': 'rejections',
                     'unresolved_shot_outcomes_delta': 'unresolved_shot_outcomes',
                     'remote_underruns_delta': 'remote_underruns',
                     'prediction_results_discarded_delta': 'prediction_results_discarded',
@@ -334,7 +335,7 @@ AVAILABILITY = {'same_tick_correction_error': ('correction_position_m',),
                 'collision_context_age': ('collision_context_age_ms',)}
 # No source publishes these at all; they stay unavailable regardless of the run.
 NEVER_COLLECTED = ('hit_disagreement', 'input_to_photon_latency',
-                   'per_client_shots_fired', 'per_event_input_trace')
+                   'per_event_input_trace')
 
 
 def summarize(samples, proxies, duration, gaps=(), schedule_skips=0):
@@ -357,7 +358,11 @@ def summarize(samples, proxies, duration, gaps=(), schedule_skips=0):
             return values[-1] - values[0] if len(values) >= 2 and all(v is not None for v in values) else None
         coherent = [network(row).get('collision_context_coherent') for row in rows]
         coherent = [bool(value) for value in coherent if isinstance(value, bool)]
+        positions = [(row['state'].get('chassis') or {}).get('pose', {}).get('translation_m') for row in rows]
+        positions = [p for p in positions if p is not None]
+        movement = max((sum((a-b)**2 for a, b in zip(p, positions[0]))**0.5 for p in positions), default=None)
         clients[name] = {'active_samples': len(rows), 'metrics': metrics,
+                         'max_displacement_m': movement,
                          'console_query_ms': distribution([(row['received_s'] - row['elapsed_s']) * 1000
                                                             for row in rows]),
                          'sample_gaps': sum(1 for gap in gaps if gap['client'] == name),
@@ -399,7 +404,7 @@ def summarize(samples, proxies, duration, gaps=(), schedule_skips=0):
                            + list(NEVER_COLLECTED),
             'notes': ['rtt_ms is the existing reliable application probe, not transport RTT.',
                       'shots_fired is global authoritative state, not per-player shot acceptance;'
-                      ' the console publishes no per-client launch counter.',
+                      " confirmed_launches counts this client's accepted launches.",
                       'Shot deltas span first to last sampled value, not the entire active interval.',
                       'Rates use actual proxy timestamps; received/forwarded bytes exclude IP/UDP headers.',
                       'Correction and execution metrics require protocol 18; older builds produce null values.',
@@ -516,7 +521,7 @@ def run(args, scenario):
                     'platform': platform.platform(), 'machine': platform.machine(),
                     'environment': {key: os.environ[key] for key in
                                     ('WGPU_SETTINGS_PRIO', 'WGPU_BACKEND', 'WGPU_POWER_PREF', 'RUST_LOG',
-                                     'RM_NET_UP_KIB_S', 'RM_NET_DOWN_KIB_S', 'RM_NET_FULL_CHECKPOINTS', 'RM_NET_FIXED_INPUT_LEAD', 'RM_NET_INPUT_HISTORY')
+                                     'RM_NET_PROFILE', 'RM_NET_UP_KIB_S', 'RM_NET_DOWN_KIB_S', 'RM_NET_FULL_CHECKPOINTS', 'RM_NET_FIXED_INPUT_LEAD', 'RM_NET_INPUT_HISTORY')
                                     if key in os.environ},
                     'python': sys.version, 'protocol_source': (ROOT / 'crates/rm-simulator-server/src/protocol.rs').read_text().split('pub const PROTOCOL_VERSION: u32 = ')[-1].split(';')[0],
                     'binaries': {name: {'path': str(path), 'sha256': digest(path)}
@@ -669,7 +674,7 @@ def run(args, scenario):
                         sample_count += 1
                         # Keep only fields needed for the bounded summary; raw states go to the capped log.
                         samples.append({**row, 'state': {key: row['state'].get(key) for key in
-                            ('network', 'shots_fired', 'hits_detected', 'pending_shots', 'connection_toast')}})
+                            ('network', 'shots_fired', 'hits_detected', 'pending_shots', 'connection_toast', 'chassis', 'ui')}})
                         logs['samples'].write(row)
                     # Schedule against the planned instant, not the completion time, so the
                     # effective rate matches sample_hz; skipped slots are counted, not backfilled.

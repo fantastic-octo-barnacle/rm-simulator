@@ -218,7 +218,10 @@ fn serve(
                             HostPeer::new(
                                 handle.clone(),
                                 Instant::now(),
-                                crate::pacing::configured_rate("RM_NET_DOWN_KIB_S", 40),
+                                crate::pacing::configured_rate(
+                                    "RM_NET_DOWN_KIB_S",
+                                    crate::pacing::downstream_default(),
+                                ),
                             )
                         });
                     }
@@ -366,7 +369,7 @@ impl Client {
                     send(&socket, connection, hello, true)?;
                     let mut codec = ClientCodec::new(
                         epoch,
-                        crate::pacing::configured_rate("RM_NET_UP_KIB_S", 10),
+                        crate::pacing::configured_rate("RM_NET_UP_KIB_S", crate::pacing::upstream_default()),
                         client_input_history(),
                     );
                     let mut last_stats = Instant::now() - Duration::from_secs(1);
@@ -387,7 +390,7 @@ impl Client {
                         for message in socket.receive_messages::<256>().map_err(io_error)? {
                             match codec.receive(message.payload(), Instant::now())? {
                                 Some(ClientEvent::Welcome(welcome)) => {
-                                    welcome_tx.try_send(*welcome).map_err(io_error)?
+                                    welcome_tx.try_send(Ok(*welcome)).map_err(io_error)?
                                 }
                                 Some(ClientEvent::Anchor(anchor)) => {
                                     incoming
@@ -454,12 +457,18 @@ impl Client {
                     Ok(())
                 })();
                 if let Err(error) = result {
-                    incoming.fail(error.to_string());
+                    let reason = hello_failure(&error.to_string());
+                    incoming.fail(reason.clone());
+                    let _ = welcome_tx.try_send(Err(reason));
                 }
                 let _ = socket.close_connection(connection, 1000, None, false);
             })?;
         let welcome = match welcome_rx.recv_timeout(HELLO_TIMEOUT) {
-            Ok(welcome) => welcome,
+            Ok(Ok(welcome)) => welcome,
+            Ok(Err(reason)) => {
+                stop.request();
+                anyhow::bail!("{reason}");
+            }
             Err(error) => {
                 stop.request();
                 anyhow::bail!("GNS hello failed: {error}");
@@ -470,6 +479,7 @@ impl Client {
             timing,
             transport_stats: None,
             host_telemetry: None,
+            delivery_stats: None,
             owner_anchor: None,
             outbox,
             inbox,
@@ -482,6 +492,15 @@ impl Client {
         })
     }
 }
+/// Preserves peer rejection details, including the first release's legacy reason.
+fn hello_failure(reason: &str) -> String {
+    if reason.contains("incompatible protocol") {
+        "Version mismatch. Update both games to the same version.".into()
+    } else {
+        reason.to_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

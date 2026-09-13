@@ -369,6 +369,14 @@ impl Simulation {
     /// Turn `delta_ns` of host time into ticks (capped at [`MAX_ADVANCE_NS`])
     /// and step them unless paused. Returns the ticks stepped.
     pub fn advance(&mut self, delta_ns: u64) -> Result<u64, FieldError> {
+        self.advance_observed(delta_ns, &mut |_| {})
+    }
+    /// Advance host time while reporting contacts before their snapshot history expires.
+    pub(crate) fn advance_observed(
+        &mut self,
+        delta_ns: u64,
+        observer: &mut dyn FnMut(&rm_simulator_world::ArmorHit),
+    ) -> Result<u64, FieldError> {
         if self.paused {
             return Ok(0);
         }
@@ -376,14 +384,22 @@ impl Simulation {
         let ticks = self.carry_ns / TICK_NS;
         self.carry_ns -= ticks * TICK_NS;
         if ticks > 0 {
-            self.step(ticks)?;
+            self.step_observed(ticks, observer)?;
         }
         Ok(ticks)
     }
     /// Step exactly `ticks`, paused or not.
     pub fn step(&mut self, ticks: u64) -> Result<(), FieldError> {
+        self.step_observed(ticks, &mut |_| {})
+    }
+    /// Keep input and shot scheduling on the ordinary ticks while streaming contacts.
+    fn step_observed(
+        &mut self,
+        ticks: u64,
+        observer: &mut dyn FnMut(&rm_simulator_world::ArmorHit),
+    ) -> Result<(), FieldError> {
         if self.input_streams.is_empty() && self.pending_shots.is_empty() {
-            return self.field.step(ticks);
+            return self.field.step_with_hits(ticks, observer);
         }
         for _ in 0..ticks {
             let now = self.field.time_ns();
@@ -401,7 +417,7 @@ impl Simulation {
                 }
             }
             self.execute_pending_shots();
-            self.field.step(1)?;
+            self.field.step_with_hits(1, observer)?;
         }
         Ok(())
     }
@@ -669,6 +685,14 @@ impl Simulation {
     }
     /// Apply a player's or operator's command at the current tick.
     pub fn apply(&mut self, command: &Command) -> Result<(), String> {
+        self.apply_observed(command, &mut |_| {})
+    }
+    /// Apply a command, streaming contacts from explicit steps to the host.
+    pub(crate) fn apply_observed(
+        &mut self,
+        command: &Command,
+        observer: &mut dyn FnMut(&rm_simulator_world::ArmorHit),
+    ) -> Result<(), String> {
         match command {
             Command::ConfigureWeapon { chassis, weapon } => {
                 if self.field.chassis_muzzle_pose(*chassis).is_none() {
@@ -813,7 +837,8 @@ impl Simulation {
                 if *ticks == 0 || *ticks > 60_000 {
                     return Err("step between 1 and 60000 ticks".into());
                 }
-                self.step(*ticks).map_err(|e| e.to_string())
+                self.step_observed(*ticks, observer)
+                    .map_err(|e| e.to_string())
             }
         }
     }
