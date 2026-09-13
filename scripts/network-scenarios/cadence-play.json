@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "name": "cadence-play",
+  "seed": 2026,
+  "warmup_s": 10,
+  "duration_s": 240,
+  "recovery_s": 10,
+  "sample_hz": 4,
+  "clients": [
+    {
+      "name": "impaired",
+      "team": "blue",
+      "upstream": {
+        "delay_ms": 25,
+        "jitter_ms": 10,
+        "loss_percent": 1
+      },
+      "downstream": {
+        "delay_ms": 25,
+        "jitter_ms": 10,
+        "loss_percent": 1,
+        "rate_kbps": 512,
+        "queue_wait_ms": 250,
+        "rate_changes": [
+          {
+            "at_s": 60,
+            "rate_kbps": 200
+          },
+          {
+            "at_s": 120,
+            "rate_kbps": 100
+          },
+          {
+            "at_s": 180,
+            "rate_kbps": null
+          }
+        ]
+      }
+    }
+  ],
+  "events": [],
+  "expectations": {
+    "baseline_tolerance": 0.25,
+    "checks": [
+      {
+        "name": "no_unresolved_shot_outcomes",
+        "metric": "unresolved_shot_outcomes_delta",
+        "op": "==",
+        "value": 0,
+        "per_client": true
+      },
+      {
+        "name": "checkpoint_gap_bounded",
+        "metric": "checkpoint_gap_ms.max",
+        "op": "<=",
+        "value": 300,
+        "per_client": true,
+        "on_missing": "fail"
+      },
+      {
+        "name": "remote_presentation_not_starved",
+        "metric": "remote_underruns_delta",
+        "op": "<=",
+        "value": 0,
+        "per_client": true,
+        "on_missing": "fail"
+      },
+      {
+        "name": "clients_were_sampled",
+        "metric": "active_samples",
+        "op": ">=",
+        "value": 120,
+        "per_client": true
+      },
+      {
+        "name": "console_stayed_responsive",
+        "metric": "sample_gaps",
+        "op": "<=",
+        "value": 20,
+        "per_client": true
+      },
+      {
+        "name": "complete_context_gap_bounded",
+        "metric": "collision_context_gap_ms.max",
+        "op": "<=",
+        "value": 300,
+        "per_client": true,
+        "on_missing": "fail"
+      }
+    ]
+  }
+}

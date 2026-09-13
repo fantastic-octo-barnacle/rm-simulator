@@ -114,3 +114,20 @@ Raw captures and scratch investigation scripts are outside Git:
 The temporary scripts take `--binaries` and `--output`, retain JSON state and
 hashes, and clean up their owned processes. These paths are local evidence, not
 permanent download URLs.
+
+## Subsequent cadence and compression trials
+
+The [14 September cadence/deflate follow-up](cadence-deflate-followup.md) records
+five seeds for the current owner-configuration-reference build, 31.25 Hz owner /
+15.625 Hz world cadence, and that cadence with checkpoint deflate 4. Mean offered
+downstream per client was 1,255.0 → 710.0 → 662.0 kbps including the IPv4/UDP
+allowance. This is a two-client sustained-fire workload; it is not a combined
+comparison with the short one-client experiment above. Cadence increases remote
+presentation buffering; neither prototype is enabled in production.
+
+The selected-envelope sweep checks lossless round trips and compression CPU.
+The real-UDP capacity trials remain failures, with seconds-long launch
+confirmations at 200 kbps and console-timeout aborts at 100 kbps. Fresh owner
+updates can conceal complete-world starvation in the legacy `checkpoint_gap_ms`
+gauge; the follow-up reports complete-context gaps separately and preserves
+original failed, passed and aborted raw summaries. NET-001 and NET-003 remain open.

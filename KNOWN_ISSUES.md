@@ -2,7 +2,7 @@
 <!-- Copyright (c) 2026 hxyulin <hxyulin@proton.me> -->
 # Known issues
 
-Networking issues still open as of 13 September 2026, with the protocol 29
+Networking issues still open as of 14 September 2026, with the protocol 29
 bandwidth integration. Measurements below retain their original revisions.
 This list covers the current networking investigation, not every limitation of
 competition-rule enforcement. Fixed hit delivery, auto-aim sampling, lobby
@@ -35,11 +35,21 @@ probe. These are different trials, not a measured combined total or a protocol 2
 on-wire result. See the [experiment record](docs/bandwidth-experiments.md) and
 [original UDP trial](docs/bandwidth-results/harness-trial-exp1.md).
 
-Next, validate the combined build under real UDP loss, delay, blackouts and
-bandwidth caps, including lost configuration acknowledgements, reconnect and lost
-input releases. Run matched multi-seed and multi-client trials with populated hit
-and shot-result histories. Then trial 31.25 Hz owner / 15.625 Hz world cadence
-and measure deflate level 4 on the selected stream. Neither change is enabled.
+The subsequent five-seed, two-client clean matrix measured the current
+owner-configuration-reference build at 1,255.0 kbps downstream per client,
+710.0 kbps with 31.25 Hz owner / 15.625 Hz world cadence, and 662.0 kbps after
+also changing checkpoint deflate from level 1 to 4. These include a 28-byte
+IPv4/UDP allowance per packet. They are a sustained two-client workload, not a
+rerun of the historical one-client trial above. The combined experimental
+reduction is 47.3%, but still exceeds 200 kbps by more than threefold. Remote
+presentation age also increases. Neither cadence nor deflate change is enabled
+in production; see the [cadence/deflate follow-up](docs/bandwidth-results/cadence-deflate-followup.md).
+
+Capacity trials reject acceptance: the combined candidate's 200 kbps trials
+had 4.1–4.9 s shot-confirmation p95 and long complete-context stalls. The 100 kbps
+profile also caused console-timeout aborts. Preserve these failures and continue
+validation of populated robot-hit recovery, packet-specific configuration/ACK
+loss, reconnect, releases and broader client/platform loads before acceptance.
 
 ## NET-002: Shot outcomes remain delayed on a fast local connection
 
@@ -119,9 +129,9 @@ verify recovery as well as behavior during impairment.
 
 ## Measurement gaps and deferred work
 
-- The latest smoke tests establish functionality, not an across-platform or
-  multi-seed performance result. Trace-enabled versus trace-disabled overhead
-  has not been benchmarked.
+- The five-seed cadence/deflate matrix covers two rendered clients on one
+  Apple M3 Pro. Cross-platform and twelve-real-client performance remain
+  unmeasured. Trace-enabled versus trace-disabled overhead has not been benchmarked.
 - The listen-host trial measured remote presentation age at 52 ms median and
   61 ms p95. That is deliberate buffering, not packet RTT. Its responsiveness
   versus jitter tradeoff still needs broader validation; it is not by itself

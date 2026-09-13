@@ -37,6 +37,9 @@ recorded with them; do not assume a local package still matches those captures.
 
 - [Bandwidth experiments](bandwidth-experiments.md) records the isolated trials,
   the protocol 29 integration of experiments 0/1/7 and remaining validation.
+  The [cadence/deflate follow-up](bandwidth-results/cadence-deflate-followup.md)
+  records the combined cadence trial, selected-stream compression sweep and
+  constrained-link measurements.
 
 - [UDP impairment and version compatibility tests](network-stress-2026-09-13.md)
 

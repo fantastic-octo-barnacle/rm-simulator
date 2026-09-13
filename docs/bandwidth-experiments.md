@@ -16,8 +16,10 @@ client must use matching builds.
 
 Cadence, baseline rotation, checkpoint representation, outcome recovery, numeric
 precision and pacing defaults are unchanged. Experiments 2–6 are retained as
-investigation records, not enabled production changes. Experiment 5 remains the
-next cadence trial; experiment 3's deflate-level sweep remains a separate trial.
+investigation records, not enabled production changes. The subsequent [cadence/deflate follow-up](bandwidth-results/cadence-deflate-followup.md)
+measures 64 ms world checkpoints with 32 ms owner updates and a separate
+selected-stream deflate 1/4 sweep. Both remain experimental, with production
+defaults unchanged and constrained-link acceptance failed.
 
 The isolated measurements below are not measurements of the combined build.
 Experiment 1's short unimpaired UDP pair corroborates its bandwidth saving, but
