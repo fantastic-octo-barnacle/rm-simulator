@@ -11,6 +11,14 @@ import argparse
 import json
 import subprocess
 
+MERGE_SETTINGS = {
+    "allow_squash_merge": True,
+    "allow_rebase_merge": True,
+    "allow_merge_commit": False,
+    "squash_merge_commit_title": "PR_TITLE",
+    "squash_merge_commit_message": "PR_BODY",
+}
+
 RULESET = {
     "name": "main PR workflow",
     "target": "branch",
@@ -43,10 +51,13 @@ def main():
     args = parser.parse_args()
     payload = json.dumps(RULESET, indent=2) + "\n"
     if not args.apply:
-        print(payload, end="")
+        print(json.dumps({"merge_settings": MERGE_SETTINGS, "ruleset": RULESET}, indent=2))
         return
     repository = subprocess.check_output(
         ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], text=True).strip()
+    subprocess.run(["gh", "api", "--method", "PATCH", f"repos/{repository}",
+                    "--input", "-"], input=json.dumps(MERGE_SETTINGS),
+                   text=True, check=True, stdout=subprocess.DEVNULL)
     endpoint = f"repos/{repository}/rulesets"
     pages = json.loads(subprocess.check_output(
         ["gh", "api", "--paginate", "--slurp", endpoint], text=True))

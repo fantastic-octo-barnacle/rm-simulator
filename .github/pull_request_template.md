@@ -3,6 +3,9 @@
 
 ## Changes
 
+<!-- Use a conventional PR title, at most 72 characters. This body becomes the
+suggested squash commit body; replace prompts with a short explanation or list. -->
+
 Describe the problem and resulting behavior. Link a related issue if there is one.
 
 ## Validation

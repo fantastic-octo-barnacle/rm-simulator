@@ -47,3 +47,13 @@ rev = "v1.7.12"
 
 [[repos.hooks]]
 id = "actionlint"
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "conventional-commit"
+name = "Conventional commit message"
+entry = "python3 scripts/check-commit-message.py --file"
+language = "system"
+stages = ["commit-msg"]

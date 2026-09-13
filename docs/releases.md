@@ -118,7 +118,9 @@ the next native CI build.
 ## PR merges and branch protection
 
 Work on a branch, open a PR against `main`, wait for **CI required**, resolve
-review threads, then squash or rebase merge. Full native validation is manual,
+review threads, then squash merge by default. Rebase merge only when each retained
+commit is useful and independently passes its relevant checks. Follow the title
+and commit-message convention in [CONTRIBUTING.md](../CONTRIBUTING.md). Full native validation is manual,
 not a mandatory expensive check on every PR. Run it for platform-sensitive
 changes and before release. `CODEOWNERS` requests the maintainer as reviewer.
 
@@ -188,3 +190,7 @@ as a local override before the versioned `field/` package.
 Git LFS storage and downloads have their own allowance and billing, separate
 from Actions caches. Lightweight CI skips downloads; native test/package jobs
 fetch the approximately 52 MiB field. See [GitHub's LFS billing documentation](https://docs.github.com/en/billing/concepts/product-billing/git-lfs).
+
+The setup script also enables squash and rebase merges, disables merge commits,
+and uses the PR title and body for squash commit messages. CI checks PR titles
+and all proposed commit messages before either merge method.

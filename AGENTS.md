@@ -211,6 +211,10 @@ headless server, the interactive application and the rendering benchmark apart.
 
 ## Workflow
 
+- Follow the commit and PR convention in `CONTRIBUTING.md`: `type(scope): summary`,
+  at most 72 characters, optional short body. Squash by default; rebase only
+  independently passing commits. Keep main linear.
+
 - `just run <args>` runs the app; `just server <args>` runs the
   headless server; `just world-test` runs the fast rule tests while
   iterating; `just verify` runs formatting, check, clippy with

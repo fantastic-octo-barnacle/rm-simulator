@@ -21,7 +21,41 @@ This repository uses `prek`:
 
 ```sh
 cargo install prek --version 0.4.14 --locked
-prek install
+prek install --hook-type pre-commit --hook-type commit-msg
+```
+
+## Commits and pull requests
+
+Use `type(scope): summary` for commit subjects and PR titles. Scope is optional;
+use a short lowercase name such as `server`, `app`, `physics`, or `deps`.
+Allowed types are `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`,
+`build`, `ci`, `chore`, and `revert`. Add `!` before the colon for breaking changes.
+Keep the complete subject within 72 characters, use an imperative summary, and
+omit the trailing period. Separate an optional body with a blank line. Explain
+why the change is needed or list a few concrete changes; avoid repeating the title.
+
+```text
+fix(server): preserve confirmation snapshot order
+
+Keep confirmations ahead of periodic snapshots.
+
+- Preserve worker submission order
+- Add a regression test for queued confirmations
+```
+
+Squash merge ordinary PRs. GitHub uses the PR title and body as the suggested
+commit message; review them before merging. Rebase merge only when the individual
+commits form useful, independently passing steps. Verify those steps locally;
+CI checks the final PR state, not every intermediate snapshot. Merge commits are
+disabled and main requires linear history.
+
+CI validates both PR titles and every proposed commit message so either allowed
+merge method preserves the convention. Clean up temporary `fixup!` or `squash!`
+commits before merging. The local commit-message hook catches mistakes early.
+To check a branch manually, run:
+
+```sh
+python3 scripts/check-commit-message.py --range origin/main..HEAD
 ```
 
 ## Verify a change
