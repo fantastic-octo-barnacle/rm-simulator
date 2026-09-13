@@ -106,3 +106,17 @@ outbox overflow closes the peer explicitly. Dropping the client removes its seat
 server teardown joins its delivery workers. Standalone sessions create no gameplay
 listener, while listen hosts use channels for their local player and GNS/TCP for
 remote players. Snapshot cloning and physics replay still cost time.
+
+## Deterministic bandwidth probe
+
+Run `cargo test -p rm-simulator-server --locked bandwidth_attribution_baseline
+-- --nocapture` on one line to measure the production peer/client codecs on a
+manual clock. The probe reports owner/world/control bytes, input batches and
+complete checkpoints for idle, driving, firing and twelve-chassis workloads.
+It accounts for the current RMO4/RMI3 wire formats. Use a separate target directory
+per concurrent worktree to avoid executing another checkout's test artifact.
+
+These application-byte measurements exclude GNS and network overhead. The probe
+is not a real-UDP acceptance trial, and its canonical firing scenarios do not
+populate shot-result or hit histories. See the [experiment record](bandwidth-experiments.md)
+for historical comparisons and outstanding workload coverage.
