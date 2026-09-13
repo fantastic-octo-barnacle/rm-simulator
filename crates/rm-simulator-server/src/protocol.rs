@@ -17,7 +17,9 @@ use std::io::{self, BufRead, Read, Write};
 /// Version 26 adds per-pilot weapon updates, separate host caps, seeded angular
 /// spread, speed variation and actual launch-speed feedback.
 /// Version 27 delivers authoritative armor contacts independently of snapshots.
-pub const PROTOCOL_VERSION: u32 = 27;
+/// Version 28 references the owner chassis configuration by immutable identity
+/// instead of repeating it in every anchor, with a dedicated reliable frame.
+pub const PROTOCOL_VERSION: u32 = 28;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///
@@ -821,6 +823,12 @@ pub enum ServerMessage {
     /// The answer to a [`ClientMessage::Hello`]. Boxed because it is large
     /// relative to the other variants.
     Welcome(Box<Welcome>),
+    /// One owner chassis configuration on the reliable control lane. An owner
+    /// anchor references it by [`crate::owner_stream::ConfigRevision`] rather
+    /// than repeating the configuration, so it travels once per configuration
+    /// change and only after the peer acknowledges it may an anchor name it.
+    /// Boxed because a configuration is large relative to the other variants.
+    OwnerConfig(Box<crate::owner_stream::OwnerConfig>),
     /// One authoritative world state. Boxed because it dominates the other
     /// variants and is replaced rather than queued.
     Snapshot(Box<SimulationState>),

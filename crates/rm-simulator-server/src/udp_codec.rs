@@ -3,7 +3,7 @@
 //! The per-peer UDP codec, with no socket in it.
 //!
 //! One peer's whole wire behaviour lives here: the RMG1 fragment framing, the
-//! RMI2 input batches, the RMC1 compressed commands, the RMO3 owner anchor, the
+//! RMI2 input batches, the RMC1 compressed commands, the RMO4 owner anchor, the
 //! RMA1 baseline feedback, snapshot delta encoding and the byte pacer. The GNS
 //! reactor in `gns_transport` is a thin wrapper that moves datagrams between a
 //! socket and these structs; a test drives the same structs over a scripted
@@ -15,7 +15,8 @@ use crate::net::QueuedCommand;
 use crate::net::outbox;
 use crate::pacing::{Datagram, Pacer};
 use crate::protocol::{ClientMessage, Command, Role, ServerMessage, Welcome};
-use rm_simulator_world::Team;
+use crate::udp_snapshot::Feedback;
+use rm_simulator_world::{ChassisConfig, Team};
 use std::collections::VecDeque;
 use std::io;
 use std::time::{Duration, Instant};
@@ -44,6 +45,105 @@ const INPUT_BATCH_MAGIC: &[u8; 4] = b"RMI2";
 const INPUT_BATCH_LIMIT: usize = 16 * 1024;
 /// Host frames queued past this native backlog skip their periodic checkpoint.
 pub(crate) const CONGESTED_PENDING_BYTES: u32 = 64 * 1024;
+/// Owner configurations one client keeps, so a received anchor can resolve the
+/// revision it names. Oldest first; a connection changes configuration rarely.
+const CONFIG_CACHE: usize = 4;
+/// Owner-configuration feedback one client queues before the oldest is dropped.
+const CONFIG_FEEDBACK: usize = 8;
+/// Resend an unacknowledged owner configuration after this many anchor
+/// opportunities, mirroring the baseline `Retire` schedule. At the 32 ms
+/// broadcast period that is about half a second between attempts.
+const CONFIG_RESEND_FRAMES: u64 = 16;
+
+/// Host-side owner-configuration handshake for one peer.
+///
+/// An anchor may name a revision only once the peer answered
+/// [`Feedback::ConfigStored`] for it; until then the configuration rides the
+/// reliable control lane and is resent on the same bounded schedule as a
+/// baseline retirement. The identity is a pure function of the configuration,
+/// so a changed configuration always starts a new handshake and can never be
+/// silently reused.
+#[derive(Default)]
+struct OwnerConfigSender {
+    /// The configuration the peer acknowledged, if any.
+    acked: Option<crate::owner_stream::ConfigRevision>,
+    /// The configuration currently being offered, with its framed bytes.
+    pending: Option<(crate::owner_stream::ConfigRevision, Vec<u8>)>,
+    /// Anchor opportunities since the pending frame was last sent.
+    age: u64,
+}
+impl OwnerConfigSender {
+    /// True when an anchor may safely name `revision`.
+    fn acknowledged(&self, revision: crate::owner_stream::ConfigRevision) -> bool {
+        self.acked == Some(revision) && self.pending.is_none()
+    }
+    /// The framed owner-configuration message for `config`.
+    fn frame(config: &ChassisConfig) -> io::Result<Vec<u8>> {
+        let message = ServerMessage::OwnerConfig(Box::new(crate::owner_stream::OwnerConfig::new(
+            config.clone(),
+        )));
+        Ok(miniz_oxide::deflate::compress_to_vec(
+            &crate::snapshot_codec::encode_player_message(&message),
+            1,
+        ))
+    }
+    /// Offers `config` and returns the frame to queue now, or `None` while the
+    /// current frame is between bounded resends. A new revision always queues
+    /// immediately and discards the superseded frame.
+    fn offer(
+        &mut self,
+        revision: crate::owner_stream::ConfigRevision,
+        config: &ChassisConfig,
+    ) -> io::Result<Option<Vec<u8>>> {
+        match &self.pending {
+            Some((pending, _)) if *pending == revision => {
+                self.age += 1;
+                if self.age < CONFIG_RESEND_FRAMES {
+                    return Ok(None);
+                }
+                self.age = 0;
+                Ok(self.pending.as_ref().map(|(_, bytes)| bytes.clone()))
+            }
+            _ => {
+                let bytes = Self::frame(config)?;
+                self.pending = Some((revision, bytes.clone()));
+                self.age = 0;
+                Ok(Some(bytes))
+            }
+        }
+    }
+    /// Applies one peer answer, returning true when it belongs to the
+    /// configuration handshake. An acknowledgement for a revision that is not
+    /// pending is ignored, so a delayed answer cannot unlock a changed one.
+    fn answer(&mut self, feedback: Feedback) -> bool {
+        match feedback {
+            Feedback::ConfigStored { revision } => {
+                if self
+                    .pending
+                    .as_ref()
+                    .is_some_and(|(pending, _)| pending.raw() == revision)
+                {
+                    self.acked = Some(crate::owner_stream::ConfigRevision::from_raw(revision));
+                    self.pending = None;
+                    self.age = 0;
+                }
+                true
+            }
+            Feedback::ConfigMissing { revision } => {
+                // Bring the next anchor opportunity forward to a resend.
+                if self
+                    .pending
+                    .as_ref()
+                    .is_some_and(|(pending, _)| pending.raw() == revision)
+                {
+                    self.age = CONFIG_RESEND_FRAMES;
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+}
 
 /// Wraps a displayable failure as `io::Error::other`, so codec errors keep
 /// their message on the crate's io path.
@@ -346,6 +446,7 @@ pub(crate) struct PeerCodec {
     encoder: crate::udp_snapshot::Encoder,
     full_checkpoints: bool,
     encoding: crate::network_stats::EncodingStats,
+    owner_config: OwnerConfigSender,
 }
 impl PeerCodec {
     /// Creates the host codec for a peer the carrier admitted at `admitted`.
@@ -361,6 +462,7 @@ impl PeerCodec {
             encoder: crate::udp_snapshot::Encoder::default(),
             full_checkpoints,
             encoding: Default::default(),
+            owner_config: OwnerConfigSender::default(),
         }
     }
     /// When the carrier accepted this peer; the pacer and the hello timeout both
@@ -404,7 +506,11 @@ impl PeerCodec {
                 return Err(io_error("expected hello"));
             }
             let feedback = crate::udp_snapshot::Feedback::decode(payload)?;
-            if let Some(retire) = self.encoder.feedback(feedback) {
+            // The owner-configuration handshake owns its two answers; every
+            // other answer belongs to the baseline encoder.
+            if !self.owner_config.answer(feedback)
+                && let Some(retire) = self.encoder.feedback(feedback)
+            {
                 let bytes = crate::udp_snapshot::encode(retire);
                 self.queue_control(now, &bytes)?;
             }
@@ -436,17 +542,25 @@ impl PeerCodec {
     ) -> io::Result<()> {
         // The owner anchor is a single replaceable datagram that carries this
         // pilot's own chassis. It must not be dropped with the world checkpoint
-        // a backlog skips below.
+        // a backlog skips below. An anchor may name a configuration only once
+        // the peer acknowledged it; until then the configuration itself is the
+        // reliable-lane payload and no anchor is emitted, because a reference
+        // the peer cannot resolve is worse than a delayed correction.
         if frame.periodic
             && let Some(chassis) = self.chassis
             && let ServerMessage::Snapshot(state) = frame.message()
             && let Some(anchor) = crate::owner_stream::OwnerAnchor::from_state(state, chassis)
         {
-            // Oversize anchors never fragment. Full checkpoints remain the recovery path.
-            if let Ok(bytes) = anchor.encode() {
-                self.encoding.owner_updates += 1;
-                self.encoding.owner_bytes += bytes.len() as u64;
-                self.pacer.owner(self.elapsed(now), bytes);
+            let revision = anchor.config_revision();
+            if self.owner_config.acknowledged(revision) {
+                // Oversize anchors never fragment. Full checkpoints remain the recovery path.
+                if let Ok(bytes) = anchor.encode() {
+                    self.encoding.owner_updates += 1;
+                    self.encoding.owner_bytes += bytes.len() as u64;
+                    self.pacer.owner(self.elapsed(now), bytes);
+                }
+            } else if let Some(bytes) = self.owner_config.offer(revision, &anchor.owner.config)? {
+                self.queue_control(now, &bytes)?;
             }
         }
         if frame.periodic && pending_bytes > CONGESTED_PENDING_BYTES {
@@ -680,6 +794,11 @@ pub(crate) struct ClientCodec {
     pacer: Pacer,
     recent_inputs: VecDeque<Command>,
     history_limit: usize,
+    /// Owner configurations this client holds, oldest first, so an anchor can
+    /// resolve the revision it names.
+    configs: VecDeque<(crate::owner_stream::ConfigRevision, ChassisConfig)>,
+    /// Owner-configuration answers waiting for the next [`ClientCodec::acknowledge`].
+    config_feedback: VecDeque<Feedback>,
 }
 impl ClientCodec {
     /// Creates the client codec with `epoch` as the pacer's zero.
@@ -694,6 +813,8 @@ impl ClientCodec {
             pacer: Pacer::new(rate_bytes_per_s),
             recent_inputs: VecDeque::new(),
             history_limit,
+            configs: VecDeque::new(),
+            config_feedback: VecDeque::new(),
         }
     }
     /// The opening datagram. It travels on the reliable lane, like every command.
@@ -721,37 +842,122 @@ impl ClientCodec {
         now.saturating_duration_since(self.epoch)
     }
     /// Accepts one server datagram at `now`. Returns `None` for an anchor that
-    /// arrived before the welcome or is no newer than the last one, for an
-    /// incomplete frame and for a frame that decoded to nothing. Errors on an
-    /// invalid welcome, a protocol mismatch and any framing or baseline failure.
+    /// arrived before the welcome or is no newer than the last one, for an owner
+    /// configuration the codec consumes itself, for an anchor that names a
+    /// configuration this client does not hold, for an incomplete frame and for
+    /// a frame that decoded to nothing. An unknown configuration reference is
+    /// never an error: the anchor is dropped and the configuration requested
+    /// again. Errors on an invalid welcome, a protocol mismatch and any framing
+    /// or baseline failure.
     pub(crate) fn receive(
         &mut self,
         payload: &[u8],
         now: Instant,
     ) -> io::Result<Option<ClientEvent>> {
         if payload.starts_with(crate::owner_stream::MAGIC) {
-            let anchor = crate::owner_stream::OwnerAnchor::decode(payload)?;
-            if !self.welcomed || anchor.snapshot_id <= self.latest_owner {
-                return Ok(None);
-            }
-            self.latest_owner = anchor.snapshot_id;
-            return Ok(Some(ClientEvent::Anchor(Box::new(anchor))));
+            return self.receive_anchor(payload);
         }
         let Some(message) = self.frames.receive(payload, now)? else {
             return Ok(None);
         };
-        if let ServerMessage::Welcome(welcome) = message {
-            if self.welcomed || welcome.protocol != crate::protocol::PROTOCOL_VERSION {
-                return Err(io_error("invalid welcome"));
+        match message {
+            ServerMessage::Welcome(welcome) => {
+                if self.welcomed || welcome.protocol != crate::protocol::PROTOCOL_VERSION {
+                    return Err(io_error("invalid welcome"));
+                }
+                self.welcomed = true;
+                Ok(Some(ClientEvent::Welcome(welcome)))
             }
-            self.welcomed = true;
-            return Ok(Some(ClientEvent::Welcome(welcome)));
+            ServerMessage::OwnerConfig(frame) => {
+                // The configuration is codec state, not application input: cache
+                // it for anchor resolution and acknowledge it on the reliable
+                // lane. It never reaches the app or fails the connection.
+                frame.validate()?;
+                self.remember_config(frame.revision, frame.config);
+                Ok(None)
+            }
+            message => Ok(Some(ClientEvent::Message(message))),
         }
-        Ok(Some(ClientEvent::Message(message)))
     }
-    /// Answer every baseline the decoder stored, retired or found missing.
+    /// Resolves one anchor's configuration reference, or asks the host to resend
+    /// the configuration when it is unknown.
+    fn receive_anchor(&mut self, payload: &[u8]) -> io::Result<Option<ClientEvent>> {
+        if !self.welcomed {
+            return Ok(None);
+        }
+        let revision = crate::owner_stream::OwnerAnchor::config_revision_of(payload)?;
+        let Some(config) = self.config(revision) else {
+            // A reference that cannot decode is dropped, never applied. The
+            // request is bounded: repeated anchors for one missing revision ask
+            // once until the configuration arrives.
+            self.request_config(revision);
+            return Ok(None);
+        };
+        let anchor = crate::owner_stream::OwnerAnchor::decode(payload, &config)?;
+        if anchor.snapshot_id <= self.latest_owner {
+            return Ok(None);
+        }
+        self.latest_owner = anchor.snapshot_id;
+        Ok(Some(ClientEvent::Anchor(Box::new(anchor))))
+    }
+    /// The configuration this client holds for `revision`, if any.
+    fn config(&self, revision: crate::owner_stream::ConfigRevision) -> Option<ChassisConfig> {
+        self.configs
+            .iter()
+            .rev()
+            .find(|(held, _)| *held == revision)
+            .map(|(_, config)| config.clone())
+    }
+    /// Caches one configuration and answers the host so anchors may name it.
+    fn remember_config(
+        &mut self,
+        revision: crate::owner_stream::ConfigRevision,
+        config: ChassisConfig,
+    ) {
+        self.configs.retain(|(held, _)| *held != revision);
+        self.configs.push_back((revision, config));
+        while self.configs.len() > CONFIG_CACHE {
+            self.configs.pop_front();
+        }
+        self.config_feedback.retain(
+            |feedback| !matches!(feedback, Feedback::ConfigMissing { revision: missing } if *missing == revision.raw()),
+        );
+        self.push_config_feedback(Feedback::ConfigStored {
+            revision: revision.raw(),
+        });
+    }
+    /// Asks the host to resend one configuration.
+    fn request_config(&mut self, revision: crate::owner_stream::ConfigRevision) {
+        self.push_config_feedback(Feedback::ConfigMissing {
+            revision: revision.raw(),
+        });
+    }
+    /// Queues one configuration answer, ignoring a duplicate and bounding the
+    /// queue so a stream of unknown references cannot grow it without limit.
+    fn push_config_feedback(&mut self, feedback: Feedback) {
+        if self.config_feedback.contains(&feedback) {
+            return;
+        }
+        while self.config_feedback.len() >= CONFIG_FEEDBACK {
+            self.config_feedback.pop_front();
+        }
+        self.config_feedback.push_back(feedback);
+    }
+    /// Test seam: mark the connection welcomed without running a real hello, so
+    /// a codec test can exercise anchor acceptance.
+    #[cfg(test)]
+    pub(crate) fn welcome_for_test(&mut self) {
+        self.welcomed = true;
+    }
+    /// Answer every baseline the decoder stored, retired or found missing, and
+    /// every owner-configuration answer the anchor handshake queued.
     pub(crate) fn acknowledge(&mut self, now: Instant) -> io::Result<()> {
         while let Some(feedback) = self.frames.feedback.pop_front() {
+            self.pacer
+                .control(self.elapsed(now), vec![feedback.encode()])
+                .map_err(io_error)?;
+        }
+        while let Some(feedback) = self.config_feedback.pop_front() {
             self.pacer
                 .control(self.elapsed(now), vec![feedback.encode()])
                 .map_err(io_error)?;
@@ -864,6 +1070,406 @@ mod tests {
             ),
         )
         .unwrap()
+    }
+
+    /// One host state with a single chassis, a snapshot id and an input epoch.
+    fn owner_state(ticks: u64, snapshot_id: u64, epoch: u64) -> crate::simulation::SimulationState {
+        use rm_simulator_world::{ChassisPlacement, Pose, Team};
+        let mut field = Field::new(&FieldConfig::default()).unwrap();
+        field
+            .add_chassis(&ChassisPlacement {
+                team: Team::Red,
+                spawn: Pose::at([0., 0., 0.3]),
+                config: ChassisConfig::default(),
+            })
+            .unwrap();
+        let mut simulation = Simulation::new(field, false);
+        simulation.step(ticks).unwrap();
+        let mut state = simulation.state();
+        state.snapshot_id = snapshot_id;
+        state.input_epoch = epoch;
+        state
+    }
+
+    /// A periodic host publication, which is what produces an owner anchor.
+    fn periodic(state: &crate::simulation::SimulationState) -> Outbound {
+        let mut frame = Outbound::new(ServerMessage::Snapshot(Box::new(state.clone())));
+        frame.periodic = true;
+        frame
+    }
+
+    /// Drain every datagram the host pacer allows at `now`.
+    fn host_packets(host: &mut PeerCodec, now: Instant) -> Vec<Vec<u8>> {
+        let mut packets = Vec::new();
+        while let Some(packet) = host.next(now).unwrap() {
+            packets.push(packet.bytes);
+        }
+        packets
+    }
+
+    /// Drain every datagram the client pacer allows at `now`.
+    fn client_packets(client: &mut ClientCodec, now: Instant) -> Vec<Vec<u8>> {
+        let mut packets = Vec::new();
+        while let Some(packet) = client.next(now).unwrap() {
+            packets.push(packet.bytes);
+        }
+        packets
+    }
+
+    /// A complete RMG1 frame's message, or `None` for a fragment or a peer that
+    /// cannot be decoded. A configuration frame is small enough to be one.
+    fn framed_message(packet: &[u8]) -> Option<ServerMessage> {
+        if packet.len() < HEADER || &packet[..4] != b"RMG1" {
+            return None;
+        }
+        let json =
+            miniz_oxide::inflate::decompress_to_vec_with_limit(&packet[HEADER..], MAX_WIRE).ok()?;
+        crate::snapshot_codec::decode_player_message(&json).ok()
+    }
+
+    #[test]
+    fn owner_config_is_carried_once_then_anchors_reference_it() {
+        use crate::owner_stream::{ConfigRevision, OwnerAnchor};
+        let epoch = Instant::now();
+        let state = owner_state(3, 3, 0);
+        let chassis = state.field.chassis.first().unwrap().id;
+        let config = state.field.chassis.first().unwrap().config.clone();
+        let revision = ConfigRevision::of(&config);
+        let mut host = PeerCodec::new(epoch, 1 << 20, false);
+        host.joined(Some(chassis));
+        let mut client = ClientCodec::new(epoch, 1 << 20, 12);
+        client.welcome_for_test();
+
+        // Before any acknowledgement, exactly the configuration is queued and no
+        // anchor is: a reference the peer cannot resolve is never emitted.
+        host.send(&periodic(&state), epoch, 0).unwrap();
+        let first = host_packets(&mut host, epoch + Duration::from_millis(32));
+        assert_eq!(
+            first
+                .iter()
+                .filter(|packet| matches!(
+                    framed_message(packet),
+                    Some(ServerMessage::OwnerConfig(_))
+                ))
+                .count(),
+            1,
+            "the configuration travels once"
+        );
+        assert!(
+            !first
+                .iter()
+                .any(|packet| packet.starts_with(crate::owner_stream::MAGIC)),
+            "no anchor before the acknowledgement"
+        );
+
+        // The client consumes the configuration as codec state and acknowledges.
+        for packet in &first {
+            if let Some(event) = client.receive(packet, epoch).unwrap() {
+                assert!(
+                    !matches!(event, ClientEvent::Message(ServerMessage::OwnerConfig(_))),
+                    "the configuration never reaches the app"
+                );
+            }
+        }
+        client.acknowledge(epoch).unwrap();
+        let answers = client_packets(&mut client, epoch + Duration::from_millis(64));
+        assert!(answers.iter().any(|packet| matches!(
+            Feedback::decode(packet),
+            Ok(Feedback::ConfigStored { revision: stored }) if stored == revision.raw()
+        )));
+        for packet in &answers {
+            host.receive(packet, epoch).unwrap();
+        }
+
+        // A later publication carries an anchor that references the config.
+        let later = owner_state(5, 4, 2);
+        host.send(&periodic(&later), epoch + Duration::from_millis(64), 0)
+            .unwrap();
+        let second = host_packets(&mut host, epoch + Duration::from_millis(96));
+        let anchor = second
+            .iter()
+            .find(|packet| packet.starts_with(crate::owner_stream::MAGIC))
+            .expect("an acknowledged configuration releases anchors");
+        assert_eq!(OwnerAnchor::config_revision_of(anchor).unwrap(), revision);
+        let mut applied = None;
+        for packet in &second {
+            if let Some(ClientEvent::Anchor(anchor)) = client
+                .receive(packet, epoch + Duration::from_millis(96))
+                .unwrap()
+            {
+                applied = Some(*anchor);
+            }
+        }
+        assert_eq!(applied.expect("the anchor applies").owner.config, config);
+    }
+
+    #[test]
+    fn unknown_anchor_reference_defers_and_recovers() {
+        use crate::owner_stream::{OwnerAnchor, OwnerConfig};
+        let epoch = Instant::now();
+        let state = owner_state(7, 7, 0);
+        let chassis = state.field.chassis.first().unwrap().id;
+        let config = state.field.chassis.first().unwrap().config.clone();
+        let anchor = OwnerAnchor::from_state(&state, chassis).unwrap();
+        let bytes = anchor.encode().unwrap();
+        let revision = anchor.config_revision();
+
+        let mut client = ClientCodec::new(epoch, 1 << 20, 12);
+        client.welcome_for_test();
+        // An unknown reference is dropped, not applied, and the connection lives.
+        assert!(client.receive(&bytes, epoch).unwrap().is_none());
+        client.acknowledge(epoch).unwrap();
+        let requests = client_packets(&mut client, epoch + Duration::from_millis(32));
+        assert!(requests.iter().any(|packet| matches!(
+            Feedback::decode(packet),
+            Ok(Feedback::ConfigMissing { revision: missing }) if missing == revision.raw()
+        )));
+
+        // The configuration arrives, is acknowledged, and resolves the anchor.
+        let frame = ServerMessage::OwnerConfig(Box::new(OwnerConfig::new(config.clone())));
+        for packet in encoded(1, true, &frame) {
+            assert!(client.receive(&packet, epoch).unwrap().is_none());
+        }
+        client.acknowledge(epoch).unwrap();
+        let stored = client_packets(&mut client, epoch + Duration::from_millis(64));
+        assert!(stored.iter().any(|packet| matches!(
+            Feedback::decode(packet),
+            Ok(Feedback::ConfigStored { revision: saved }) if saved == revision.raw()
+        )));
+        let Some(ClientEvent::Anchor(applied)) = client
+            .receive(&bytes, epoch + Duration::from_millis(64))
+            .unwrap()
+        else {
+            panic!("the configuration resolves the anchor");
+        };
+        assert_eq!(applied.owner.config, config);
+    }
+
+    #[test]
+    fn changed_owner_configuration_is_not_confused_with_the_old_one() {
+        use crate::owner_stream::{ConfigRevision, OwnerAnchor};
+        let epoch = Instant::now();
+        let first = owner_state(1, 1, 0);
+        let chassis = first.field.chassis.first().unwrap().id;
+        let mut host = PeerCodec::new(epoch, 1 << 20, false);
+        host.joined(Some(chassis));
+        let mut client = ClientCodec::new(epoch, 1 << 20, 12);
+        client.welcome_for_test();
+
+        // Establish configuration A.
+        host.send(&periodic(&first), epoch, 0).unwrap();
+        for packet in host_packets(&mut host, epoch + Duration::from_millis(32)) {
+            client.receive(&packet, epoch).unwrap();
+        }
+        client.acknowledge(epoch).unwrap();
+        for packet in client_packets(&mut client, epoch + Duration::from_millis(64)) {
+            host.receive(&packet, epoch).unwrap();
+        }
+        let old = host.owner_config.acked.expect("A is acknowledged");
+
+        // The chassis is respawned with a changed configuration B.
+        let mut changed = owner_state(3, 2, 0);
+        changed.field.chassis[0].config.mass_kg += 5.;
+        let new = ConfigRevision::of(&changed.field.chassis[0].config);
+        assert_ne!(old, new, "changed values must not reuse an identity");
+        host.send(&periodic(&changed), epoch + Duration::from_millis(64), 0)
+            .unwrap();
+        let offered = host_packets(&mut host, epoch + Duration::from_millis(96));
+        assert!(
+            !offered
+                .iter()
+                .any(|packet| packet.starts_with(crate::owner_stream::MAGIC)),
+            "B is not referenced before it is acknowledged"
+        );
+        assert!(offered.iter().any(|packet| matches!(
+            framed_message(packet),
+            Some(ServerMessage::OwnerConfig(frame)) if frame.revision == new
+        )));
+
+        // A delayed acknowledgement for A must not unlock B.
+        host.receive(
+            &Feedback::ConfigStored {
+                revision: old.raw(),
+            }
+            .encode(),
+            epoch,
+        )
+        .unwrap();
+        host.send(&periodic(&changed), epoch + Duration::from_millis(96), 0)
+            .unwrap();
+        assert!(
+            !host_packets(&mut host, epoch + Duration::from_millis(128))
+                .iter()
+                .any(|packet| packet.starts_with(crate::owner_stream::MAGIC)),
+            "a stale acknowledgement cannot unlock the changed configuration"
+        );
+
+        // Only B's own acknowledgement releases anchors.
+        host.receive(
+            &Feedback::ConfigStored {
+                revision: new.raw(),
+            }
+            .encode(),
+            epoch,
+        )
+        .unwrap();
+        host.send(&periodic(&changed), epoch + Duration::from_millis(128), 0)
+            .unwrap();
+        let released = host_packets(&mut host, epoch + Duration::from_millis(160));
+        let anchor = released
+            .iter()
+            .find(|packet| packet.starts_with(crate::owner_stream::MAGIC))
+            .expect("B releases anchors once acknowledged");
+        assert_eq!(OwnerAnchor::config_revision_of(anchor).unwrap(), new);
+    }
+
+    #[test]
+    fn unacknowledged_config_is_resent_only_on_the_bounded_schedule() {
+        let epoch = Instant::now();
+        let state = owner_state(1, 1, 0);
+        let chassis = state.field.chassis.first().unwrap().id;
+        let mut host = PeerCodec::new(epoch, 1 << 20, false);
+        host.joined(Some(chassis));
+        let mut offers = 0;
+        for step in 0..CONFIG_RESEND_FRAMES + 2 {
+            let now = epoch + Duration::from_millis(32 * step);
+            host.send(&periodic(&state), now, 0).unwrap();
+            let packets = host_packets(&mut host, now + Duration::from_millis(32));
+            assert!(
+                !packets
+                    .iter()
+                    .any(|packet| packet.starts_with(crate::owner_stream::MAGIC)),
+                "an unacknowledged configuration never releases anchors"
+            );
+            offers += packets
+                .iter()
+                .filter(|packet| {
+                    matches!(framed_message(packet), Some(ServerMessage::OwnerConfig(_)))
+                })
+                .count();
+        }
+        assert_eq!(offers, 2, "one offer and exactly one bounded resend");
+    }
+
+    #[test]
+    fn owner_config_recovers_after_lost_setup_and_acknowledgement() {
+        let epoch = Instant::now();
+        let state = owner_state(1, 1, 0);
+        let chassis = state.field.chassis[0].id;
+        let mut host = PeerCodec::new(epoch, 1 << 20, false);
+        host.joined(Some(chassis));
+        let mut client = ClientCodec::new(epoch, 1 << 20, 12);
+        client.welcome_for_test();
+        let mut configurations = 0;
+        let mut anchors = 0;
+        let mut checkpoints = 0;
+        for step in 0..CONFIG_RESEND_FRAMES * 3 + 2 {
+            let now = epoch + Duration::from_millis(32 * step);
+            host.send(&periodic(&state), now, 0).unwrap();
+            for packet in host_packets(&mut host, now) {
+                if matches!(framed_message(&packet), Some(ServerMessage::OwnerConfig(_))) {
+                    configurations += 1;
+                    if configurations == 1 {
+                        continue; // Lose initial setup; the host must retry.
+                    }
+                }
+                match client.receive(&packet, now).unwrap() {
+                    Some(ClientEvent::Anchor(_)) => anchors += 1,
+                    Some(ClientEvent::Message(ServerMessage::Snapshot(_))) => checkpoints += 1,
+                    _ => {}
+                }
+            }
+            client.acknowledge(now).unwrap();
+            for packet in client_packets(&mut client, now) {
+                if configurations < 3
+                    && matches!(Feedback::decode(&packet), Ok(Feedback::ConfigStored { .. }))
+                {
+                    continue; // Lose acknowledgements until another setup resend.
+                }
+                host.receive(&packet, now).unwrap();
+            }
+            if configurations < 3 {
+                assert_eq!(anchors, 0, "no unresolved configuration references");
+            }
+        }
+        assert_eq!(configurations, 3, "resends stop after acknowledgement");
+        assert!(
+            anchors > 0,
+            "owner corrections recover after acknowledgement loss"
+        );
+        assert!(checkpoints > 0, "complete world context remains available");
+    }
+
+    #[test]
+    fn a_configuration_reference_survives_an_input_epoch_reset() {
+        use crate::owner_stream::{OwnerAnchor, OwnerConfig};
+        let epoch = Instant::now();
+        let state = owner_state(3, 3, 0);
+        let chassis = state.field.chassis.first().unwrap().id;
+        let config = state.field.chassis.first().unwrap().config.clone();
+        let mut client = ClientCodec::new(epoch, 1 << 20, 12);
+        client.welcome_for_test();
+        // The client already holds the configuration from its join.
+        let frame = ServerMessage::OwnerConfig(Box::new(OwnerConfig::new(config.clone())));
+        for packet in encoded(1, true, &frame) {
+            client.receive(&packet, epoch).unwrap();
+        }
+        // The host restarts its input timeline. The configuration identity is
+        // content-derived, so an anchor under the new epoch still resolves.
+        let reset = owner_state(5, 4, 9);
+        let anchor = OwnerAnchor::from_state(&reset, chassis).unwrap();
+        let Some(ClientEvent::Anchor(applied)) =
+            client.receive(&anchor.encode().unwrap(), epoch).unwrap()
+        else {
+            panic!("an epoch reset must not discard the configuration");
+        };
+        assert_eq!(applied.input_epoch, 9);
+        assert_eq!(applied.owner.config, config);
+    }
+
+    #[test]
+    fn a_reconnecting_peer_reestablishes_the_configuration_before_anchors() {
+        use crate::owner_stream::OwnerAnchor;
+        let epoch = Instant::now();
+        let state = owner_state(1, 1, 0);
+        let chassis = state.field.chassis.first().unwrap().id;
+        // A reconnect is a fresh codec pair: the host must carry the
+        // configuration again and release no anchor until the new peer answers.
+        let mut host = PeerCodec::new(epoch, 1 << 20, false);
+        host.joined(Some(chassis));
+        host.send(&periodic(&state), epoch, 0).unwrap();
+        let packets = host_packets(&mut host, epoch + Duration::from_millis(32));
+        assert!(
+            packets.iter().any(|packet| matches!(
+                framed_message(packet),
+                Some(ServerMessage::OwnerConfig(_))
+            ))
+        );
+        assert!(
+            !packets
+                .iter()
+                .any(|packet| packet.starts_with(crate::owner_stream::MAGIC)),
+            "a reconnecting peer gets no anchor before its acknowledgement"
+        );
+        // An anchor that races ahead of the configuration is dropped and
+        // answered with a request, never applied and never fatal.
+        let mut client = ClientCodec::new(epoch, 1 << 20, 12);
+        client.welcome_for_test();
+        let anchor = OwnerAnchor::from_state(&state, chassis).unwrap();
+        assert!(
+            client
+                .receive(&anchor.encode().unwrap(), epoch)
+                .unwrap()
+                .is_none()
+        );
+        client.acknowledge(epoch).unwrap();
+        let answers = client_packets(&mut client, epoch + Duration::from_millis(64));
+        assert!(
+            answers.iter().any(|packet| matches!(
+                Feedback::decode(packet),
+                Ok(Feedback::ConfigMissing { .. })
+            ))
+        );
     }
 
     #[test]
