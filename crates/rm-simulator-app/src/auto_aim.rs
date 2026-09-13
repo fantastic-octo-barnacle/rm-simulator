@@ -44,6 +44,10 @@ pub struct AutoAim {
     /// HUD text for the Auto Aim row: the chosen target and whether the shot is
     /// firing, waiting on alignment or aim-only. Empty while the assist is off.
     pub status: String,
+    /// Age of the authoritative target state at intended execution, in ms.
+    pub observation_age_ms: f64,
+    /// Intended execution time used by the solver, in simulation nanoseconds.
+    pub execution_time_ns: u64,
     proposed_rune: Option<RuneShot>,
     last_rune: Option<RuneShot>,
 }
@@ -184,6 +188,23 @@ impl Target<'_> {
             TargetId::Rune(id) => format!("RUNE {}", id + 1),
         }
     }
+}
+
+fn view_targets<'a>(targets: &[Target<'a>], displayed: &'a [ChassisSnapshot]) -> Vec<Target<'a>> {
+    targets
+        .iter()
+        .map(|target| Target {
+            id: target.id,
+            motion: match target.motion {
+                Motion::Robot(robot, _) => displayed
+                    .iter()
+                    .find(|view| view.id == robot.id)
+                    .map_or(target.motion, |view| Motion::Robot(view, 0.)),
+                motion => motion,
+            },
+            faces: target.faces.clone(),
+        })
+        .collect()
 }
 
 fn targets(session: &Session, caliber: Caliber) -> Vec<Target<'_>> {
@@ -497,6 +518,7 @@ fn choose_solution(
 /// Gate against the actual barrel, not the commanded angle. This deliberately
 /// aims for an inset area and requires normal impact speed above the game's
 /// detection threshold. No automatic trigger when simply slewing toward a lock.
+#[cfg(test)]
 fn fire_gate(
     target: &Target<'_>,
     solution: Solution,
@@ -505,6 +527,17 @@ fn fire_gate(
     shot: Shot,
     geometry: Option<&StaticGeometry>,
 ) -> bool {
+    fire_gate_reason(target, solution, pivot, actual, shot, geometry).is_ok()
+}
+
+fn fire_gate_reason(
+    target: &Target<'_>,
+    solution: Solution,
+    pivot: DVec3,
+    actual: DQuat,
+    shot: Shot,
+    geometry: Option<&StaticGeometry>,
+) -> Result<(), &'static str> {
     let direction = actual * DVec3::X;
     let pitch = direction.z.clamp(-1., 1.).asin();
     let yaw = direction.y.atan2(direction.x);
@@ -523,14 +556,14 @@ fn fire_gate(
         let relative = horizontal * velocity.x + DVec3::Z * velocity.y - target_velocity;
         let speed = relative.dot(normal);
         if -speed <= shot.caliber.armor_detection_speed_m_s() {
-            return false;
+            return Err("plate facing or detection speed");
         }
         let error = (bullet - plate).dot(normal);
         if error.abs() < 0.003 {
             let local = dquat(pose.rotation_wxyz).inverse() * (bullet - plate);
             let half = target.half_size() * 0.7;
             if local.y.abs() > half.x || local.z.abs() > half.y {
-                return false;
+                return Err("turning barrel");
             }
             // Check the curved shot path as well as the acquisition sight line.
             let mut previous = pivot + direction * f64::from(MUZZLE_FORWARD_M);
@@ -543,15 +576,15 @@ fn fire_gate(
                     point
                 };
                 if geometry.is_some_and(|g| !g.segment_clear(previous.to_array(), end.to_array())) {
-                    return false;
+                    return Err("blocked by scenery");
                 }
                 previous = point;
             }
-            return true;
+            return Ok(());
         }
         time = (time - error / speed).clamp(0.005, MAX_FLIGHT_S);
     }
-    false
+    Err("turning barrel")
 }
 
 /// Conservatively reject shots passing through another robot, including allies.
@@ -621,6 +654,11 @@ pub fn update(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
 ) {
+    state.execution_time_ns = session.fire_time_ns();
+    state.observation_age_ms = state
+        .execution_time_ns
+        .saturating_sub(session.snapshot.time_ns) as f64
+        / 1e6;
     state.fire_ready = false;
     state.proposed_rune = None;
     if state
@@ -644,9 +682,13 @@ pub fn update(
         || ui.blocks_input()
         || session.paused
         || own.defeated
-        || !session.aim_observation_fresh()
     {
         state.clear_intent();
+        return;
+    }
+    if !session.aim_observation_fresh() || state.observation_age_ms > 300. {
+        state.target = None;
+        state.status = "AUTO: stale target observation".into();
         return;
     }
     let geometry = session.aim_geometry();
@@ -657,7 +699,26 @@ pub fn update(
         * DQuat::from_rotation_y(-f64::from(player.pitch_rad))
         * DVec3::X;
     let targets = targets(&session, gun.shot.caliber);
-    let selected = select_target(&targets, eye, direction, state.target, geometry.as_ref());
+    let displayed: Vec<_> = session
+        .snapshot
+        .chassis
+        .iter()
+        .filter_map(|robot| {
+            session
+                .remote_history
+                .sample(robot.id, session.remote_view_time_ns)
+        })
+        .collect();
+    let acquisition_targets = view_targets(&targets, &displayed);
+    let selected_id = select_target(
+        &acquisition_targets,
+        eye,
+        direction,
+        state.target,
+        geometry.as_ref(),
+    )
+    .map(|target| target.id);
+    let selected = targets.iter().find(|target| Some(target.id) == selected_id);
     let Some(target) = selected else {
         state.target = None;
         state.status = "AUTO: searching".into();
@@ -678,36 +739,43 @@ pub fn update(
         player.pitch_rad = solution.pitch_rad as f32;
     }
     state.proposed_rune = rune_shot(target, solution);
-    state.fire_ready = firing
-        && rune_fire_allowed(state.last_rune, target, session.fire_time_ns())
-        && geometry.is_some()
-        && clear_of_robots(
-            &session,
-            target.id,
-            pivot,
-            dquat(own.turret.rotation_wxyz),
-            gun.shot,
-            solution.flight_s,
-        )
-        && fire_gate(
-            target,
-            solution,
-            pivot,
-            dquat(own.turret.rotation_wxyz),
-            gun.shot,
-            geometry.as_ref(),
-        );
-    state.status = format!(
-        "AUTO: {} / {}",
-        target.description(),
-        if state.fire_ready {
-            "firing"
-        } else if firing {
-            "waiting"
-        } else {
-            "aim only"
-        }
-    );
+    let reason = if !firing {
+        "aim only"
+    } else if session
+        .fire_time_ns()
+        .saturating_sub(session.snapshot.time_ns)
+        > 150_000_000
+    {
+        "stale target, tracking only"
+    } else if session.presentation_time_ns() < gun.next_shot_ns {
+        "weapon cadence"
+    } else if !rune_fire_allowed(state.last_rune, target, session.fire_time_ns()) {
+        "rune confirmation"
+    } else if geometry.is_none() {
+        "geometry unavailable"
+    } else if !clear_of_robots(
+        &session,
+        target.id,
+        pivot,
+        dquat(own.turret.rotation_wxyz),
+        gun.shot,
+        solution.flight_s,
+    ) {
+        "blocked by robot"
+    } else if let Err(reason) = fire_gate_reason(
+        target,
+        solution,
+        pivot,
+        dquat(own.turret.rotation_wxyz),
+        gun.shot,
+        geometry.as_ref(),
+    ) {
+        reason
+    } else {
+        "firing"
+    };
+    state.fire_ready = reason == "firing";
+    state.status = format!("AUTO: {} / {}", target.description(), reason);
 }
 
 #[cfg(test)]
@@ -731,6 +799,27 @@ mod tests {
     fn rotation(solution: Solution) -> DQuat {
         DQuat::from_rotation_z(solution.yaw_rad) * DQuat::from_rotation_y(-solution.pitch_rad)
     }
+    #[test]
+    fn acquisition_uses_displayed_pose_without_changing_impact_observation() {
+        let mut latest = robot();
+        latest.pose.translation_m = [8., 4., 1.];
+        latest.velocity_m_s = [0., 5., 0.];
+        let mut displayed = latest.clone();
+        displayed.pose.translation_m = [8., 0., 1.];
+        let displayed = vec![displayed];
+        let targets = vec![Target {
+            id: TargetId::Robot(latest.id),
+            motion: Motion::Robot(&latest, 0.1),
+            faces: (0..4).collect(),
+        }];
+        let view = view_targets(&targets, &displayed);
+        let eye = DVec3::new(0., 0., 1.);
+        assert!(acquisition(&targets[0], eye, DVec3::X, false, None).is_none());
+        assert!(acquisition(&view[0], eye, DVec3::X, false, None).is_some());
+        assert!(targets[0].pose(0, 0.2).translation_m[1] > 5.);
+        assert!(view[0].pose(0, 0.).translation_m[1].abs() < 0.5);
+    }
+
     #[test]
     fn fallback_uses_nearest_visible_robot_but_crosshair_wins() {
         let mut near = robot();

@@ -25,6 +25,8 @@ struct LocalFlight {
 pub(super) struct LocalShots {
     /// Wall time from sending a shot to the host accepting it, in ms.
     pub last_confirmation_ms: Option<f64>,
+    /// Own launches confirmed exactly once, including snapshot recovery.
+    pub confirmed_launches: u64,
     /// Host execution time minus the client's predicted launch time, in ms.
     pub last_execution_offset_ms: Option<f64>,
     /// Worker that flies unconfirmed shots through a restored field, or `None`
@@ -55,6 +57,16 @@ impl Session {
         }
         if self.prediction_limited() {
             return Ok(());
+        }
+        if let Some((chassis, command)) = self.sampled_drive {
+            if chassis != shooter {
+                return Err("pilot input belongs to another chassis".into());
+            }
+            if self.last_input_frame.is_none_or(|frame| {
+                frame.command != command || frame.sampled_time_ns != self.input_time_ns()
+            }) {
+                self.apply(Command::Chassis { chassis, command });
+            }
         }
         let input = self.last_input_frame.ok_or("waiting for pilot input")?;
         let own = self.presented_chassis().ok_or("pilot unavailable")?;
@@ -175,8 +187,9 @@ impl Session {
             Ok(id) => {
                 if let Some(flight) = self.shots.flights.get_mut(&result.shot_id) {
                     if flight.flight.authoritative.is_none() {
+                        self.shots.confirmed_launches += 1;
                         self.shots.last_confirmation_ms =
-                            Some(flight.created.elapsed().as_secs_f64() * 1000.);
+                            Some(self.time.since(flight.created).as_secs_f64() * 1000.);
                         self.shots.last_execution_offset_ms = result
                             .executed_time_ns
                             .map(|t| (t as f64 - flight.flight.launched_ns as f64) / 1e6);

@@ -1,26 +1,62 @@
 {
   "schema_version": 1,
-  "name": "direct-single",
+  "name": "bad-network",
   "seed": 2026,
   "warmup_s": 1,
-  "duration_s": 12,
-  "recovery_s": 2,
+  "duration_s": 24,
+  "recovery_s": 8,
   "sample_hz": 4,
   "clients": [
     {
-      "name": "impaired",
-      "team": "blue",
+      "name": "healthy",
+      "team": "red",
       "upstream": {},
       "downstream": {}
+    },
+    {
+      "name": "impaired",
+      "team": "blue",
+      "upstream": {
+        "delay_ms": 35,
+        "jitter_ms": 15,
+        "loss_percent": 2,
+        "rate_kbps": 256
+      },
+      "downstream": {
+        "delay_ms": 35,
+        "jitter_ms": 15,
+        "loss_percent": 2,
+        "rate_kbps": 1024,
+        "reorder_percent": 2,
+        "reorder_delay_ms": 30,
+        "duplicate_percent": 1
+      }
     }
   ],
   "events": [
+    {
+      "at_s": 0,
+      "client": "healthy",
+      "command": {
+        "type": "capture",
+        "captured": true
+      }
+    },
     {
       "at_s": 0,
       "client": "impaired",
       "command": {
         "type": "capture",
         "captured": true
+      }
+    },
+    {
+      "at_s": 0.1,
+      "client": "healthy",
+      "command": {
+        "type": "key",
+        "key": "a",
+        "pressed": true
       }
     },
     {
@@ -34,6 +70,15 @@
     },
     {
       "at_s": 0.2,
+      "client": "healthy",
+      "command": {
+        "type": "mouse_button",
+        "button": "left",
+        "pressed": true
+      }
+    },
+    {
+      "at_s": 0.2,
       "client": "impaired",
       "command": {
         "type": "mouse_button",
@@ -42,7 +87,62 @@
       }
     },
     {
-      "at_s": 5.2,
+      "at_s": 16,
+      "client": "healthy",
+      "command": {
+        "type": "release_inputs"
+      }
+    },
+    {
+      "at_s": 16,
+      "client": "impaired",
+      "command": {
+        "type": "release_inputs"
+      }
+    },
+    {
+      "at_s": 20,
+      "client": "healthy",
+      "command": {
+        "type": "capture",
+        "captured": true
+      }
+    },
+    {
+      "at_s": 20,
+      "client": "impaired",
+      "command": {
+        "type": "capture",
+        "captured": true
+      }
+    },
+    {
+      "at_s": 20.2,
+      "client": "healthy",
+      "command": {
+        "type": "mouse_button",
+        "button": "left",
+        "pressed": true
+      }
+    },
+    {
+      "at_s": 20.2,
+      "client": "impaired",
+      "command": {
+        "type": "mouse_button",
+        "button": "left",
+        "pressed": true
+      }
+    },
+    {
+      "at_s": 23,
+      "client": "healthy",
+      "command": {
+        "type": "release_inputs"
+      }
+    },
+    {
+      "at_s": 23,
       "client": "impaired",
       "command": {
         "type": "release_inputs"
@@ -79,7 +179,7 @@
         "name": "clients_were_sampled",
         "metric": "active_samples",
         "op": ">=",
-        "value": 24,
+        "value": 72,
         "per_client": true
       },
       {

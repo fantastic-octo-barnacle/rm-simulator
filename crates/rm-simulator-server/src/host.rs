@@ -336,6 +336,8 @@ impl Host {
                     next_id: 1,
                     next_sequence: 0,
                     next_snapshot_id: 1,
+                    hit_cursor_ns: 0,
+                    next_hit_id: 1,
                     clock: None,
                     time,
                     control: control.clone(),
@@ -425,6 +427,8 @@ struct Owner {
     next_id: u32,
     next_sequence: u64,
     next_snapshot_id: u64,
+    hit_cursor_ns: u64,
+    next_hit_id: u64,
     clock: Option<Clock>,
     /// The only wall clock this worker reads.
     time: TimeSource,
@@ -435,6 +439,7 @@ impl Owner {
         while !self.control.stop.wait(Duration::ZERO) {
             // Check the deadline between requests, even under a command flood.
             self.advance_clock()?;
+            self.publish_hits();
             for result in self.simulation.take_completed_shots() {
                 if let Some(client) = self
                     .peers
@@ -588,6 +593,26 @@ impl Owner {
     fn send_to(&self, id: u32, message: ServerMessage) {
         if let Some(peer) = self.peers.iter().find(|peer| peer.info.client_id == id) {
             peer.push(Arc::new(Outbound::new(message)), false);
+        }
+    }
+    fn publish_hits(&mut self) {
+        let field = self.simulation.field();
+        let now = field.time_ns();
+        let hits: Vec<_> = field
+            .recent_hits()
+            .iter()
+            .filter(|hit| hit.time_ns > self.hit_cursor_ns)
+            .cloned()
+            .collect();
+        self.hit_cursor_ns = now;
+        for hit in hits {
+            let event_id = self.next_hit_id;
+            self.next_hit_id = event_id.checked_add(1).expect("hit event id overflow");
+            self.broadcast(ServerMessage::Hit {
+                epoch: self.simulation.input_epoch(),
+                event_id,
+                hit,
+            });
         }
     }
     fn publish_snapshot(&mut self, owner_only: bool) {
@@ -925,6 +950,47 @@ mod tests {
     }
     fn next(messages: &crate::net::outbox::Receiver) -> Arc<Outbound> {
         messages.recv().unwrap()
+    }
+
+    #[test]
+    fn contacts_leave_as_reliable_events_without_a_snapshot_broadcast() {
+        use rm_simulator_world::{BaseConfig, Caliber, Pose, Shot, Team};
+        let field = Field::new(&FieldConfig {
+            bases: vec![BaseConfig {
+                team: Team::Red,
+                plates: std::array::from_fn(|i| Pose::at([0., i as f64 * 0.5, 1.])),
+                dart_offsets_m: [[0.; 3]; 2],
+            }],
+            runes: vec![],
+            outposts: vec![],
+            ..Default::default()
+        })
+        .unwrap();
+        let host = Host::new(Simulation::new(field, true), true).unwrap();
+        let handle = host.handle();
+        let (_, messages, _socket) = peer(&handle, Role::Referee);
+        for _ in 0..3 {
+            next(&messages);
+        }
+        handle
+            .apply(&Command::SpawnProjectile {
+                muzzle: Pose::yawed([0.05, 0., 1.002], std::f64::consts::PI),
+                shot: Shot {
+                    caliber: Caliber::Mm17,
+                    speed_m_s: 20.,
+                },
+            })
+            .unwrap();
+        handle.apply(&Command::Step { ticks: 100 }).unwrap();
+        settle(&handle);
+        let event = next(&messages);
+        assert!(!event.periodic);
+        let ServerMessage::Hit { event_id, hit, .. } = event.message() else {
+            panic!("expected contact event: {:?}", event.message());
+        };
+        assert_eq!(*event_id, 1);
+        assert!(hit.detected);
+        assert_eq!(handle.snapshot().unwrap().hits[0], *hit);
     }
 
     #[test]

@@ -210,7 +210,8 @@ pub struct Console {
     pending: Option<Pending>,
 }
 #[derive(Resource, Default)]
-struct ConsoleInputs {
+pub(crate) struct ConsoleInputs {
+    pub(crate) captured: bool,
     keys: HashSet<KeyCode>,
     buttons: HashSet<MouseButton>,
 }
@@ -240,6 +241,7 @@ impl Console {
 
 fn release_inputs(world: &mut World) {
     world.resource_scope(|world, mut inputs: Mut<ConsoleInputs>| {
+        inputs.captured = false;
         for key in inputs.keys.drain() {
             world.resource_mut::<ButtonInput<KeyCode>>().release(key);
         }
@@ -696,6 +698,10 @@ fn state(world: &mut World) -> Value {
         "chassis":session.own_chassis(),
         "presented_chassis":session.presented_chassis(),
         "pending_shots":session.pending_shots(),
+        "auto_aim":world.get_resource::<crate::auto_aim::AutoAim>().map(|aim| json!({
+            "status":aim.status, "fire_ready":aim.fire_ready,
+            "observation_age_ms":aim.observation_age_ms, "execution_time_ns":aim.execution_time_ns,
+        })),
         "connection_toast":session.connection_toast,
         "network":session.network_diagnostics(),
         "shots_fired":session.snapshot.shots_fired,
@@ -707,7 +713,7 @@ fn state(world: &mut World) -> Value {
             "captured":p.captured,
             "third_person":world.get_resource::<Drive>().is_some_and(|d| d.third_person),
         })),
-        "ui": world.get_resource::<crate::hud::HudState>().map(|ui| json!({"debug_panel":ui.debug, "settings":ui.settings, "blocks_input":ui.blocks_input()})),
+        "ui": world.get_resource::<crate::hud::HudState>().map(|ui| json!({"debug_panel":ui.debug, "settings":ui.settings, "blocks_input":ui.blocks_input(), "unfocused":ui.unfocused, "consumed":ui.consumed})),
         "commands":["help","ready","state","camera","spawn","pause","step","screenshot","key",
             "mouse_button","mouse_motion","cursor","capture","release_inputs","inspect","world","quit"],
     })
@@ -783,6 +789,12 @@ fn parse_key(key: &str) -> Option<KeyCode> {
 }
 
 fn set_capture(world: &mut World, captured: bool) {
+    if captured && let Some(mut ui) = world.get_resource_mut::<crate::hud::HudState>() {
+        ui.unfocused = false;
+    }
+    if let Some(mut inputs) = world.get_resource_mut::<ConsoleInputs>() {
+        inputs.captured = captured;
+    }
     if let Some(mut player) = world.get_resource_mut::<Player>() {
         player.captured = captured;
     }
@@ -947,6 +959,25 @@ mod tests {
         assert_eq!(result["result"]["tick"], 17);
         assert_eq!(result["result"]["chassis"]["command"]["forward_m_s"], 0.0);
         assert_eq!(result["result"]["chassis"]["command"]["left_m_s"], 0.0);
+    }
+
+    #[test]
+    fn explicit_capture_clears_focus_block_and_release_restores_automation_state() {
+        let (mut app, _) = harness();
+        app.world_mut()
+            .resource_mut::<crate::hud::HudState>()
+            .unfocused = true;
+        set_capture(app.world_mut(), true);
+        assert!(app.world().resource::<Player>().captured);
+        assert!(
+            !app.world()
+                .resource::<crate::hud::HudState>()
+                .blocks_input()
+        );
+        assert!(app.world().resource::<ConsoleInputs>().captured);
+        release_inputs(app.world_mut());
+        assert!(!app.world().resource::<ConsoleInputs>().captured);
+        assert!(!app.world().resource::<Player>().captured);
     }
 
     #[test]

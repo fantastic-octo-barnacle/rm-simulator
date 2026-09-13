@@ -715,6 +715,19 @@ impl Field {
     pub fn tick(&self) -> u64 {
         self.tick
     }
+    /// Armor contacts retained for the last second of simulation time, in scoring order.
+    /// Reading these does not drain snapshot recovery history or advance the world.
+    ///
+    /// ```
+    /// use rm_simulator_world::{Field, FieldConfig};
+    /// let field = Field::new(&FieldConfig::default()).unwrap();
+    /// assert!(field.recent_hits().is_empty());
+    /// assert_eq!(field.tick(), 0);
+    /// ```
+    pub fn recent_hits(&self) -> &[ArmorHit] {
+        &self.hits
+    }
+
     /// `tick` times `TICK_NS`: the field's own clock, never the host's.
     pub fn time_ns(&self) -> u64 {
         self.tick * TICK_NS

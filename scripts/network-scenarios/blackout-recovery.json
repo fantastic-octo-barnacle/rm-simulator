@@ -1,0 +1,218 @@
+{
+  "schema_version": 1,
+  "name": "blackout-recovery",
+  "seed": 2026,
+  "warmup_s": 1,
+  "duration_s": 24,
+  "recovery_s": 8,
+  "sample_hz": 4,
+  "clients": [
+    {
+      "name": "healthy",
+      "team": "red",
+      "upstream": {},
+      "downstream": {}
+    },
+    {
+      "name": "impaired",
+      "team": "blue",
+      "upstream": {
+        "delay_ms": 35,
+        "jitter_ms": 15,
+        "loss_percent": 2,
+        "blackouts": [
+          [
+            8,
+            2
+          ]
+        ]
+      },
+      "downstream": {
+        "delay_ms": 35,
+        "jitter_ms": 15,
+        "loss_percent": 2,
+        "reorder_percent": 2,
+        "reorder_delay_ms": 30,
+        "duplicate_percent": 1,
+        "blackouts": [
+          [
+            8,
+            2
+          ]
+        ]
+      }
+    }
+  ],
+  "events": [
+    {
+      "at_s": 0,
+      "client": "healthy",
+      "command": {
+        "type": "capture",
+        "captured": true
+      }
+    },
+    {
+      "at_s": 0,
+      "client": "impaired",
+      "command": {
+        "type": "capture",
+        "captured": true
+      }
+    },
+    {
+      "at_s": 0.1,
+      "client": "healthy",
+      "command": {
+        "type": "key",
+        "key": "a",
+        "pressed": true
+      }
+    },
+    {
+      "at_s": 0.1,
+      "client": "impaired",
+      "command": {
+        "type": "key",
+        "key": "a",
+        "pressed": true
+      }
+    },
+    {
+      "at_s": 0.2,
+      "client": "healthy",
+      "command": {
+        "type": "mouse_button",
+        "button": "left",
+        "pressed": true
+      }
+    },
+    {
+      "at_s": 0.2,
+      "client": "impaired",
+      "command": {
+        "type": "mouse_button",
+        "button": "left",
+        "pressed": true
+      }
+    },
+    {
+      "at_s": 16,
+      "client": "healthy",
+      "command": {
+        "type": "release_inputs"
+      }
+    },
+    {
+      "at_s": 16,
+      "client": "impaired",
+      "command": {
+        "type": "release_inputs"
+      }
+    },
+    {
+      "at_s": 20,
+      "client": "healthy",
+      "command": {
+        "type": "capture",
+        "captured": true
+      }
+    },
+    {
+      "at_s": 20,
+      "client": "impaired",
+      "command": {
+        "type": "capture",
+        "captured": true
+      }
+    },
+    {
+      "at_s": 20.2,
+      "client": "healthy",
+      "command": {
+        "type": "mouse_button",
+        "button": "left",
+        "pressed": true
+      }
+    },
+    {
+      "at_s": 20.2,
+      "client": "impaired",
+      "command": {
+        "type": "mouse_button",
+        "button": "left",
+        "pressed": true
+      }
+    },
+    {
+      "at_s": 23,
+      "client": "healthy",
+      "command": {
+        "type": "release_inputs"
+      }
+    },
+    {
+      "at_s": 23,
+      "client": "impaired",
+      "command": {
+        "type": "release_inputs"
+      }
+    }
+  ],
+  "expectations": {
+    "baseline_tolerance": 0.25,
+    "checks": [
+      {
+        "name": "no_unresolved_shot_outcomes",
+        "metric": "unresolved_shot_outcomes_delta",
+        "op": "==",
+        "value": 0,
+        "per_client": true
+      },
+      {
+        "name": "checkpoint_gap_bounded",
+        "metric": "checkpoint_gap_ms.max",
+        "op": "<=",
+        "value": 10000,
+        "per_client": true,
+        "on_missing": "skip"
+      },
+      {
+        "name": "remote_presentation_not_starved",
+        "metric": "remote_underruns_delta",
+        "op": "<=",
+        "value": 1000,
+        "per_client": true,
+        "on_missing": "skip"
+      },
+      {
+        "name": "clients_were_sampled",
+        "metric": "active_samples",
+        "op": ">=",
+        "value": 72,
+        "per_client": true
+      },
+      {
+        "name": "console_stayed_responsive",
+        "metric": "sample_gaps",
+        "op": "<=",
+        "value": 5,
+        "per_client": true
+      },
+      {
+        "name": "robot_actually_moved",
+        "metric": "max_displacement_m",
+        "op": ">=",
+        "value": 0.5,
+        "per_client": true
+      },
+      {
+        "name": "rounds_actually_launched",
+        "metric": "confirmed_launches_delta",
+        "op": ">=",
+        "value": 5,
+        "per_client": true
+      }
+    ]
+  }
+}

@@ -527,7 +527,7 @@ impl Plugin for TitlePlugin {
     }
 }
 
-fn button(commands: &mut Commands, parent: Entity, title: &str, choice: Choice) {
+fn button(commands: &mut Commands, parent: Entity, title: &str, choice: Choice) -> Entity {
     let title = title.to_owned();
     let caption = title.clone();
     commands
@@ -538,7 +538,8 @@ fn button(commands: &mut Commands, parent: Entity, title: &str, choice: Choice) 
             Node { height: px(38), flex_shrink: 0.0, padding: UiRect::horizontal(px(18)) }
             on(move |_: On<Activate>, mut state: ResMut<TitleState>| { state.actions.push(choice); })
         })
-        .insert((ChildOf(parent), TitleButton));
+        .insert((ChildOf(parent), TitleButton))
+        .id()
 }
 
 fn scrollbar(commands: &mut Commands, parent: Entity, target: Entity) {
@@ -1188,7 +1189,10 @@ fn poll_lobbies(
                     " | Version mismatch"
                 }
             );
-            button(&mut commands, parent, &label, Choice::Join(index));
+            let row = button(&mut commands, parent, &label, Choice::Join(index));
+            if !entry.lan || !entry.compatible() {
+                commands.entity(row).insert(bevy::ui::InteractionDisabled);
+            }
         }
     }
 }
@@ -1335,8 +1339,16 @@ fn title_input(
             return;
         };
         if !entry.lan || !entry.compatible() {
-            screen.status =
-                Some("This lobby is unavailable or uses an incompatible game version".into());
+            screen.status = Some(
+                if entry.protocol != rm_simulator_server::protocol::PROTOCOL_VERSION {
+                    rm_simulator_server::protocol::version_mismatch(
+                        entry.protocol,
+                        rm_simulator_server::protocol::PROTOCOL_VERSION,
+                    )
+                } else {
+                    "This lobby is unavailable or uses an unsupported transport.".into()
+                },
+            );
             return;
         }
         for (entity, _, _, address, _, _) in &inputs {

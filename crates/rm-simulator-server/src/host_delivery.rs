@@ -68,6 +68,7 @@ fn fixture() -> (Host, Client, outbox::Receiver) {
         timing: ClientTiming::default(),
         transport_stats: None,
         host_telemetry: None,
+        delivery_stats: None,
         owner_anchor: None,
         acknowledged: 0,
     };

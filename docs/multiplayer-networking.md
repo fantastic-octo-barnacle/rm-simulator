@@ -2,7 +2,7 @@
 <!-- Copyright (c) 2026 hxyulin <hxyulin@proton.me> -->
 # Networking priorities and experiments
 
-Status checked 12 September 2026. Live protocol is 26; the runtime overview is
+Status checked 13 September 2026. Live protocol is 27; the runtime overview is
 in the [README](../README.md#server-and-clients). The baseline and experimental proposals
 below were written against `47f3a78`, protocol 17. They are historical where they
 conflict with the implementation status here or in the [implementation record](networking-implementation-plan.md).
@@ -34,6 +34,24 @@ both own-chassis reconciliation and provisional shots replay it through the
 ordinary stepping, command and fire paths. Passages below that describe a
 separate chassis-prediction world, an isolated projectile query or a
 reconstructed collision scene are historical.
+
+Protocol 27 separates reliable armor-contact feedback from replaceable snapshots.
+The app deduplicates contacts and gives their flashes a receipt-timed lifetime.
+Mouse and assist sampling precede input/fire submission and prediction exchange;
+camera placement follows the accepted motor pose. Shots flush current controls
+even between the 16 ms input refreshes. Auto-aim acquires displayed robot poses
+and solves impact from the latest authoritative motion, with explicit stale-state
+and fire-gate status.
+
+The default downstream LAN allowance is 512 KiB/s per peer. `RM_NET_PROFILE=limited`
+selects 40 KiB/s downstream and 10 KiB/s upstream; the default LAN upstream
+allowance is 64 KiB/s. Explicit byte-rate overrides take precedence. The pacer
+permits one smaller packet to bypass a waiting class, then reserves its turn so
+world fragments cannot starve. Host reports describe each class's queue age,
+bytes and cumulative service. Automatic interpolation sheds delay at 50 ms/s,
+while retaining the two-second jitter window and monotonic presentation time.
+The [latency investigation](latency-investigation-2026-09-13.md) records the
+original measurements and the implementation follow-up.
 
 ## Decision
 

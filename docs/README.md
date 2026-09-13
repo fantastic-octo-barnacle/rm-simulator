@@ -33,6 +33,10 @@ recorded with them; do not assume a local package still matches those captures.
 
 ## Implementation records and historical investigations
 
+- [UDP impairment and version compatibility tests](network-stress-2026-09-13.md)
+
+- [Hit feedback and auto-aim latency](latency-investigation-2026-09-13.md) records
+  first-release loopback measurements, code findings and proposed fixes.
 - [Networking implementation record](networking-implementation-plan.md) separates
   implemented stages from old proposals and outstanding acceptance work.
 - [Networking roadmap](multiplayer-networking.md) retains the protocol 17 baseline

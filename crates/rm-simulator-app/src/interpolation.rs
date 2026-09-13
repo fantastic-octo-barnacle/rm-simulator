@@ -83,7 +83,7 @@ impl Buffer {
     /// result never moves backwards, never precedes the oldest snapshot and
     /// runs at most 100 ms past the newest. In automatic mode the delay is the
     /// 95th percentile arrival age plus 16 ms, clamped to 32..=250 ms, rising at
-    /// once and falling at 5 ms per second.
+    /// once and falling at 50 ms per second.
     pub fn sample_time(
         &mut self,
         now_ns: u64,
@@ -124,11 +124,11 @@ impl Buffer {
                     .max(now_ns.saturating_sub(latest).saturating_add(16_000_000))
                     .min(MAX_DELAY_NS);
             }
-            // Increase promptly; release delay at 5 ms per second.
+            // Increase promptly; release delay at 50 ms per second.
             self.delay_ns = if desired > self.delay_ns {
                 desired
             } else {
-                self.delay_ns.saturating_sub(elapsed / 200).max(desired)
+                self.delay_ns.saturating_sub(elapsed / 20).max(desired)
             };
         } else {
             self.delay_ns = self.manual_ms.min(250) * 1_000_000;
@@ -153,7 +153,7 @@ impl Buffer {
 mod tests {
     use super::*;
     #[test]
-    fn jitter_increases_delay_and_recovery_is_slow_and_monotonic() {
+    fn jitter_increases_delay_and_recovery_is_bounded_and_monotonic() {
         let mut buffer = Buffer::default();
         let mut previous = 0;
         for tick in 1..300 {
@@ -163,8 +163,8 @@ mod tests {
             assert!(view >= previous);
             previous = view;
         }
-        assert!(buffer.delay_ms() > 140);
-        assert!(buffer.delay_ms() <= 156);
+        assert!(buffer.delay_ms() > 100);
+        assert!(buffer.delay_ms() < 140);
     }
     #[test]
     fn the_jitter_window_is_a_time_span_not_a_frame_count() {

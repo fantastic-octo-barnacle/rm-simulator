@@ -225,6 +225,25 @@ impl PredictionWorker {
     pub fn correction_stats(&self) -> Option<rm_simulator_server::network_stats::CorrectionStats> {
         self.shared.0.try_lock().ok().map(|m| m.correction.clone())
     }
+    /// Take a completed replay before sampling assist, without posting an old
+    /// input request. The result carries its epoch, proof and physical owner pose.
+    pub fn take_result(
+        &self,
+    ) -> Option<(
+        u64,
+        rm_simulator_server::prediction::PredictionProof,
+        ChassisSnapshot,
+    )> {
+        #[cfg(test)]
+        let mut mailbox = if self.synchronous {
+            self.shared.0.lock().ok()?
+        } else {
+            self.shared.0.try_lock().ok()?
+        };
+        #[cfg(not(test))]
+        let mut mailbox = self.shared.0.try_lock().ok()?;
+        mailbox.result.take()
+    }
     /// Post `replay` at `epoch` and return the previous result as
     /// `(epoch, proof, owner state)`. `None` means the worker held its lock, in
     /// which case the request was dropped, or that no result was ready yet.
