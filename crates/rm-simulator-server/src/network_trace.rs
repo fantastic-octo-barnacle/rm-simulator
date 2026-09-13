@@ -248,8 +248,8 @@ impl Observer {
     }
     pub(crate) fn packet(&self, stage: &'static str, peer: Option<u32>, bytes: &[u8]) {
         let kind = match bytes.get(..4) {
-            Some(b"RMO3") => "owner",
-            Some(b"RMI2") => "inputs",
+            Some(b"RMO3") | Some(b"RMO4") => "owner",
+            Some(b"RMI2") | Some(b"RMI3") => "inputs",
             Some(b"RMC1") => "shot",
             Some(b"RMA1") => "baseline_ack",
             Some(b"RMG1") if bytes.get(4) == Some(&0) => "world_fragment",
@@ -463,6 +463,21 @@ mod tests {
     }
 
     use super::*;
+    #[test]
+    fn packet_classes_cover_legacy_and_current_wire_versions() {
+        let time = crate::clock::ManualTime::new();
+        let observer = Observer::open("test", time.source(), None, FILE_LIMIT);
+        for bytes in [b"RMO3data", b"RMO4data", b"RMI2data", b"RMI3data"] {
+            observer.packet("receive", None, bytes);
+        }
+        let report = observer.report().unwrap();
+        assert_eq!(report.stages["receive"]["owner"].events, 2);
+        assert_eq!(report.stages["receive"]["owner"].bytes, Some(16));
+        assert_eq!(report.stages["receive"]["inputs"].events, 2);
+        assert_eq!(report.stages["receive"]["inputs"].bytes, Some(16));
+        assert!(!report.stages["receive"].contains_key("control"));
+    }
+
     #[test]
     fn counters_do_not_invent_wire_bytes_and_busy_reads_never_wait() {
         let time = crate::clock::ManualTime::new();
