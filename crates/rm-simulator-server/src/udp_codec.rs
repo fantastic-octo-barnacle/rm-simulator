@@ -3,7 +3,7 @@
 //! The per-peer UDP codec, with no socket in it.
 //!
 //! One peer's whole wire behaviour lives here: the RMG1 fragment framing, the
-//! RMI2 input batches, the RMC1 compressed commands, the RMO4 owner anchor, the
+//! RMI3 input batches, the RMC1 compressed commands, the RMO4 owner anchor, the
 //! RMA1 baseline feedback, snapshot delta encoding and the byte pacer. The GNS
 //! reactor in `gns_transport` is a thin wrapper that moves datagrams between a
 //! socket and these structs; a test drives the same structs over a scripted
@@ -38,10 +38,37 @@ const MAGIC: &[u8; 4] = b"RMG1";
 /// First four bytes of a deflated command payload, which marks the unreliable
 /// shot-retry lane.
 const COMMAND_MAGIC: &[u8; 4] = b"RMC1";
-/// First four bytes of a deflated pilot input batch.
-const INPUT_BATCH_MAGIC: &[u8; 4] = b"RMI2";
-/// Ceiling for inflating one input batch, so a hostile peer cannot force a
-/// larger allocation.
+/// First four bytes of a deflated compact pilot input batch. One shared batch
+/// header carries the chassis, input epoch and placement revision, and every
+/// frame carries relative sequence and sampled-time fields plus an exact
+/// changed-value mask over the five command values.
+const INPUT_BATCH_MAGIC: &[u8; 4] = b"RMI3";
+/// First four bytes of the older fixed pilot input batch, which put all 80 bytes
+/// of every frame on the wire. The decoder still accepts it.
+const INPUT_BATCH_MAGIC_V2: &[u8; 4] = b"RMI2";
+/// Bytes of one fixed input frame: chassis, input epoch, sequence, sampled time,
+/// placement revision, duration and five f64 command values.
+const INPUT_FRAME_BYTES: usize = 80;
+/// Most frames one batch may carry.
+const MAX_INPUT_FRAMES: usize = 12;
+/// Bytes of the shared RMI3 batch header: chassis, input epoch and placement
+/// revision, which every compact frame in the batch inherits.
+const INPUT_HEADER_BYTES: usize = 20;
+/// Per-frame tag for a frame that keeps the fixed 80-byte encoding.
+const INPUT_FRAME_LEGACY: u8 = 0x00;
+/// Per-frame tag for a frame that takes its identity from the shared header.
+const INPUT_FRAME_COMPACT: u8 = 0x01;
+/// Compact-frame flag: the sequence is an absolute u64, not a relative delta.
+const INPUT_SEQUENCE_ABSOLUTE: u8 = 0x01;
+/// Compact-frame flag: the sampled time is an absolute u64, not a relative delta.
+const INPUT_TIME_ABSOLUTE: u8 = 0x02;
+/// Largest inflated RMI3 body: the count, the shared header and twelve frames
+/// that each fall back to the fixed encoding. It bounds a hostile peer's
+/// allocation and proves the body still fits one datagram.
+const INPUT_BATCH_BODY_LIMIT: usize =
+    1 + INPUT_HEADER_BYTES + MAX_INPUT_FRAMES * (1 + INPUT_FRAME_BYTES);
+/// Ceiling for inflating one compressed client command, so a hostile peer cannot
+/// force a larger allocation.
 const INPUT_BATCH_LIMIT: usize = 16 * 1024;
 /// Host frames queued past this native backlog skip their periodic checkpoint.
 pub(crate) const CONGESTED_PENDING_BYTES: u32 = 64 * 1024;
@@ -192,85 +219,347 @@ fn select_inputs(history: &VecDeque<Command>, limit: usize) -> VecDeque<Command>
     chosen.into_iter().map(|i| useful[i]).collect()
 }
 
-/// Encodes an input batch as `RMI2` followed by a deflate stream: one count byte
-/// and then 80 bytes per frame. Refuses an empty batch, more than 12 frames and
-/// any command that is not pilot input.
+/// The five command values in wire order.
+fn command_values(command: &rm_simulator_world::ChassisCommand) -> [f64; 5] {
+    [
+        command.forward_m_s,
+        command.left_m_s,
+        command.yaw_rate_rad_s,
+        command.aim_yaw_rad,
+        command.aim_pitch_rad,
+    ]
+}
+/// The five command values as raw bits. A change mask compares bits, so `-0.0`
+/// is not mistaken for `0.0` and a NaN payload round-trips unchanged.
+fn command_bits(command: &rm_simulator_world::ChassisCommand) -> [u64; 5] {
+    command_values(command).map(f64::to_bits)
+}
+/// The fixed 80-byte frame encoding this codec used before the compact batch:
+/// chassis, input epoch, sequence, sampled time, placement revision, duration
+/// and five f64 command values. A compact batch keeps it as the exact fallback
+/// for a frame whose identity is not the shared header's, and the decoder still
+/// reads the older `RMI2` batch that used it for every frame.
+fn fixed_frame(chassis: u32, frame: &crate::input_stream::InputFrame) -> [u8; INPUT_FRAME_BYTES] {
+    let mut bytes = [0; INPUT_FRAME_BYTES];
+    bytes[..4].copy_from_slice(&chassis.to_le_bytes());
+    bytes[4..12].copy_from_slice(&frame.input_epoch.to_le_bytes());
+    bytes[12..20].copy_from_slice(&frame.sequence.to_le_bytes());
+    bytes[20..28].copy_from_slice(&frame.sampled_time_ns.to_le_bytes());
+    bytes[28..36].copy_from_slice(&frame.placement_revision.to_le_bytes());
+    bytes[36..40].copy_from_slice(&frame.duration_ticks.to_le_bytes());
+    for (index, value) in command_values(&frame.command).into_iter().enumerate() {
+        let start = 40 + index * 8;
+        bytes[start..start + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    bytes
+}
+/// Whether `payload` is a pilot input batch this codec can decode, in either the
+/// compact `RMI3` or the older fixed `RMI2` framing.
+fn is_input_batch(payload: &[u8]) -> bool {
+    payload.starts_with(INPUT_BATCH_MAGIC) || payload.starts_with(INPUT_BATCH_MAGIC_V2)
+}
+/// Writes `value` as an unsigned LEB128 varint, which is exact for every u64.
+fn write_varint(bytes: &mut Vec<u8>, mut value: u64) {
+    while value >= 0x80 {
+        bytes.push(value as u8 | 0x80);
+        value >>= 7;
+    }
+    bytes.push(value as u8);
+}
+/// Reads one unsigned LEB128 varint, refusing a truncated or overflowing one.
+fn read_varint(bytes: &[u8], cursor: &mut usize) -> io::Result<u64> {
+    let mut value = 0u64;
+    for shift in (0..64).step_by(7) {
+        let byte = *bytes
+            .get(*cursor)
+            .ok_or_else(|| io_error("truncated input batch"))?;
+        *cursor += 1;
+        if shift == 63 && byte > 1 {
+            return Err(io_error("input batch varint overflow"));
+        }
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Ok(value);
+        }
+    }
+    Err(io_error("input batch varint overflow"))
+}
+/// Reads one little-endian u64 at `cursor` and advances it.
+fn read_u64(bytes: &[u8], cursor: &mut usize) -> io::Result<u64> {
+    let slice = bytes
+        .get(*cursor..*cursor + 8)
+        .ok_or_else(|| io_error("truncated input batch"))?;
+    *cursor += 8;
+    Ok(u64::from_le_bytes(slice.try_into().unwrap()))
+}
+/// Decodes one fixed 80-byte frame. Refuses a non-finite command.
+fn decode_fixed_frame(frame: &[u8]) -> io::Result<Command> {
+    let u64_at = |i| u64::from_le_bytes(frame[i..i + 8].try_into().unwrap());
+    let f64_at = |i| f64::from_le_bytes(frame[i..i + 8].try_into().unwrap());
+    let command = rm_simulator_world::ChassisCommand {
+        forward_m_s: f64_at(40),
+        left_m_s: f64_at(48),
+        yaw_rate_rad_s: f64_at(56),
+        aim_yaw_rad: f64_at(64),
+        aim_pitch_rad: f64_at(72),
+    };
+    if !command.is_finite() {
+        return Err(io_error("non-finite input"));
+    }
+    Ok(Command::PilotInput {
+        chassis: u32::from_le_bytes(frame[..4].try_into().unwrap()),
+        frame: crate::input_stream::InputFrame {
+            input_epoch: u64_at(4),
+            sequence: u64_at(12),
+            sampled_time_ns: u64_at(20),
+            placement_revision: u64_at(28),
+            duration_ticks: u32::from_le_bytes(frame[36..40].try_into().unwrap()),
+            command,
+        },
+    })
+}
+/// Encodes an input batch as `RMI3` followed by a deflate stream: one count byte,
+/// one header holding the values the newest frame shares (chassis, input epoch
+/// and placement revision), then one entry per frame.
+///
+/// A compact frame carries a change mask over the five command values, a
+/// relative sequence delta, a relative sampled-time delta and a duration
+/// varint; only changed values ride at full f64 precision. A frame whose
+/// identity is not the header's, or whose delta cannot be represented exactly,
+/// keeps its fixed 80-byte encoding, so decoding returns the same `InputFrame`
+/// the fixed encoding produces, bit for bit.
+///
+/// Refuses an empty batch, more than [`MAX_INPUT_FRAMES`] frames, any command
+/// that is not pilot input and any packet that would need more than the
+/// 1,000-byte single-datagram budget.
 fn input_batch(inputs: &VecDeque<Command>) -> io::Result<Vec<u8>> {
-    if inputs.is_empty() || inputs.len() > 12 {
+    if inputs.is_empty() || inputs.len() > MAX_INPUT_FRAMES {
         return Err(io_error("invalid input count"));
     }
+    let Some(Command::PilotInput {
+        chassis,
+        frame: newest,
+    }) = inputs.back()
+    else {
+        return Err(io_error("non-pilot input"));
+    };
+    let (header_chassis, header_epoch, header_revision) =
+        (*chassis, newest.input_epoch, newest.placement_revision);
     let mut bytes = vec![inputs.len() as u8];
+    bytes.extend(header_chassis.to_le_bytes());
+    bytes.extend(header_epoch.to_le_bytes());
+    bytes.extend(header_revision.to_le_bytes());
+    let mut previous_sequence = None;
+    let mut previous_time = None;
+    let mut previous_bits = None;
     for input in inputs {
         let Command::PilotInput { chassis, frame } = input else {
             return Err(io_error("non-pilot input"));
         };
-        bytes.extend(chassis.to_le_bytes());
-        for n in [
-            frame.input_epoch,
-            frame.sequence,
-            frame.sampled_time_ns,
-            frame.placement_revision,
-        ] {
-            bytes.extend(n.to_le_bytes());
+        if *chassis == header_chassis
+            && frame.input_epoch == header_epoch
+            && frame.placement_revision == header_revision
+        {
+            let bits = command_bits(&frame.command);
+            let mut mask = 0u8;
+            for (index, bit) in bits.iter().enumerate() {
+                if previous_bits.is_none_or(|before: [u64; 5]| before[index] != *bit) {
+                    mask |= 1 << index;
+                }
+            }
+            // Frame zero has no in-batch base, and a delta that would move
+            // backwards is not representable, so those fields go absolute.
+            let sequence = previous_sequence.and_then(|before| frame.sequence.checked_sub(before));
+            let sampled_time =
+                previous_time.and_then(|before| frame.sampled_time_ns.checked_sub(before));
+            let mut flags = 0u8;
+            if sequence.is_none() {
+                flags |= INPUT_SEQUENCE_ABSOLUTE;
+            }
+            if sampled_time.is_none() {
+                flags |= INPUT_TIME_ABSOLUTE;
+            }
+            bytes.push(INPUT_FRAME_COMPACT);
+            bytes.push(mask);
+            bytes.push(flags);
+            match sequence {
+                Some(delta) => write_varint(&mut bytes, delta),
+                None => bytes.extend(frame.sequence.to_le_bytes()),
+            }
+            match sampled_time {
+                Some(delta) => write_varint(&mut bytes, delta),
+                None => bytes.extend(frame.sampled_time_ns.to_le_bytes()),
+            }
+            write_varint(&mut bytes, u64::from(frame.duration_ticks));
+            for (index, bit) in bits.iter().enumerate() {
+                if mask & (1 << index) != 0 {
+                    bytes.extend(bit.to_le_bytes());
+                }
+            }
+        } else {
+            // Another life or epoch: keep the fixed encoding for this frame
+            // rather than lose the values the shared header cannot carry.
+            bytes.push(INPUT_FRAME_LEGACY);
+            bytes.extend_from_slice(&fixed_frame(*chassis, frame));
         }
-        bytes.extend(frame.duration_ticks.to_le_bytes());
-        for n in [
-            frame.command.forward_m_s,
-            frame.command.left_m_s,
-            frame.command.yaw_rate_rad_s,
-            frame.command.aim_yaw_rad,
-            frame.command.aim_pitch_rad,
-        ] {
-            bytes.extend(n.to_le_bytes());
-        }
+        previous_sequence = Some(frame.sequence);
+        previous_time = Some(frame.sampled_time_ns);
+        previous_bits = Some(command_bits(&frame.command));
     }
     let mut packet = INPUT_BATCH_MAGIC.to_vec();
     packet.extend(miniz_oxide::deflate::compress_to_vec(&bytes, 1));
+    if packet.len() > CHUNK {
+        return Err(io_error("input batch exceeds one datagram"));
+    }
     Ok(packet)
 }
-/// Decodes an `RMI2` input batch in encoded order, oldest first. Refuses a
-/// missing magic, an inflated size that does not match the count, a count
-/// outside 1..=12 and any non-finite command.
+/// Decodes a pilot input batch in encoded order, oldest first, in either the
+/// compact `RMI3` or the older fixed `RMI2` framing. Refuses a missing magic, a
+/// packet over the single-datagram budget, an inflated body over
+/// [`INPUT_BATCH_BODY_LIMIT`], a count outside 1..=12, a reserved mask or flag
+/// bit, a delta or command value with no in-batch base, a truncated frame, a
+/// trailing byte and any non-finite command.
 fn decode_inputs(packet: &[u8]) -> io::Result<Vec<Command>> {
+    if packet.len() > CHUNK {
+        return Err(io_error("input batch exceeds one datagram"));
+    }
+    if let Some(compressed) = packet.strip_prefix(INPUT_BATCH_MAGIC) {
+        return decode_compact_inputs(compressed);
+    }
     let compressed = packet
-        .strip_prefix(INPUT_BATCH_MAGIC)
+        .strip_prefix(INPUT_BATCH_MAGIC_V2)
         .ok_or_else(|| io_error("invalid input batch"))?;
-    let bytes =
-        miniz_oxide::inflate::decompress_to_vec_with_limit(compressed, 961).map_err(io_error)?;
+    let bytes = miniz_oxide::inflate::decompress_to_vec_with_limit(
+        compressed,
+        1 + MAX_INPUT_FRAMES * INPUT_FRAME_BYTES,
+    )
+    .map_err(io_error)?;
     let count = bytes.first().copied().unwrap_or(0) as usize;
-    if !(1..=12).contains(&count) || bytes.len() != 1 + count * 80 {
+    if !(1..=MAX_INPUT_FRAMES).contains(&count) || bytes.len() != 1 + count * INPUT_FRAME_BYTES {
         return Err(io_error("invalid input batch length"));
     }
     bytes[1..]
-        .as_chunks::<80>()
+        .as_chunks::<INPUT_FRAME_BYTES>()
         .0
         .iter()
-        .map(|frame| {
-            let u64_at = |i| u64::from_le_bytes(frame[i..i + 8].try_into().unwrap());
-            let f64_at = |i| f64::from_le_bytes(frame[i..i + 8].try_into().unwrap());
-            let command = rm_simulator_world::ChassisCommand {
-                forward_m_s: f64_at(40),
-                left_m_s: f64_at(48),
-                yaw_rate_rad_s: f64_at(56),
-                aim_yaw_rad: f64_at(64),
-                aim_pitch_rad: f64_at(72),
-            };
-            if !command.is_finite() {
-                return Err(io_error("non-finite input"));
-            }
-            Ok(Command::PilotInput {
-                chassis: u32::from_le_bytes(frame[..4].try_into().unwrap()),
-                frame: crate::input_stream::InputFrame {
-                    input_epoch: u64_at(4),
-                    sequence: u64_at(12),
-                    sampled_time_ns: u64_at(20),
-                    placement_revision: u64_at(28),
-                    duration_ticks: u32::from_le_bytes(frame[36..40].try_into().unwrap()),
-                    command,
-                },
-            })
-        })
+        .map(|frame| decode_fixed_frame(frame))
         .collect()
+}
+/// Decodes the `RMI3` body: one count byte, the shared identity header, then one
+/// entry per count. A compact frame inherits the header's identity and reuses the
+/// previous frame's sequence, sampled time and unchanged command values; a legacy
+/// frame carries all 80 bytes of its own.
+fn decode_compact_inputs(compressed: &[u8]) -> io::Result<Vec<Command>> {
+    let bytes =
+        miniz_oxide::inflate::decompress_to_vec_with_limit(compressed, INPUT_BATCH_BODY_LIMIT)
+            .map_err(io_error)?;
+    let count = bytes.first().copied().unwrap_or(0) as usize;
+    if !(1..=MAX_INPUT_FRAMES).contains(&count) {
+        return Err(io_error("invalid input count"));
+    }
+    let mut cursor = 1;
+    let header = bytes
+        .get(cursor..cursor + INPUT_HEADER_BYTES)
+        .ok_or_else(|| io_error("invalid input header"))?;
+    cursor += INPUT_HEADER_BYTES;
+    let header_chassis = u32::from_le_bytes(header[..4].try_into().unwrap());
+    let header_epoch = u64::from_le_bytes(header[4..12].try_into().unwrap());
+    let header_revision = u64::from_le_bytes(header[12..20].try_into().unwrap());
+    let mut previous_sequence: Option<u64> = None;
+    let mut previous_time: Option<u64> = None;
+    let mut previous_bits: Option<[u64; 5]> = None;
+    let mut inputs = Vec::with_capacity(count);
+    for _ in 0..count {
+        let tag = *bytes
+            .get(cursor)
+            .ok_or_else(|| io_error("truncated input batch"))?;
+        cursor += 1;
+        let (chassis, frame) = match tag {
+            INPUT_FRAME_LEGACY => {
+                let frame = bytes
+                    .get(cursor..cursor + INPUT_FRAME_BYTES)
+                    .ok_or_else(|| io_error("truncated input frame"))?;
+                cursor += INPUT_FRAME_BYTES;
+                let Command::PilotInput { chassis, frame } = decode_fixed_frame(frame)? else {
+                    unreachable!()
+                };
+                (chassis, frame)
+            }
+            INPUT_FRAME_COMPACT => {
+                let mask = *bytes
+                    .get(cursor)
+                    .ok_or_else(|| io_error("truncated input frame"))?;
+                cursor += 1;
+                let flags = *bytes
+                    .get(cursor)
+                    .ok_or_else(|| io_error("truncated input frame"))?;
+                cursor += 1;
+                if mask & !0x1f != 0 {
+                    return Err(io_error("invalid input mask"));
+                }
+                if flags & !(INPUT_SEQUENCE_ABSOLUTE | INPUT_TIME_ABSOLUTE) != 0 {
+                    return Err(io_error("invalid input flags"));
+                }
+                let sequence = if flags & INPUT_SEQUENCE_ABSOLUTE != 0 {
+                    read_u64(&bytes, &mut cursor)?
+                } else {
+                    previous_sequence
+                        .ok_or_else(|| io_error("missing input sequence base"))?
+                        .checked_add(read_varint(&bytes, &mut cursor)?)
+                        .ok_or_else(|| io_error("input sequence overflow"))?
+                };
+                let sampled_time_ns = if flags & INPUT_TIME_ABSOLUTE != 0 {
+                    read_u64(&bytes, &mut cursor)?
+                } else {
+                    previous_time
+                        .ok_or_else(|| io_error("missing input time base"))?
+                        .checked_add(read_varint(&bytes, &mut cursor)?)
+                        .ok_or_else(|| io_error("input time overflow"))?
+                };
+                let duration_ticks = u32::try_from(read_varint(&bytes, &mut cursor)?)
+                    .map_err(|_| io_error("invalid input duration"))?;
+                if previous_bits.is_none() && mask != 0x1f {
+                    return Err(io_error("missing input command base"));
+                }
+                let mut bits = previous_bits.unwrap_or([0; 5]);
+                for (index, bit) in bits.iter_mut().enumerate() {
+                    if mask & (1 << index) != 0 {
+                        *bit = read_u64(&bytes, &mut cursor)?;
+                    }
+                }
+                let command = rm_simulator_world::ChassisCommand {
+                    forward_m_s: f64::from_bits(bits[0]),
+                    left_m_s: f64::from_bits(bits[1]),
+                    yaw_rate_rad_s: f64::from_bits(bits[2]),
+                    aim_yaw_rad: f64::from_bits(bits[3]),
+                    aim_pitch_rad: f64::from_bits(bits[4]),
+                };
+                if !command.is_finite() {
+                    return Err(io_error("non-finite input"));
+                }
+                (
+                    header_chassis,
+                    crate::input_stream::InputFrame {
+                        input_epoch: header_epoch,
+                        sequence,
+                        sampled_time_ns,
+                        duration_ticks,
+                        placement_revision: header_revision,
+                        command,
+                    },
+                )
+            }
+            _ => return Err(io_error("invalid input frame tag")),
+        };
+        previous_sequence = Some(frame.sequence);
+        previous_time = Some(frame.sampled_time_ns);
+        previous_bits = Some(command_bits(&frame.command));
+        inputs.push(Command::PilotInput { chassis, frame });
+    }
+    if cursor != bytes.len() {
+        return Err(io_error("invalid input batch length"));
+    }
+    Ok(inputs)
 }
 /// Every packet fits comfortably below the path MTU. GNS supplies encryption,
 /// congestion control and reliability; this header only assembles application
@@ -516,7 +805,7 @@ impl PeerCodec {
             }
             return Ok(PeerRequest::Handled);
         }
-        if payload.starts_with(INPUT_BATCH_MAGIC) {
+        if is_input_batch(payload) {
             if !self.joined {
                 return Err(io_error("expected hello"));
             }
@@ -1050,7 +1339,7 @@ mod tests {
     use super::*;
     use crate::protocol::ServerMessage;
     use crate::simulation::Simulation;
-    use rm_simulator_world::{Field, FieldConfig};
+    use rm_simulator_world::{ChassisCommand, Field, FieldConfig};
 
     fn snapshot(ticks: u64) -> ServerMessage {
         let mut simulation = Simulation::new(Field::new(&FieldConfig::default()).unwrap(), true);
@@ -1635,5 +1924,430 @@ mod tests {
         assert!(failed);
         let notice = encoded(2, false, &ServerMessage::Notice("bad lane".into()));
         assert!(frames.receive(&notice[0], Instant::now()).is_err());
+    }
+
+    /// A pilot input command at one sampled time, on the default life.
+    fn pilot(sequence: u64, command: ChassisCommand) -> Command {
+        pilot_at(1, 0, sequence, sequence * 16_000_000, command)
+    }
+
+    /// A pilot input command with an explicit chassis, life and sample time.
+    fn pilot_at(
+        chassis: u32,
+        placement_revision: u64,
+        sequence: u64,
+        sampled_time_ns: u64,
+        command: ChassisCommand,
+    ) -> Command {
+        Command::PilotInput {
+            chassis,
+            frame: crate::input_stream::InputFrame {
+                input_epoch: 0,
+                sequence,
+                sampled_time_ns,
+                duration_ticks: 16,
+                placement_revision,
+                command,
+            },
+        }
+    }
+
+    /// The fixed 80-byte encoding of every frame in a batch. It is the equality
+    /// witness: f64 `==` cannot tell `-0.0` from `0.0`.
+    fn fixed_batch(inputs: &[Command]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for input in inputs {
+            let Command::PilotInput { chassis, frame } = input else {
+                unreachable!()
+            };
+            bytes.extend_from_slice(&fixed_frame(*chassis, frame));
+        }
+        bytes
+    }
+
+    /// The inflated `RMI3` body behind one encoded batch.
+    fn body_of(packet: &[u8]) -> Vec<u8> {
+        miniz_oxide::inflate::decompress_to_vec_with_limit(
+            packet.strip_prefix(INPUT_BATCH_MAGIC).unwrap(),
+            INPUT_BATCH_BODY_LIMIT,
+        )
+        .unwrap()
+    }
+
+    /// Frames a hand-built body as an `RMI3` packet.
+    fn reencoded(body: &[u8]) -> Vec<u8> {
+        let mut packet = INPUT_BATCH_MAGIC.to_vec();
+        packet.extend(miniz_oxide::deflate::compress_to_vec(body, 1));
+        packet
+    }
+
+    /// Encodes, decodes and asserts the decoded batch reproduces the encoded
+    /// frames bit for bit, within the single-datagram budget.
+    fn assert_round_trip(inputs: &VecDeque<Command>) -> Vec<Command> {
+        let packet = input_batch(inputs).unwrap();
+        assert!(packet.len() <= CHUNK, "batch must fit one datagram");
+        let decoded = decode_inputs(&packet).unwrap();
+        assert_eq!(decoded.len(), inputs.len());
+        assert_eq!(
+            fixed_batch(&decoded),
+            fixed_batch(&inputs.iter().copied().collect::<Vec<_>>())
+        );
+        decoded
+    }
+
+    /// A deterministic generator, so a failing round trip reproduces.
+    struct Lcg(u64);
+    impl Lcg {
+        fn bits(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            self.0
+        }
+        /// A finite value in [1, 2) with a full random mantissa.
+        fn value(&mut self) -> f64 {
+            f64::from_bits((self.bits() & 0x800f_ffff_ffff_ffff) | 0x3ff0_0000_0000_0000)
+        }
+    }
+
+    #[test]
+    fn compact_input_batch_round_trips_a_long_randomized_reversal_sequence() {
+        let mut random = Lcg(0x5eed_1234_abcd_0001);
+        let mut history = VecDeque::new();
+        let mut batches = 0;
+        for sequence in 1..=400 {
+            // Reverse the drive direction on almost every sample, with
+            // full-precision aim and steering, so the change mask and both
+            // relative deltas are exercised together.
+            let sign = if random.bits() & 1 == 0 { 1. } else { -1. };
+            history.push_back(pilot(
+                sequence,
+                ChassisCommand {
+                    forward_m_s: sign * 2.5,
+                    left_m_s: random.value() - 1.5,
+                    yaw_rate_rad_s: -sign * random.value(),
+                    aim_yaw_rad: random.value() * 6.0,
+                    aim_pitch_rad: random.value() * 0.4 - 0.2,
+                },
+            ));
+            while history.len() > 40 {
+                history.pop_front();
+            }
+            if sequence % 5 == 0 {
+                assert_round_trip(&select_inputs(&history, 12));
+                batches += 1;
+            }
+        }
+        assert!(batches >= 70);
+        eprintln!("randomized reversal batches={batches}");
+    }
+
+    #[test]
+    fn compact_input_batch_round_trips_an_aim_sweep() {
+        let mut history = VecDeque::new();
+        let mut batches = 0;
+        for sequence in 1..=200 {
+            // A fine sweep: neighbours differ in the low mantissa bits, so the
+            // mask has to carry every aim value at full f64 precision.
+            let aim = 0.000_976_562_5 * sequence as f64 + f64::from_bits(sequence);
+            history.push_back(pilot(
+                sequence,
+                ChassisCommand {
+                    aim_yaw_rad: aim,
+                    aim_pitch_rad: -0.5 + aim * 0.25,
+                    ..Default::default()
+                },
+            ));
+            while history.len() > 32 {
+                history.pop_front();
+            }
+            if sequence % 7 == 0 {
+                assert_round_trip(&select_inputs(&history, 12));
+                batches += 1;
+            }
+        }
+        assert!(batches >= 28);
+    }
+
+    #[test]
+    fn compact_input_batch_round_trips_movement_with_fire() {
+        let mut history = VecDeque::new();
+        let mut batches = 0;
+        for sequence in 1..=120 {
+            // Fire rides its own reliable-command lane; a stray Fire in the
+            // input history must never enter the batch.
+            history.push_back(Command::Fire {
+                shooter: 1,
+                timing: None,
+            });
+            history.push_back(pilot(
+                sequence,
+                ChassisCommand {
+                    forward_m_s: if (sequence / 6) % 2 == 0 { 1.75 } else { -1.75 },
+                    yaw_rate_rad_s: if sequence % 3 == 0 { 0.4 } else { -0.4 },
+                    aim_yaw_rad: sequence as f64 * 0.013_37,
+                    aim_pitch_rad: 0.05,
+                    ..Default::default()
+                },
+            ));
+            while history.len() > 24 {
+                history.pop_front();
+            }
+            if sequence % 4 == 0 {
+                let selected = select_inputs(&history, 12);
+                assert!(
+                    selected
+                        .iter()
+                        .all(|command| matches!(command, Command::PilotInput { .. }))
+                );
+                assert_round_trip(&selected);
+                batches += 1;
+            }
+        }
+        assert!(batches >= 30);
+    }
+
+    #[test]
+    fn compact_input_batch_round_trips_a_lost_release_and_the_stop_lease() {
+        let mut history = VecDeque::new();
+        for sequence in 1..=20 {
+            history.push_back(pilot(
+                sequence,
+                ChassisCommand {
+                    forward_m_s: 2.0,
+                    aim_yaw_rad: 0.25,
+                    ..Default::default()
+                },
+            ));
+        }
+        // The release sample is lost, so the newest frames the selector can see
+        // still drive. The batch must carry them exactly...
+        let decoded = assert_round_trip(&select_inputs(&history, 12));
+        assert!(decoded.iter().all(|command| matches!(command,
+            Command::PilotInput { frame, .. } if frame.command.forward_m_s == 2.0)));
+        // ...and the host must still stop the chassis one lease after the last
+        // applied sample, preserving the last aim.
+        let now_ns = 20 * 16_000_000;
+        let mut stream = crate::input_stream::InputStream::default();
+        for command in decoded {
+            let Command::PilotInput { frame, .. } = command else {
+                unreachable!()
+            };
+            stream.receive(frame, now_ns, 0).unwrap();
+        }
+        let stopped = stream
+            .expire(now_ns + crate::input_stream::INPUT_LEASE_NS)
+            .unwrap();
+        assert_eq!(stopped.forward_m_s, 0.);
+        assert_eq!(stopped.aim_yaw_rad, 0.25);
+        assert!(
+            stream
+                .expire(now_ns + crate::input_stream::INPUT_LEASE_NS + 1)
+                .is_none()
+        );
+        // A release that does arrive still round-trips and decodes to a zero drive.
+        history.push_back(pilot(
+            21,
+            ChassisCommand {
+                aim_yaw_rad: 0.25,
+                ..Default::default()
+            },
+        ));
+        let decoded = assert_round_trip(&select_inputs(&history, 12));
+        assert!(decoded.iter().any(|command| matches!(command,
+            Command::PilotInput { frame, .. }
+                if frame.sequence == 21 && frame.command.forward_m_s == 0.0)));
+    }
+
+    #[test]
+    fn compact_input_batch_preserves_negative_zero_and_full_precision() {
+        let mut inputs = VecDeque::new();
+        inputs.push_back(pilot(
+            1,
+            ChassisCommand {
+                forward_m_s: 0.0,
+                left_m_s: -0.0,
+                aim_yaw_rad: f64::from_bits(0x3ff0_0000_0000_0001),
+                ..Default::default()
+            },
+        ));
+        // Only the sign of zero changes, which f64 `==` cannot see.
+        inputs.push_back(pilot(
+            2,
+            ChassisCommand {
+                forward_m_s: -0.0,
+                left_m_s: 0.0,
+                aim_yaw_rad: f64::from_bits(0x3ff0_0000_0000_0001),
+                ..Default::default()
+            },
+        ));
+        let decoded = assert_round_trip(&inputs);
+        let Command::PilotInput { frame, .. } = &decoded[0] else {
+            unreachable!()
+        };
+        assert_eq!(frame.command.forward_m_s.to_bits(), 0.0f64.to_bits());
+        assert_eq!(frame.command.left_m_s.to_bits(), (-0.0f64).to_bits());
+        let Command::PilotInput { frame, .. } = &decoded[1] else {
+            unreachable!()
+        };
+        assert_eq!(frame.command.forward_m_s.to_bits(), (-0.0f64).to_bits());
+        assert_eq!(frame.command.left_m_s.to_bits(), 0.0f64.to_bits());
+    }
+
+    #[test]
+    fn compact_input_batch_falls_back_to_the_fixed_frame_for_another_life() {
+        let mut inputs = VecDeque::new();
+        for sequence in 1..=4 {
+            inputs.push_back(pilot_at(
+                1,
+                if sequence == 2 { 9 } else { 0 },
+                sequence,
+                sequence * 16_000_000,
+                ChassisCommand {
+                    forward_m_s: 1.0,
+                    ..Default::default()
+                },
+            ));
+        }
+        // The header comes from the newest frame, so the mismatched frame keeps
+        // its fixed 80-byte encoding and still round-trips exactly.
+        let packet = input_batch(&inputs).unwrap();
+        assert_eq!(
+            fixed_batch(&decode_inputs(&packet).unwrap()),
+            fixed_batch(&inputs.iter().copied().collect::<Vec<_>>())
+        );
+    }
+
+    #[test]
+    fn compact_batch_carries_the_scripted_workload_not_just_its_bytes() {
+        // An idle and a driving pilot produce batches of similar size, so the
+        // decoded values, not the byte count, must show which one was sent.
+        let idle: VecDeque<_> = (1..=8)
+            .map(|sequence| pilot(sequence, ChassisCommand::default()))
+            .collect();
+        let drive: VecDeque<_> = (1..=8)
+            .map(|sequence| {
+                pilot(
+                    sequence,
+                    ChassisCommand {
+                        forward_m_s: 2.0,
+                        aim_yaw_rad: 0.5,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        let idle_packet = input_batch(&idle).unwrap();
+        let drive_packet = input_batch(&drive).unwrap();
+        let idle_decoded = decode_inputs(&idle_packet).unwrap();
+        let drive_decoded = decode_inputs(&drive_packet).unwrap();
+        assert!(idle_decoded.iter().all(|command| matches!(command,
+            Command::PilotInput { frame, .. } if frame.command.forward_m_s == 0.0)));
+        assert!(drive_decoded.iter().all(|command| matches!(command,
+            Command::PilotInput { frame, .. }
+                if frame.command.forward_m_s == 2.0 && frame.command.aim_yaw_rad == 0.5)));
+        eprintln!(
+            "workload idle_bytes={} drive_bytes={}",
+            idle_packet.len(),
+            drive_packet.len()
+        );
+    }
+
+    #[test]
+    fn older_fixed_rmi2_batches_still_decode() {
+        let inputs: VecDeque<_> = (1..=3)
+            .map(|sequence| {
+                pilot(
+                    sequence,
+                    ChassisCommand {
+                        forward_m_s: 1.5,
+                        aim_yaw_rad: 0.7,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        let mut body = vec![inputs.len() as u8];
+        for input in &inputs {
+            let Command::PilotInput { chassis, frame } = input else {
+                unreachable!()
+            };
+            body.extend_from_slice(&fixed_frame(*chassis, frame));
+        }
+        let mut packet = INPUT_BATCH_MAGIC_V2.to_vec();
+        packet.extend(miniz_oxide::deflate::compress_to_vec(&body, 1));
+        assert_eq!(
+            fixed_batch(&decode_inputs(&packet).unwrap()),
+            fixed_batch(&inputs.iter().copied().collect::<Vec<_>>())
+        );
+    }
+
+    #[test]
+    fn compact_input_batch_refuses_malformed_headers_masks_counts_and_oversized_batches() {
+        // A malformed header: a count byte with no shared identity behind it.
+        let mut short = INPUT_BATCH_MAGIC.to_vec();
+        short.extend(miniz_oxide::deflate::compress_to_vec(&[1u8], 1));
+        assert!(decode_inputs(&short).is_err());
+
+        // A giant count and a zero count, which no encoder can produce.
+        let mut giant = vec![13u8];
+        giant.extend([0u8; INPUT_HEADER_BYTES]);
+        assert!(decode_inputs(&reencoded(&giant)).is_err());
+        let mut zero = vec![0u8];
+        zero.extend([0u8; INPUT_HEADER_BYTES]);
+        assert!(decode_inputs(&reencoded(&zero)).is_err());
+
+        let inputs: VecDeque<_> = (1..=4)
+            .map(|sequence| {
+                pilot(
+                    sequence,
+                    ChassisCommand {
+                        forward_m_s: 1.0,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+
+        // A wrong mask: a bit outside the five command values.
+        let mut body = body_of(&input_batch(&inputs).unwrap());
+        body[1 + INPUT_HEADER_BYTES + 1] |= 0x20;
+        assert!(decode_inputs(&reencoded(&body)).is_err());
+
+        // A wrong flag: a reserved bit beside the two absolute markers.
+        let mut body = body_of(&input_batch(&inputs).unwrap());
+        body[1 + INPUT_HEADER_BYTES + 2] |= 0x80;
+        assert!(decode_inputs(&reencoded(&body)).is_err());
+
+        // A batch over the 1,000-byte single-datagram bound, both as a whole
+        // packet and as an inflated body past the maximum.
+        let mut over = INPUT_BATCH_MAGIC.to_vec();
+        over.extend(vec![0u8; CHUNK]);
+        assert!(decode_inputs(&over).is_err());
+        let bomb = reencoded(&vec![0u8; INPUT_BATCH_BODY_LIMIT + 1]);
+        assert!(decode_inputs(&bomb).is_err());
+
+        // The worst batch the codec can build: eleven frames whose identity is
+        // not the shared header's keep the fixed 80-byte encoding, and the
+        // newest frame changes all five full-precision values.
+        let maximal: VecDeque<_> = (1..=12)
+            .map(|sequence| {
+                pilot_at(
+                    1,
+                    u64::from(sequence == 12),
+                    sequence,
+                    sequence * 16_000_000,
+                    ChassisCommand {
+                        forward_m_s: f64::from_bits(0x3ff0_0000_0000_0001 + sequence),
+                        left_m_s: -f64::from_bits(0x3ff8_0000_0000_0003 + sequence),
+                        yaw_rate_rad_s: f64::from_bits(0x3fe0_0000_0000_0007 + sequence),
+                        aim_yaw_rad: -f64::from_bits(0x4000_0000_0000_0005 + sequence),
+                        aim_pitch_rad: f64::from_bits(0x3fd0_0000_0000_0009 + sequence),
+                    },
+                )
+            })
+            .collect();
+        assert!(input_batch(&maximal).unwrap().len() <= CHUNK);
     }
 }

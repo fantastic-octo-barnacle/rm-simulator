@@ -19,7 +19,9 @@ use std::io::{self, BufRead, Read, Write};
 /// Version 27 delivers authoritative armor contacts independently of snapshots.
 /// Version 28 references the owner chassis configuration by immutable identity
 /// instead of repeating it in every anchor, with a dedicated reliable frame.
-pub const PROTOCOL_VERSION: u32 = 28;
+/// Version 29 combines referenced owner configurations with lossless RMI3 input
+/// batches; experimental version 28 builds carried only one of these changes.
+pub const PROTOCOL_VERSION: u32 = 29;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///
