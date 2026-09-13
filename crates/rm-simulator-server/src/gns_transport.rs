@@ -488,8 +488,6 @@ mod tests {
     use crate::udp_codec::Frames;
     use rm_simulator_world::{Field, FieldConfig};
 
-    static NATIVE_TEST: Mutex<()> = Mutex::new(());
-
     fn wait(mut done: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !done() {
@@ -585,7 +583,18 @@ mod tests {
         drop(owner);
         drop(guest);
         server.shutdown();
-        let _rebound = std::net::UdpSocket::bind(address).unwrap();
+        // GNS closes raw sockets on its service thread after CloseListenSocket
+        // returns. Joining our worker does not wait for that native cleanup.
+        // Still require the port to be released within the bounded wait.
+        let mut rebound = None;
+        wait(|| match std::net::UdpSocket::bind(address) {
+            Ok(socket) => {
+                rebound = Some(socket);
+                true
+            }
+            Err(error) if error.kind() == io::ErrorKind::AddrInUse => false,
+            Err(error) => panic!("could not rebind UDP listener {address}: {error}"),
+        });
     }
 
     #[test]
