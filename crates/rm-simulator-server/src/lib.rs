@@ -9,9 +9,9 @@
 //! `rm-simulator-server`.
 #![deny(missing_docs)]
 
-pub mod base_layout;
 #[cfg(test)]
 mod bandwidth_probe;
+pub mod base_layout;
 pub mod cad_assets;
 pub mod clock;
 pub mod collision_mesh;

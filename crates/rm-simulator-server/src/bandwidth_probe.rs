@@ -254,7 +254,7 @@ fn account_up(totals: &mut Totals, bytes: &[u8]) {
     totals.up_packets += 1;
     totals.up_bytes += bytes.len() as u64;
     if let Some(inflated) = bytes
-        .strip_prefix(b"RMI2")
+        .strip_prefix(b"RMI3")
         .and_then(|body| miniz_oxide::inflate::decompress_to_vec_with_limit(body, 16 * 1024).ok())
     {
         totals.up_batches += 1;
@@ -308,11 +308,9 @@ fn simulation(workload: Workload) -> (Simulation, Vec<u32>) {
 /// The owner anchor for the first chassis cut from `state`, if the field has one.
 fn owner_anchor(state: &SimulationState) -> Option<Vec<u8>> {
     let chassis = state.field.chassis.first()?.id;
-    Some(
-        crate::owner_stream::OwnerAnchor::from_state(state, chassis)?
-            .encode()
-            .ok()?,
-    )
+    crate::owner_stream::OwnerAnchor::from_state(state, chassis)?
+        .encode()
+        .ok()
 }
 
 /// Run one workload and return its counters.
