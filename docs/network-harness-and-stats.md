@@ -9,6 +9,32 @@ a bounded prediction history. The sections below retain the broader measurement
 design; complete per-event traces, hit disagreement and measured input-to-photon
 latency remain unavailable. See the [roadmap](multiplayer-networking.md).
 
+## Event latency measurements
+
+The console's `network.event_samples` exposes the newest 256 measurements per
+metric as `(sequence, milliseconds)` pairs and a cumulative `total`. The harness
+counts each event once after the first available active observation; repeated
+polls and idle time do not repeat the latest shot or RTT. Equal durations with
+different sequence numbers remain separate events. Overwritten event IDs fail
+`event_history_complete`. A missing history is unavailable, not a last-value
+fallback. Percentiles require 20 events for p95 and 100 for p99.
+
+`shot_confirmation_ms` measures each accepted local shot from submission to
+client consumption of its first authoritative outcome. `shot_execution_offset_ms`
+is its available host execution offset. `rtt_ms` counts individual accepted
+application probe replies. `checkpoint_arrival_interval_ms` measures intervals
+between decoded complete snapshots at the client inbox, before coalescing;
+it includes reliable confirmation snapshots as well as periodic checkpoints.
+
+The legacy console `checkpoint_gap_ms` and `collision_context_gap_ms` fields
+measure time since consumption, not inter-arrival intervals. Their sampled maxima
+remain freshness gates; baseline comparison skips their sampling-phase-dependent
+percentiles. Older summary files cannot supply the new event distributions and
+are skipped when their event measurement schema differs. Historical short-run
+shot/RTT percentiles based on repeated last-value polling are not per-event
+latency evidence. Event windows span first-to-last available active observations,
+not the entire active interval or recovery.
+
 ## Run the implemented harness
 
 Requires Python 3.9 or newer, the external CAD package and explicitly built matching
