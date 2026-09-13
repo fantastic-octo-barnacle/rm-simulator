@@ -4,6 +4,9 @@
 
 ## Unreleased
 
+- Keep closed-PR metadata checks from cancelling main CI, and explicitly fetch
+  PR commits before validating their messages after branch updates.
+
 - Fix intermittent native release validation failures by waiting for deferred
   UDP socket cleanup, isolating lobby tests from process-wide packet impairment,
   and giving the TCP backpressure test a separate deadline after admission.

@@ -13,11 +13,13 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: lightweight-${{ github.workflow }}-${{ github.ref }}
+  group: lightweight-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
   checks:
     name: Repository checks
+    # PR metadata edits can arrive after squash merge and branch deletion.
+    if: github.event_name != 'pull_request' || github.event.pull_request.state == 'open'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -34,6 +36,8 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          # Fetch the event commits explicitly, including after a force push.
+          git fetch --no-tags origin "$BASE_SHA" "$HEAD_SHA"
           python3 scripts/check-commit-message.py --pr-title
           python3 scripts/check-commit-message.py --range "$BASE_SHA..$HEAD_SHA"
       - name: Check main commit messages
@@ -64,7 +68,7 @@ jobs:
           python3 -m doctest scripts/check-mpl-compliance.py
   required:
     name: CI required
-    if: always()
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
     needs: checks
     runs-on: ubuntu-24.04
     steps:
