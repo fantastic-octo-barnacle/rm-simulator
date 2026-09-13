@@ -13,8 +13,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, io};
-/// First four bytes of every baseline feedback payload, so a sender can tell
-/// feedback from snapshot traffic on the same lane.
+/// First four bytes of every baseline or owner-configuration feedback payload,
+/// so a sender can tell feedback from snapshot traffic on the same lane.
 pub const ACK_MAGIC: &[u8; 4] = b"RMA1";
 const BASE_LIMIT: usize = 1024 * 1024;
 /// One application frame on the delta lane, always tagged by the state epoch.
@@ -65,9 +65,11 @@ struct Envelope {
     #[serde(rename = "UdpSnapshot")]
     message: Wire,
 }
-/// The decoder's answer about one baseline. `Stored` and `Retired` confirm a
-/// state transition; `Missing` tells the encoder a delta referenced a baseline
-/// the decoder never pinned, so the next frame must be independent again.
+/// The decoder's answer about one baseline, or the owner codec's answer about
+/// one owner configuration. `Stored` and `Retired` confirm a state transition;
+/// `Missing` tells the encoder a delta referenced a baseline the decoder never
+/// pinned, so the next frame must be independent again; `ConfigStored` and
+/// `ConfigMissing` run the owner-configuration acknowledgement handshake.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Feedback {
     /// The candidate baseline was pinned under `id`.
@@ -90,6 +92,19 @@ pub enum Feedback {
         epoch: u64,
         /// Id of the baseline that was needed.
         id: u64,
+    },
+    /// The client stored the owner configuration named by `revision`, so the
+    /// host may now reference it from an anchor.
+    ConfigStored {
+        /// Wire value of the acknowledged configuration revision.
+        revision: u64,
+    },
+    /// An anchor named a configuration `revision` the client does not hold. The
+    /// host should resend it; the client dropped that anchor rather than
+    /// applying a reference it could not decode.
+    ConfigMissing {
+        /// Wire value of the configuration revision the client needs.
+        revision: u64,
     },
 }
 impl Feedback {

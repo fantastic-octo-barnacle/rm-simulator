@@ -633,6 +633,9 @@ impl ClientInbox {
                 None
             }
             ServerMessage::Welcome(_) => None,
+            // The UDP client codec consumes the configuration frame before the
+            // inbox sees it; no other transport carries one.
+            ServerMessage::OwnerConfig(_) => None,
         };
         drop(data);
         self.changed.notify_one();
