@@ -729,6 +729,11 @@ and discards stale history on placement, defeat, despawn and pause changes.
 Screenshots bypass interpolation, keeping confirmation-dependent captures exact.
 Measure snapshot bytes and codec CPU with
 `cargo run -p rm-simulator-server --example network_bandwidth --locked`.
+Use `cargo run --release --locked -p rm-simulator-server --example
+network_bandwidth -- --deflate-sweep` to compare deflate 1/4 on identical selected
+checkpoints at 64 ms intervals. See the
+[cadence and compression measurements](docs/bandwidth-results/cadence-deflate-followup.md)
+for live trials and a progressive degraded-network play command.
 
 `GET /api/fire-records` on the host HTTP endpoint returns the latest 256 accepted
 pilot shots, oldest first. Records include client-relative input time, estimated

@@ -4,6 +4,9 @@
 
 ## Unreleased
 
+- Add a reproducible selected-checkpoint deflate sweep and five-seed cadence/
+  capacity trial scenarios, including a progressive manual networking profile.
+
 - Classify protocol 29 owner anchors and input batches correctly in network
   tracing; their new wire tags previously appeared as control traffic.
 

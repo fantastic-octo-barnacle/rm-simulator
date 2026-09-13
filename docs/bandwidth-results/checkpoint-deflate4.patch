@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 hxyulin <hxyulin@proton.me>
+diff --git a/crates/rm-simulator-server/src/udp_snapshot.rs b/crates/rm-simulator-server/src/udp_snapshot.rs
+index 3e0f59c..98d1800 100644
+--- a/crates/rm-simulator-server/src/udp_snapshot.rs
++++ b/crates/rm-simulator-server/src/udp_snapshot.rs
+@@ -139,7 +139,7 @@ impl Feedback {
+ pub fn encode(wire: Wire) -> Vec<u8> {
+     miniz_oxide::deflate::compress_to_vec(
+         &serde_json::to_vec(&Envelope { message: wire }).unwrap(),
+-        1,
++        4,
+     )
+ }
+ /// Reads an inflated frame. `Ok(None)` means the JSON carried no `UdpSnapshot`

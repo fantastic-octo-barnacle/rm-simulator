@@ -27,13 +27,22 @@ between decoded complete snapshots at the client inbox, before coalescing;
 it includes reliable confirmation snapshots as well as periodic checkpoints.
 
 The legacy console `checkpoint_gap_ms` and `collision_context_gap_ms` fields
-measure time since consumption, not inter-arrival intervals. Their sampled maxima
-remain freshness gates; baseline comparison skips their sampling-phase-dependent
-percentiles. Older summary files cannot supply the new event distributions and
+measure time since consumption, not inter-arrival intervals. `checkpoint_gap_ms`
+refreshes on an owner anchor as well as a complete world snapshot;
+`collision_context_gap_ms` refreshes only on a complete world snapshot. Use the
+latter to assess coherent-world freshness: continuing owner traffic can hide a
+stalled world stream in the former. Their sampled maxima remain freshness gates;
+baseline comparison skips their sampling-phase-dependent percentiles. Older summary files cannot supply the new event distributions and
 are skipped when their event measurement schema differs. Historical short-run
 shot/RTT percentiles based on repeated last-value polling are not per-event
 latency evidence. Event windows span first-to-last available active observations,
 not the entire active interval or recovery.
+
+`unresolved_shot_outcomes_delta` counts local shot flights that expired after
+five seconds without an authoritative launch. It is cumulative and does not fall
+when a late result arrives. Report pending shots and complete-context recovery
+separately; an unchanged expiry count during recovery does not by itself prove
+that all outcomes recovered. It also does not establish that a hit was lost.
 
 ## Run the implemented harness
 
