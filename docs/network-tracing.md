@@ -107,6 +107,10 @@ server teardown joins its delivery workers. Standalone sessions create no gamepl
 listener, while listen hosts use channels for their local player and GNS/TCP for
 remote players. Snapshot cloning and physics replay still cost time.
 
+Packet classification recognizes both RMO3/RMO4 owner anchors and RMI2/RMI3
+input batches. Before `e678491`, the protocol 29 tags were counted as `control`;
+that affects historical per-class attribution, not total byte counts.
+
 ## Deterministic bandwidth probe
 
 Run `cargo test -p rm-simulator-server --locked bandwidth_attribution_baseline

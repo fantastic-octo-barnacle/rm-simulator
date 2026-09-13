@@ -26,6 +26,11 @@ has only in-process bandwidth evidence. NET-001 remains open; see
 [known issues](../KNOWN_ISSUES.md). The canonical probe still needs populated
 hit and shot-result workloads before drawing recovery-history conclusions.
 
+See the [integration follow-up](bandwidth-results/integration-followup.md) for
+corrected event measurements, the RTT repeat, targeted live trials and the
+subsequent wire-tag tracing fix. Historical per-class trace counts before that
+fix misclassified RMO4/RMI3 traffic as control; total byte counts are unaffected.
+
 ## Problem and budget
 
 [NET-001](../KNOWN_ISSUES.md) records approximately 855 kbps downstream and

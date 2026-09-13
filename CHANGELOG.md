@@ -4,6 +4,9 @@
 
 ## Unreleased
 
+- Classify protocol 29 owner anchors and input batches correctly in network
+  tracing; their new wire tags previously appeared as control traffic.
+
 - Measure individual shot confirmations, probe RTTs and complete-checkpoint
   arrival intervals with bounded event histories. Avoid repeated last-value
   latency samples and report overwritten measurements in network trials.
