@@ -103,9 +103,10 @@ outcome does not by itself establish that an authoritative hit was lost.
 
 This is **not a blocker to continuing the remaining bandwidth trials**. Keep
 NET-003 open and preserve the failed gate; reproducing it on the baseline does
-not turn either trial into a pass or establish impaired-link acceptance. The
-hit-focused trial, reconnect/setup-loss coverage and broader recovery validation
-remain outstanding.
+not turn either trial into a pass or establish impaired-link acceptance. Short targeted robot-armor and impaired setup/rejoin probes are recorded in the
+[integration follow-up](docs/bandwidth-results/integration-followup.md).
+Packet-specific setup/ACK loss over GNS and broader recovery validation remain
+outstanding; random setup loss is not proof of dropping a particular ACK.
 
 Raw artifacts remain outside Git in `/tmp/rm-short-two-client-blackout-baseline`
 and `/tmp/rm-short-two-client-blackout-run`; each contains the scenario, binary
