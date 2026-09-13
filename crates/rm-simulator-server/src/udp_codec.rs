@@ -489,6 +489,12 @@ impl PeerCodec {
     pub(crate) fn next(&mut self, now: Instant) -> io::Result<Option<Datagram>> {
         self.pacer.next(self.elapsed(now)).map_err(io_error)
     }
+    /// Host encoding counters for this peer. Test-facing: the bandwidth probe
+    /// reads them here because no production path reports them over the wire.
+    #[cfg(test)]
+    pub(crate) fn encoding_stats(&self) -> crate::network_stats::EncodingStats {
+        self.encoding.clone()
+    }
 }
 
 /// One peer's whole host-side leg: admission, the seat it was given, its bounded
