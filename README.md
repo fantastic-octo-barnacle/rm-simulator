@@ -153,7 +153,7 @@ outpost armor overlays coincide with the imported geometry.
 | `rm-simulator-physics` | Reusable Rapier dynamics, chassis, projectiles, raw armor contacts, shared geometry and prescribed armor motion. No gameplay, Bevy, server or CAD-loader dependency. |
 | `rm-simulator-world` | Complete `Field` facade: explicit ticks, activation, detection, damage, referee integration and restore. Coordinates the physics library and preserves existing public world imports. |
 | `rm-simulator-render` | Bevy CAD scenery, lighting, rune and outpost light overlays, projectile spheres, chassis visuals, and pose/visibility/strike synchronization from caller-owned scene state. No world dependency. |
-| `rm-simulator-server` | Bevy-free glue: CAD loading and checksums, collision triangles, field layout, the `Simulation` wrapper, a `Host` worker that owns simulation and command ordering, GNS UDP and TCP transports, the HTTP referee panel, and the headless binary. |
+| `rm-simulator-server` | Bevy-free glue: CAD loading and checksums, collision triangles, field layout, the `Simulation` wrapper, a `Host` worker that owns simulation and command ordering, GNS UDP, TCP and in-process channel transports, the HTTP referee panel, and the headless binary. |
 | `rm-simulator-bench` | Fixed-camera CAD renderer benchmark, independent of physics, world, server and gameplay. |
 | `rm-simulator-app` | The `rm-simulator` binary: window, chassis driving and gimbal camera (or fly camera), gun, HUD, world-to-scene adaptation, and the local or remote session that turns inputs into protocol commands. |
 
@@ -576,11 +576,12 @@ of every client) is sent whenever it changes; hold Tab to see team players.
 can `--connect` to it, and `--http` opens the panel next to it. The panel is
 a single page that polls `/api/state`, posts `/api/command` and
 `/api/referee`, and shows the clock, teams, robots, outposts and event log.
-Standalone play starts an embedded server and a private loopback TCP owner
-connection. It works offline without a separate server process or Steam. Its clock runs on a worker, held until scenery finishes loading,
+Standalone play starts an embedded server and a private in-process channel
+connection, without a gameplay socket or JSON serialization. It works offline without a separate server process or Steam. Its clock runs on a worker, held until scenery finishes loading,
 and preserves `--start-paused`. The local owner retains match controls and
 free-camera firing; these privileges cannot be requested in a network hello.
-`--listen` exposes the same world to other players. Local snapshots target a
+`--listen` exposes the same world to other players. Its local player also uses
+the channel connection; remote players retain the selected network transport. Local snapshots target a
 4 ms interval, while remote snapshots use a 32 ms interval; physics load
 can reduce either rate. Clients reconstruct outpost and rune motion between
 snapshots using an estimated host simulation clock. Remote chassis use automatic interpolation buffering, starting at 64 ms and
@@ -976,3 +977,9 @@ in five unmodified MPL-2.0 components through Bevy Flair; their versions,
 sources and the MPL-2.0 source offer are recorded in [NOTICE.md](NOTICE.md) with
 the full license text at [LICENSES/MPL-2.0.txt](LICENSES/MPL-2.0.txt). Run
 `just mpl` to check that notice against the resolved dependency graph.
+
+Networking traces can be recorded with `RM_NET_TRACE_DIR=/tmp/rm-network-traces`.
+The detailed network overlay reports recording status; console `state` includes
+message counters, encoding costs and trace status. See
+[network tracing](docs/network-tracing.md) for byte definitions, bounded recording,
+and the summary command. Keep traces outside Git.

@@ -64,10 +64,26 @@ pub struct Server {
     listener: Option<Listener>,
     udp: Option<gns_transport::UdpListener>,
     stop: Stop,
-    owner: Mutex<Option<PeerWriter>>,
+    owner: Mutex<Option<LocalOwner>>,
 }
 
 impl Server {
+    /// Create a host with no gameplay socket. Only the typed owner connection
+    /// and optional operator interfaces can reach it. `ready` releases the
+    /// startup hold; call `spawn_clock` separately to enable real-time ticks.
+    pub fn in_process(simulation: Simulation, ready: bool) -> io::Result<Self> {
+        let host = Host::new(simulation, ready)?;
+        let handle = host.handle();
+        let stop = host.stop_signal();
+        Ok(Self {
+            host,
+            handle,
+            stop,
+            listener: None,
+            udp: None,
+            owner: Mutex::new(None),
+        })
+    }
     /// Transfer the simulation to its owner worker and start accepting clients.
     /// Start real-time pacing with [`Server::spawn_clock`] or [`Server::run_clock`].
     pub fn bind(addr: impl ToSocketAddrs, simulation: Simulation) -> io::Result<Server> {
@@ -114,28 +130,114 @@ impl Server {
         let mut owner = self.owner.lock().unwrap_or_else(|p| p.into_inner());
         anyhow::ensure!(owner.is_none(), "an owner is already connected");
         anyhow::ensure!(!self.stop.wait(Duration::ZERO), "server is stopped");
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        let client = TcpStream::connect(listener.local_addr()?)?;
-        let address = client.local_addr()?;
-        let server = loop {
-            let (stream, peer) = listener.accept()?;
-            if peer == address {
-                break stream;
-            }
+        let stop = Stop::default();
+        let (sender, receiver) = outbox::channel(OUTBOX_CAPACITY);
+        let welcome = self
+            .handle
+            .join(PeerRegistration {
+                password: String::new(),
+                name: name.into(),
+                team: Some(team),
+                role,
+                owner_spawn: Some((spawn_m, yaw_deg)),
+                outbox: sender,
+                stream: ConnectionStop::Worker(stop.clone()),
+            })
+            .map_err(anyhow::Error::msg)?;
+        let inbox = Arc::new(ClientInbox::for_transport(
+            "local",
+            crate::clock::TimeSource::system(),
+        ));
+        let (outbox, commands) = mpsc::sync_channel(CLIENT_COMMAND_CAPACITY);
+        // Construct the guard before spawning: failure must release the seat.
+        let mut connection = LocalOwner {
+            stop: stop.clone(),
+            handle: self.handle.clone(),
+            id: welcome.client_id,
+            workers: Vec::new(),
         };
-        drop(listener);
-        let shutdown = server.try_clone()?;
         let handle = self.handle.clone();
-        let worker = thread::Builder::new()
-            .name("rm-owner".into())
-            .spawn(move || {
-                serve_peer(handle, server, Some((spawn_m, yaw_deg)));
-            })?;
-        let connection = PeerWriter {
-            stream: shutdown,
-            worker: Some(worker),
+        let stopping = stop.clone();
+        let incoming = inbox.clone();
+        let id = welcome.client_id;
+        connection
+            .workers
+            .push(
+                thread::Builder::new()
+                    .name("rm-local-input".into())
+                    .spawn(move || {
+                        let result = (|| -> Result<(), String> {
+                            while !stopping.wait(Duration::ZERO) {
+                                let queued: QueuedCommand = match commands
+                                    .recv_timeout(Duration::from_millis(2))
+                                {
+                                    Ok(Some(queued)) => queued,
+                                    Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                                };
+                                if let Some(command) = queued.command {
+                                    let message = ClientMessage::Command(command);
+                                    incoming
+                                        .observer
+                                        .client("dequeue", Some(id), &message, None);
+                                    handle.message(id, message)?;
+                                }
+                                if let Some(nonce) = queued.time_probe {
+                                    handle.message(id, ClientMessage::TimeProbe { nonce })?;
+                                }
+                                if let Some(nonce) = queued.confirmation {
+                                    handle.message(id, ClientMessage::Ping { nonce })?;
+                                }
+                            }
+                            Ok(())
+                        })();
+                        if let Err(reason) = result {
+                            incoming.fail(reason);
+                        }
+                        let _ = handle.leave(id);
+                    })?,
+            );
+        let incoming = inbox.clone();
+        let stopping = stop.clone();
+        connection
+            .workers
+            .push(
+                thread::Builder::new()
+                    .name("rm-local-state".into())
+                    .spawn(move || {
+                        while let Some(frame) = receiver.recv() {
+                            // Typed publication preserves barriers without serialization or sockets.
+                            if stopping.wait(Duration::ZERO) {
+                                break;
+                            }
+                            let started = Instant::now();
+                            let result = incoming.publish(frame.message().clone());
+                            incoming.observer.work("local_publish", started.elapsed());
+                            if let Err(error) = result {
+                                incoming.fail(error.to_string());
+                                break;
+                            }
+                        }
+                        incoming.fail("host closed the local connection".into());
+                        stopping.request();
+                    })?,
+            );
+        let client = Client {
+            stream: ConnectionStop::Worker(stop),
+            outbox,
+            inbox,
+            welcome,
+            latest: None,
+            roster: Vec::new(),
+            disconnected: None,
+            sent_confirmation: 0,
+            timing: ClientTiming::default(),
+            transport_stats: None,
+            host_telemetry: None,
+            delivery_stats: None,
+            owner_anchor: None,
+            acknowledged: 0,
         };
-        let client = Client::from_stream(client, name, Some(team), role)?;
         *owner = Some(connection);
         Ok(client)
     }
@@ -165,12 +267,18 @@ impl Server {
         self.handle.try_dynamic_geometry()
     }
 
+    /// The bound gameplay address, or `None` for a socket-free in-process host.
+    pub fn listening_addr(&self) -> Option<SocketAddr> {
+        self.listener
+            .as_ref()
+            .map(|listener| listener.local_addr)
+            .or_else(|| self.udp.as_ref().map(|listener| listener.local_addr))
+    }
     /// The bound address of the active listener, TCP or UDP.
+    /// Panics for an in-process host; use `listening_addr` when either mode is possible.
     pub fn local_addr(&self) -> SocketAddr {
-        self.listener.as_ref().map_or_else(
-            || self.udp.as_ref().expect("host listener").local_addr,
-            |listener| listener.local_addr,
-        )
+        self.listening_addr()
+            .expect("in-process host has no gameplay listener")
     }
     /// Everyone connected, in arrival order.
     pub fn roster(&self) -> Vec<PlayerInfo> {
@@ -206,7 +314,7 @@ impl Server {
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
         {
-            let _ = owner.stream.shutdown(Shutdown::Both);
+            owner.stop.request();
         }
     }
 
@@ -232,6 +340,23 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+/// Owns the embedded seat and joins its typed delivery workers on server teardown.
+struct LocalOwner {
+    stop: Stop,
+    handle: HostHandle,
+    id: u32,
+    workers: Vec<thread::JoinHandle<()>>,
+}
+impl Drop for LocalOwner {
+    fn drop(&mut self) {
+        self.stop.request();
+        let _ = self.handle.leave(self.id);
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -345,8 +470,20 @@ fn write_loop(mut stream: TcpStream, inbox: outbox::Receiver) {
 
 fn write_all_lines(stream: &mut TcpStream, inbox: &outbox::Receiver) -> io::Result<()> {
     use std::io::Write;
+    let observer =
+        crate::network_trace::Observer::new("tcp-host", crate::clock::TimeSource::system());
     while let Some(line) = inbox.recv() {
-        stream.write_all(line.encoded().as_bytes())?;
+        let started = Instant::now();
+        let bytes = line.encoded().as_bytes();
+        observer.work("tcp_encode", started.elapsed());
+        stream.write_all(bytes)?;
+        observer.server("tcp_write", line.message());
+        observer.record(crate::network_trace::Event {
+            stage: "tcp_bytes",
+            kind: "json_line",
+            bytes: Some(bytes.len()),
+            ..Default::default()
+        });
         stream.flush()?;
     }
     Ok(())
@@ -375,6 +512,8 @@ struct Incoming {
 /// Arrival times are read through `time`, not [`Instant::now`], so a session
 /// that injects a clock measures transit on that clock all the way down.
 struct ClientInbox {
+    transport: &'static str,
+    observer: crate::network_trace::Observer,
     data: Mutex<Incoming>,
     changed: Condvar,
     time: crate::clock::TimeSource,
@@ -386,7 +525,12 @@ impl Default for ClientInbox {
 }
 impl ClientInbox {
     fn with_time(time: crate::clock::TimeSource) -> Self {
+        Self::for_transport("tcp", time)
+    }
+    fn for_transport(transport: &'static str, time: crate::clock::TimeSource) -> Self {
         Self {
+            transport,
+            observer: crate::network_trace::Observer::new(transport, time.clone()),
             data: Mutex::new(Incoming::default()),
             changed: Condvar::new(),
             time,
@@ -394,6 +538,7 @@ impl ClientInbox {
     }
     /// Reader-side publication. Drop replaced snapshots after releasing the lock.
     fn publish(&self, message: ServerMessage) -> io::Result<()> {
+        self.observer.server("publish", &message);
         let message = match message {
             ServerMessage::Rejected { reason } => {
                 ServerMessage::Notice(format!("rejected: {reason}"))
@@ -579,15 +724,6 @@ impl Client {
         )
     }
 
-    fn from_stream(
-        stream: TcpStream,
-        name: &str,
-        team: Option<Team>,
-        role: Role,
-    ) -> anyhow::Result<Client> {
-        Self::from_stream_with_password(stream, name, team, role, "")
-    }
-
     fn from_stream_with_password(
         stream: TcpStream,
         name: &str,
@@ -640,7 +776,9 @@ impl Client {
         thread::Builder::new()
             .name("rm-client-writer".into())
             .spawn(move || {
-                if let Err(error) = write_client_commands(&mut writer, commands) {
+                if let Err(error) =
+                    write_client_commands(&mut writer, commands, Some(&failures.observer))
+                {
                     failures.fail(format!("sending commands: {error}"));
                 }
                 let _ = writer.shutdown(Shutdown::Both);
@@ -717,6 +855,14 @@ impl Client {
         if let Some(reason) = &self.disconnected {
             return Err(io::Error::new(io::ErrorKind::NotConnected, reason.clone()));
         }
+        if let Some(command) = queued.command {
+            self.inbox.observer.client(
+                "enqueue_attempt",
+                Some(self.welcome.client_id),
+                &ClientMessage::Command(command),
+                None,
+            );
+        }
         let error = match self.outbox.try_send(Some(queued)) {
             Ok(()) => return Ok(()),
             Err(TrySendError::Full(_)) => io::Error::new(
@@ -756,6 +902,13 @@ impl Client {
         let failure = data.failure.clone();
         drop(data);
         if let Some(snapshot) = snapshot {
+            self.inbox.observer.record(crate::network_trace::Event {
+                stage: "consume",
+                kind: "snapshot",
+                snapshot: Some(snapshot.snapshot_id),
+                simulation_ns: Some(snapshot.field.time_ns),
+                ..Default::default()
+            });
             let at = received_at.unwrap_or_else(|| self.timing.now());
             self.timing.observe(&snapshot, at);
             self.latest = Some(*snapshot);
@@ -836,12 +989,7 @@ impl Client {
         crate::network_stats::NetworkStats {
             schema_version: 1,
             connection_generation: u64::from(self.welcome.client_id),
-            transport: if self.transport_stats.is_some() {
-                "gns"
-            } else {
-                "tcp_or_local"
-            }
-            .into(),
+            transport: self.inbox.transport.into(),
             sampled_elapsed_ms: elapsed,
             stale: self.disconnected.is_some(),
             native_sample_age_ms: self
@@ -858,6 +1006,11 @@ impl Client {
                 .pending
                 .map(|(_, at)| at.elapsed().as_secs_f64() * 1000.),
         }
+    }
+    /// Cumulative local message/byte counters and optional disk trace status.
+    /// Returns `None` while a transport worker holds the diagnostics lock.
+    pub fn trace_report(&self) -> Option<crate::network_trace::Report> {
+        self.inbox.observer.report()
     }
     /// The latest reliable probe round trip in ns, or `None` before one returns.
     pub fn round_trip_ns(&self) -> Option<u64> {
@@ -1176,10 +1329,15 @@ impl Client {
 fn write_client_commands(
     writer: &mut impl io::Write,
     commands: Receiver<Option<QueuedCommand>>,
+    observer: Option<&crate::network_trace::Observer>,
 ) -> io::Result<()> {
     while let Ok(Some(queued)) = commands.recv() {
         if let Some(command) = queued.command {
-            write_message(writer, &ClientMessage::Command(command))?;
+            let message = ClientMessage::Command(command);
+            if let Some(observer) = observer {
+                observer.client("dequeue", None, &message, None);
+            }
+            write_message(writer, &message)?;
         }
         if let Some(nonce) = queued.time_probe {
             write_message(writer, &ClientMessage::TimeProbe { nonce })?;
@@ -1238,6 +1396,41 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
     }
+    #[test]
+    fn in_process_owner_preserves_barriers_without_sockets_or_serialization() {
+        let mut server = Server::in_process(
+            Simulation::new(Field::new(&FieldConfig::default()).unwrap(), true).with_spawner(
+                ChassisSpawner {
+                    config: ChassisConfig::default(),
+                    terrain: None,
+                },
+            ),
+            true,
+        )
+        .unwrap();
+        assert!(server.listening_addr().is_none());
+        let handle = server.handle();
+        let mut client = server
+            .connect_owner("local", Team::Red, Role::Pilot, [0., 0., 0.5], 0.)
+            .unwrap();
+        assert!(matches!(client.stream, ConnectionStop::Worker(_)));
+        assert_eq!(client.network_stats().transport, "local");
+        client.send_confirmed(Command::Step { ticks: 17 }).unwrap();
+        wait_until("typed confirmation", || {
+            client.poll();
+            client.commands_confirmed()
+        });
+        assert_eq!(client.state().unwrap().field.tick, 17);
+        assert_eq!(
+            client.trace_report().unwrap().stages["publish"]["snapshot"].bytes,
+            None
+        );
+        drop(client);
+        wait_until("local seat removed", || handle.peer_count().unwrap() == 0);
+        assert!(handle.snapshot().unwrap().chassis.is_empty());
+        server.shutdown();
+    }
+
     #[test]
     fn scheduled_receipt_does_not_confirm_execution_and_batch_keeps_newest() {
         let (server, handle) = host();
@@ -1715,7 +1908,7 @@ mod tests {
                 release: release_rx,
                 bytes: Vec::new(),
             };
-            write_client_commands(&mut writer, commands).unwrap();
+            write_client_commands(&mut writer, commands, None).unwrap();
             writer.bytes
         });
         let ordered = [
