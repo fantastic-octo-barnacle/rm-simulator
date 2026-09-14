@@ -1643,7 +1643,9 @@ mod tests {
             ..FieldConfig::default()
         })
         .unwrap();
-        field.step(u64::MAX / rm_simulator_world::TICK_NS).unwrap();
+        field
+            .step(u64::MAX / rm_simulator_world::tick_ns())
+            .unwrap();
         let simulation = Simulation::new(field, false);
         let mut server = Server::bind("127.0.0.1:0", simulation).unwrap();
         let mut client =

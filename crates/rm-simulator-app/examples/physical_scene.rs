@@ -4,8 +4,8 @@
 //! Advance 16 explicit milliseconds per rendered frame; this is not real-time pacing.
 use bevy::prelude::*;
 use rm_simulator_physics::{
-    ArmorTarget, Caliber, Pose, Shot, TICK_NS, TargetFace, TargetFrames, WorldPhysics,
-    motion::RotorMotion,
+    ArmorTarget, Caliber, Pose, Shot, TargetFace, TargetFrames, WorldPhysics, motion::RotorMotion,
+    tick_ns,
 };
 use rm_simulator_render::{
     PoseFlu, RenderingConfig, TeamColor,
@@ -119,7 +119,7 @@ fn advance(mut demo: ResMut<Demo>, mut input: ResMut<SceneInput>) {
         tick,
     } = &mut *demo;
     for _ in 0..16 {
-        let time_ns = *tick * TICK_NS;
+        let time_ns = *tick * tick_ns();
         if (*tick).is_multiple_of(200) {
             physics
                 .fire(
@@ -134,13 +134,13 @@ fn advance(mut demo: ResMut<Demo>, mut input: ResMut<SceneInput>) {
             .begin(|poses| *poses = faces(rotor, time_ns))
             .unwrap();
         targets
-            .update(|poses| *poses = faces(rotor, time_ns + TICK_NS))
+            .update(|poses| *poses = faces(rotor, time_ns + tick_ns()))
             .unwrap();
         // Raw contacts are available here for a consumer's own scoring or sensors.
         physics.step(time_ns, targets).unwrap();
         *tick += 1;
     }
-    let time_ns = *tick * TICK_NS;
+    let time_ns = *tick * tick_ns();
     input.0 = Some(SceneState {
         source: SourceTime {
             tick: *tick,

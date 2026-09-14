@@ -8,14 +8,27 @@ use crate::layout::{
     ChassisSpawner, LayoutOptions, SPAWN_SLOT_SPACING_M, add_terrain, field_config, load_terrain,
 };
 use crate::protocol::{Command, WeaponConfig};
-use rm_simulator_world::{ChassisConfig, Field, FieldError, FieldSnapshot, TICK_NS, Team};
+use rm_simulator_world::{ChassisConfig, Field, FieldError, FieldSnapshot, Team, tick_ns};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 
 /// Catch-up cap so a stalled host does not spiral the world clock.
 pub const MAX_ADVANCE_NS: u64 = 250_000_000;
-/// One manual step while paused.
-pub const STEP_TICKS: u64 = 16;
+/// World time one manual step covers while paused, in nanoseconds. The step is
+/// a duration, not a tick count, so it is the same 16 ms at every physics rate.
+pub const STEP_NS: u64 = 16_000_000;
+
+/// Ticks in one manual step while paused: [`STEP_NS`] at the current rate, at
+/// least one.
+///
+/// ```
+/// use rm_simulator_server::simulation::{STEP_NS, step_ticks};
+///
+/// assert_eq!(step_ticks() * rm_simulator_world::tick_ns(), STEP_NS);
+/// ```
+pub fn step_ticks() -> u64 {
+    (STEP_NS / tick_ns()).max(1)
+}
 
 /// What clients see: the field plus the host's pacing state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -381,8 +394,8 @@ impl Simulation {
             return Ok(0);
         }
         self.carry_ns += delta_ns.min(MAX_ADVANCE_NS);
-        let ticks = self.carry_ns / TICK_NS;
-        self.carry_ns -= ticks * TICK_NS;
+        let ticks = self.carry_ns / tick_ns();
+        self.carry_ns -= ticks * tick_ns();
         if ticks > 0 {
             self.step_observed(ticks, observer)?;
         }
@@ -1620,8 +1633,12 @@ mod tests {
         assert_eq!(sim.apply(&fire(2)).unwrap_err(), "weapon is cooling down");
         assert!(sim.shot_result(shooter, 2).unwrap().result.is_err());
         assert_eq!(sim.snapshot().shots_fired, 1);
-        sim.step(sim.weapon.interval_ns.div_ceil(rm_simulator_world::TICK_NS))
-            .unwrap();
+        sim.step(
+            sim.weapon
+                .interval_ns
+                .div_ceil(rm_simulator_world::tick_ns()),
+        )
+        .unwrap();
         assert_eq!(sim.apply(&fire(2)).unwrap_err(), "weapon is cooling down");
         assert_eq!(sim.snapshot().shots_fired, 1);
         // A fresh intent spaced one interval behind the first on the pilot's
@@ -1655,7 +1672,8 @@ mod tests {
             command: Default::default(),
         };
         // The first intent arrives 100 ms after its intended time and fires late.
-        sim.step(100_000_000 / rm_simulator_world::TICK_NS).unwrap();
+        sim.step(100_000_000 / rm_simulator_world::tick_ns())
+            .unwrap();
         sim.apply(&Command::FireAimed {
             shooter,
             shot_id: 1,
@@ -1893,7 +1911,7 @@ mod tests {
             timing: None,
         };
         sim.apply(&command(2)).unwrap();
-        sim.step(2 * interval / rm_simulator_world::TICK_NS)
+        sim.step(2 * interval / rm_simulator_world::tick_ns())
             .unwrap();
         assert_eq!(sim.snapshot().shots_fired, 1);
         sim.apply(&command(1)).unwrap();

@@ -8,8 +8,9 @@
 //! values for compatibility. Stepping does not apply detection intervals,
 //! damage, buffs or activation. The world crate owns those decisions.
 use crate::{
-    Pose, TICK_NS, Team,
+    Pose, Team,
     chassis::{Chassis, ChassisCommand, ChassisConfig, ChassisSnapshot},
+    tick_ns,
 };
 use rapier3d_f64::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -429,7 +430,7 @@ impl WorldPhysics {
     /// for every face; their poses are supplied at each step.
     ///
     /// ```
-    /// use rm_simulator_physics::{Caliber, Pose, Shot, TICK_NS, TargetFrames, WorldPhysics};
+    /// use rm_simulator_physics::{Caliber, Pose, Shot, tick_ns, TargetFrames, WorldPhysics};
     ///
     /// let mut physics = WorldPhysics::new(&[], 0.0);
     /// let frames = TargetFrames::new(Vec::new());
@@ -443,7 +444,7 @@ impl WorldPhysics {
     /// )?;
     /// assert!(!physics.is_idle());
     /// for tick in 0..2_000 {
-    ///     physics.step(tick * TICK_NS, &frames)?;
+    ///     physics.step(tick * tick_ns(), &frames)?;
     /// }
     ///
     /// let resting = physics.snapshot();
@@ -455,8 +456,8 @@ impl WorldPhysics {
     pub fn new(faces: &[TargetFace], floor_height_m: f64) -> Self {
         let mut world = PhysicsWorld::new();
         world.gravity = Vector::new(0., 0., -GRAVITY_M_S2);
-        world.integration_parameters.dt = TICK_NS as f64 * 1e-9;
-        world.integration_parameters.min_ccd_dt = TICK_NS as f64 * 1e-9 / 100.;
+        world.integration_parameters.dt = tick_ns() as f64 * 1e-9;
+        world.integration_parameters.min_ccd_dt = tick_ns() as f64 * 1e-9 / 100.;
         world.integration_parameters.max_ccd_substeps = 4;
         world.insert_collider(
             ColliderBuilder::new(SharedShape::halfspace(Vector::Z))
@@ -693,7 +694,7 @@ impl WorldPhysics {
     /// ```
     /// use rm_simulator_physics::{
     ///     chassis::{ChassisCommand, ChassisConfig},
-    ///     Pose, TICK_NS, TargetFrames, Team, WorldPhysics,
+    ///     Pose, tick_ns(), TargetFrames, Team, WorldPhysics,
     /// };
     ///
     /// let config = ChassisConfig::default();
@@ -707,7 +708,7 @@ impl WorldPhysics {
     ///
     /// let frames = TargetFrames::new(Vec::new());
     /// for tick in 0..300 {
-    ///     physics.step(tick * TICK_NS, &frames)?;
+    ///     physics.step(tick * tick_ns(), &frames)?;
     /// }
     ///
     /// // Each spring carries a quarter of the weight, so the body settles a few
@@ -722,7 +723,7 @@ impl WorldPhysics {
     ///     ChassisCommand { forward_m_s: 1.0, ..Default::default() },
     /// )?;
     /// for tick in 300..2_300 {
-    ///     physics.step(tick * TICK_NS, &frames)?;
+    ///     physics.step(tick * tick_ns(), &frames)?;
     /// }
     /// let driven = physics.chassis_snapshot(id).unwrap();
     /// assert!(driven.pose.translation_m[0] > 1.5, "{:?}", driven.pose);
@@ -1106,7 +1107,7 @@ impl WorldPhysics {
     ///
     /// ```
     /// use rm_simulator_physics::{
-    ///     ArmorTarget, Caliber, Pose, Shot, TICK_NS, TargetFace, TargetFrames, WorldPhysics,
+    ///     ArmorTarget, Caliber, Pose, Shot, TargetFace, TargetFrames, WorldPhysics, tick_ns,
     /// };
     ///
     /// let face = TargetFace {
@@ -1120,11 +1121,11 @@ impl WorldPhysics {
     /// let first = physics.fire(
     ///     0, Pose::at([0.0, 0.0, 1.025]), Shot::at_limit(Caliber::Mm17), None)?;
     /// let second = physics.fire(
-    ///     TICK_NS, Pose::at([0.0, 0.04, 1.025]), Shot::at_limit(Caliber::Mm17), None)?;
+    ///     tick_ns(), Pose::at([0.0, 0.04, 1.025]), Shot::at_limit(Caliber::Mm17), None)?;
     ///
     /// let mut seen = Vec::new();
     /// for tick in 0..200 {
-    ///     for contact in physics.step(tick * TICK_NS, &frames)? {
+    ///     for contact in physics.step(tick * tick_ns(), &frames)? {
     ///         assert_eq!(contact.target, face.target);
     ///         assert!(contact.normal_speed_m_s > 20.0, "{contact:?}");
     ///         seen.push(contact.projectile);
@@ -1138,7 +1139,7 @@ impl WorldPhysics {
         prev_ns: u64,
         frames: &TargetFrames,
     ) -> Result<Vec<Contact>, &'static str> {
-        let next_ns = prev_ns + TICK_NS;
+        let next_ns = prev_ns + tick_ns();
         if frames.start.len() != self.targets.len() {
             return Err("target face count changed");
         }
@@ -1274,7 +1275,7 @@ impl WorldPhysics {
                 let plate_velocity = match motion {
                     PlateMotion::Kinematic { face_prev } => {
                         (face_next.transform_point(local) - face_prev.transform_point(local))
-                            / (TICK_NS as f64 * 1e-9)
+                            / (tick_ns() as f64 * 1e-9)
                     }
                     PlateMotion::Body(body) => {
                         self.world.bodies[body].velocity_at_point(world_point)
@@ -1550,7 +1551,7 @@ mod tests {
         let frames = TargetFrames::new(faces.to_vec());
         let mut first = None;
         for tick in start..start + ticks {
-            let found = ballistics.step(tick * TICK_NS, &frames).unwrap();
+            let found = ballistics.step(tick * tick_ns(), &frames).unwrap();
             if !found.is_empty() && first.is_none() {
                 first = Some(tick + 1);
             }
@@ -1672,7 +1673,7 @@ mod tests {
             };
             frames.begin(|faces| faces[0] = at(tick)).unwrap();
             frames.update(|faces| faces[0] = at(tick + 1)).unwrap();
-            contacts.extend(ballistics.step(tick * TICK_NS, &frames).unwrap());
+            contacts.extend(ballistics.step(tick * tick_ns(), &frames).unwrap());
         }
         assert_eq!(contacts.len(), 1, "{contacts:?}");
         assert!(contacts[0].normal_speed_m_s > 26., "{contacts:?}");

@@ -464,10 +464,11 @@ pub enum Command {
         /// True pauses the world clock, false resumes it.
         paused: bool,
     },
-    /// Step the world by `ticks` milliseconds (also while paused). Referee
+    /// Step the world by `ticks` physics ticks (also while paused). Referee
     /// only on a host.
     Step {
-        /// Ticks to advance, from 1 to 60,000. Each tick is 1 ms of world time.
+        /// Ticks to advance, from 1 to 60,000. Each tick is `tick_ns` of world
+        /// time, 1 ms at the default rate.
         ticks: u64,
     },
 }
