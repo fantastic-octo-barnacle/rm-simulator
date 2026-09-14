@@ -2,6 +2,10 @@
 <!-- Copyright (c) 2026 hxyulin <hxyulin@proton.me> -->
 # Binary and fixed-point checkpoint experiment
 
+This is the pre-integration experiment record. The subsequent
+[protocol 32 integration and live test](binary-protocol-live.md) uses the
+fine fixed-point candidate and its recorded dictionary.
+
 Investigation dated 2026-09-14, based on `37bf13ca24e8e20108dd68c3398154ec8456b802`.
 This is a runnable, standalone codec experiment, not an enabled live protocol.
 It preserves the current world checkpoint contents and tests whether a different

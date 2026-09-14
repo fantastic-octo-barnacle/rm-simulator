@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+- Default periodic UDP world checkpoints to bitpacked fine fixed point and the
+  newly trained binary ZSTD dictionary (protocol 32). Retain acknowledged
+  baseline recovery, exact confirmations, owner anchors and input commands.
+  `RM_NET_SNAPSHOT=json` selects the previous checkpoint path for comparison.
+  Both peers must update; see `docs/bandwidth-results/binary-protocol-live.md`
+  for an interactive driving test and the precision assumptions.
+
 - Add a standalone `binary_protocol_comparison` experiment comparing current
   compressed JSON checkpoints with lossless binary deltas, bitpacking and
   fixed-point motion fields. It checks decoding and short physics replays,

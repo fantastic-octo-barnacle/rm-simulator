@@ -39,8 +39,32 @@ the dictionary so incompatible peers are rejected during the handshake.
 
 The [binary protocol experiment](../../../docs/bandwidth-results/binary-protocol.md)
 uses `train_binary_dictionaries` to generate separate dictionaries for each
-experimental layout and precision policy. They live with the experiment's
-results, not in this directory, and do not replace the production asset above.
+experimental layout and precision policy. The results retain all candidates;
+protocol 32 copies the selected fine dictionary here as described below. The
+JSON dictionary above remains a separate asset.
 When changing encoded payloads or numeric precision, train on the new bytes and
 evaluate on separate workloads; reusing this JSON dictionary alone is not an
 adequate compression comparison.
+
+## `binary-fixed-fine.zstd`
+
+The protocol 32 periodic-checkpoint dictionary, embedded separately from the
+JSON dictionary. It is the measured `fixed-fine.zstd` artifact from the
+[binary experiment](../../../docs/bandwidth-results/binary-protocol.md).
+
+| Field | Value |
+|---|---|
+| Bytes | 32768 |
+| SHA-256 | `9996f46a6bdb5718d08e53cdbf2cedee17645513c5966966000c978e1b7b9686` |
+| Samples | 5314 full and retained-baseline delta candidates, 35,441,531 bytes |
+| Sample digest | `e5de894fd2d29e7bcb043c8881a5fda3321d30c338245770a91a188ed294a47d` |
+| Encoding | RMB0, packed tags and fixed-point grids; fine projectile precision |
+| Compression frame | RMBZ + ZSTD level 3, distinct from JSON's RMZ2 |
+| Trainer | `train_binary_dictionaries`, separate training/evaluation scenarios |
+
+The live encoder calls the same bitpack and quantization implementation as the
+trainer and comparison example. The application frame format is unchanged from
+the measured artifact, so its dictionary was copied byte-for-byte. Tests check
+the hash and equality with that artifact. Regenerate with the commands in the
+experiment report after any encoding or precision change, copy the new fine
+dictionary here, update this record and bump `PROTOCOL_VERSION` again.

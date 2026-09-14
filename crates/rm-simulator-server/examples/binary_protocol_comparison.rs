@@ -335,7 +335,7 @@ fn candidate(
         // Include the existing Value-to-protocol bridge in both decode timings.
         let mut message = decode_player_message(&serde_json::to_vec(&restored).unwrap()).unwrap();
         if fixed {
-            fixed_point::normalize(&mut message);
+            fixed_point::normalize(&mut message).unwrap();
         }
         m.decode_ns.push(started.elapsed().as_nanos());
         assert!(
@@ -397,7 +397,7 @@ fn replay(name: &str, checkpoints: &[Vec<u8>], mode: Quantization) {
         let raw = bitpack::encode(&quantized, None, 0, 0, true, true);
         let restored = bitpack::decode(&raw, None, 0).unwrap().0;
         let mut message = decode_player_message(&serde_json::to_vec(&restored).unwrap()).unwrap();
-        fixed_point::normalize(&mut message);
+        fixed_point::normalize(&mut message).unwrap();
         let ServerMessage::Snapshot(rounded) = message else {
             panic!("snapshot");
         };

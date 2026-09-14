@@ -50,6 +50,18 @@ pub enum Wire {
         /// The structural change, or `None` for an unchanged state.
         patch: Option<Patch>,
     },
+    /// Packed full or delta checkpoint. Header fields are inspected before
+    /// looking up a baseline; the entire body is validated before delivery.
+    Packed {
+        /// Input generation; older generations cannot repopulate the cache.
+        epoch: u64,
+        /// Zero for independent frames, otherwise the proposed or referenced id.
+        id: u64,
+        /// True when the frame requires the named pinned baseline.
+        delta: bool,
+        /// Complete inflated RMB0 frame, including the checked header.
+        bytes: Vec<u8>,
+    },
     /// Asks the decoder to drop baseline `id` so the encoder can propose a new
     /// one. The decoder pins at most two baselines, so retirement is what keeps
     /// the rotation moving.
@@ -147,7 +159,8 @@ pub fn envelope_bytes(wire: &Wire) -> Vec<u8> {
 pub fn encode(wire: Wire) -> Vec<u8> {
     crate::compression::compress(&envelope_bytes(&wire))
 }
-/// Reads an inflated frame. `Ok(None)` means the JSON carried no `UdpSnapshot`
+/// Reads an inflated packed checkpoint or JSON envelope. `Ok(None)` means
+/// the JSON carried no `UdpSnapshot`
 /// key, so a caller can leave other message kinds on the same stream alone
 /// instead of failing on them.
 ///
@@ -161,6 +174,15 @@ pub fn encode(wire: Wire) -> Vec<u8> {
 /// assert!(parse(br#"{"Pong":{"nonce":1}}"#).unwrap().is_none());
 /// ```
 pub fn parse(bytes: &[u8]) -> io::Result<Option<Wire>> {
+    if bytes.starts_with(b"RMB0") {
+        let (delta, epoch, id) = crate::binary_snapshot::bitpack::header(bytes)?;
+        return Ok(Some(Wire::Packed {
+            epoch,
+            id,
+            delta,
+            bytes: bytes.to_vec(),
+        }));
+    }
     let value: Value = serde_json::from_slice(bytes)?;
     if value.get("UdpSnapshot").is_none() {
         return Ok(None);
@@ -187,6 +209,7 @@ pub struct Encoder {
     /// Compressor for this encoder's codec. A benchmark builds one encoder per
     /// candidate so each reuses its own context and dictionary.
     compressor: crate::compression::Compressor,
+    binary: Option<crate::binary_snapshot::Compressor>,
     /// Bytes the same states would have taken as independent frames.
     pub full_bytes: u64,
     /// Bytes actually produced, deltas and full frames together.
@@ -196,16 +219,28 @@ pub struct Encoder {
 }
 impl Default for Encoder {
     fn default() -> Self {
-        Self::with_codec(crate::compression::selected())
+        if crate::binary_snapshot::selected() {
+            Self::binary()
+        } else {
+            Self::with_codec(crate::compression::selected())
+        }
     }
 }
 /// Resend an unanswered `Retire` after this many frames; at the 32 ms broadcast
 /// period that is roughly half a second between attempts.
 const RETIRE_RESEND_FRAMES: u64 = 16;
 impl Encoder {
-    /// A baseline encoder that compresses every frame with `codec`. The
-    /// production path uses [`Encoder::default`], which takes the process-wide
-    /// [`crate::compression::selected`] codec.
+    /// The packed fine fixed-point encoder with its trained dictionary. It
+    /// shares the JSON encoder's acknowledgement and recovery state machine.
+    pub fn binary() -> Self {
+        let mut encoder = Self::with_codec(crate::compression::selected());
+        encoder.binary = Some(crate::binary_snapshot::Compressor::new());
+        encoder
+    }
+
+    /// A JSON baseline encoder that compresses every frame with `codec`, for
+    /// legacy comparisons. The live default is binary unless RM_NET_SNAPSHOT
+    /// selects JSON; that fallback uses the process-wide compression codec.
     pub fn with_codec(codec: crate::compression::Codec) -> Self {
         Self {
             epoch: None,
@@ -217,6 +252,7 @@ impl Encoder {
             count: 0,
             recover: false,
             compressor: crate::compression::Compressor::new(codec),
+            binary: None,
             full_bytes: 0,
             sent_bytes: 0,
             deltas: 0,
@@ -253,7 +289,7 @@ impl Encoder {
     /// let inflate = |bytes: &[u8]| {
     ///     parse(&decompress(bytes, 4 << 20).unwrap()).unwrap().unwrap()
     /// };
-    /// let mut encoder = Encoder::default();
+    /// let mut encoder = Encoder::with_codec(rm_simulator_server::compression::Codec::deflate(1));
     /// let mut decoder = Decoder::default();
     /// // The first frame proposes a baseline, since none is pinned yet.
     /// let first = inflate(&encoder.snapshot(4, &state).unwrap());
@@ -268,7 +304,14 @@ impl Encoder {
     /// assert!(encoder.deltas > 0);
     /// ```
     pub fn snapshot(&mut self, epoch: u64, bytes: &[u8]) -> io::Result<Vec<u8>> {
-        let state: Value = serde_json::from_slice(bytes)?;
+        let mut state: Value = serde_json::from_slice(bytes)?;
+        if self.binary.is_some() {
+            crate::binary_snapshot::fixed_point::checkpoint(
+                &mut state,
+                &mut Default::default(),
+                crate::binary_snapshot::fixed_point::Quantization::Fine,
+            );
+        }
         if self.epoch != Some(epoch) {
             self.epoch = Some(epoch);
             self.active = None;
@@ -282,12 +325,7 @@ impl Encoder {
         if self.retiring.is_some() {
             self.retire_age += 1;
         }
-        let independent = self
-            .compressor
-            .compress(&envelope_bytes(&Wire::Independent {
-                epoch,
-                state: state.clone(),
-            }));
+        let independent = full_frame(&mut self.binary, &mut self.compressor, epoch, None, &state);
         self.full_bytes += independent.len() as u64;
         if bytes.len() > BASE_LIMIT {
             self.sent_bytes += independent.len() as u64;
@@ -308,26 +346,41 @@ impl Encoder {
             && let Some((id, baseline)) = self.active.as_ref()
         {
             self.recover = false;
-            self.compressor.compress(&envelope_bytes(&Wire::Full {
+            full_frame(
+                &mut self.binary,
+                &mut self.compressor,
                 epoch,
-                id: *id,
-                state: baseline.clone(),
-            }))
+                Some(*id),
+                baseline,
+            )
         } else if let Some((id, baseline)) = &self.pending
             && self.count.is_multiple_of(8)
         {
-            self.compressor.compress(&envelope_bytes(&Wire::Full {
+            full_frame(
+                &mut self.binary,
+                &mut self.compressor,
                 epoch,
-                id: *id,
-                state: baseline.clone(),
-            }))
+                Some(*id),
+                baseline,
+            )
         } else if let Some((id, baseline)) = &self.active {
-            let patch = difference(baseline, &state);
-            let delta = self.compressor.compress(&envelope_bytes(&Wire::Delta {
-                epoch,
-                base: *id,
-                patch,
-            }));
+            let delta = if let Some(binary) = &mut self.binary {
+                binary.compress(&crate::binary_snapshot::bitpack::encode(
+                    &state,
+                    Some(baseline),
+                    epoch,
+                    *id,
+                    true,
+                    true,
+                ))
+            } else {
+                let patch = difference(baseline, &state);
+                self.compressor.compress(&envelope_bytes(&Wire::Delta {
+                    epoch,
+                    base: *id,
+                    patch,
+                }))
+            };
             if delta.len() < independent.len() {
                 self.deltas += 1;
                 delta
@@ -377,6 +430,38 @@ impl Encoder {
         }
     }
 }
+fn full_frame(
+    binary: &mut Option<crate::binary_snapshot::Compressor>,
+    compressor: &mut crate::compression::Compressor,
+    epoch: u64,
+    id: Option<u64>,
+    state: &Value,
+) -> Vec<u8> {
+    if let Some(binary) = binary {
+        binary.compress(&crate::binary_snapshot::bitpack::encode(
+            state,
+            None,
+            epoch,
+            id.unwrap_or(0),
+            true,
+            true,
+        ))
+    } else {
+        let wire = match id {
+            Some(id) => Wire::Full {
+                epoch,
+                id,
+                state: state.clone(),
+            },
+            None => Wire::Independent {
+                epoch,
+                state: state.clone(),
+            },
+        };
+        compressor.compress(&envelope_bytes(&wire))
+    }
+}
+
 /// Client-side delta decoder for one connection.
 ///
 /// Pins at most two baselines, the active one and the candidate replacing it.
@@ -402,10 +487,19 @@ impl Decoder {
     /// the feedback the encoder needs. A delta for an unpinned baseline yields
     /// `Feedback::Missing` and no message rather than a partially applied state.
     pub fn receive(&mut self, wire: Wire) -> io::Result<(Option<ServerMessage>, Option<Feedback>)> {
+        self.receive_inner(wire, false)
+    }
+
+    fn receive_inner(
+        &mut self,
+        wire: Wire,
+        packed: bool,
+    ) -> io::Result<(Option<ServerMessage>, Option<Feedback>)> {
         let epoch = match &wire {
             Wire::Independent { epoch, .. }
             | Wire::Full { epoch, .. }
             | Wire::Delta { epoch, .. }
+            | Wire::Packed { epoch, .. }
             | Wire::Retire { epoch, .. } => *epoch,
         };
         if self.epoch.is_some_and(|old| epoch < old) {
@@ -417,6 +511,45 @@ impl Decoder {
             self.retired_through = 0;
         }
         let (value, feedback) = match wire {
+            Wire::Packed {
+                epoch,
+                id,
+                delta,
+                bytes,
+            } => {
+                // The public Wire can also be constructed directly; don't trust
+                // its inspected header in place of validating the actual bytes.
+                if crate::binary_snapshot::bitpack::header(&bytes)? != (delta, epoch, id) {
+                    return Err(io::Error::other("binary snapshot header mismatch"));
+                }
+                if !delta && id > 0 && id <= self.retired_through {
+                    return Ok((None, None));
+                }
+                let base = if delta {
+                    let Some(base) = self.baselines.get(&id) else {
+                        self.missing += 1;
+                        return Ok((None, Some(Feedback::Missing { epoch, id })));
+                    };
+                    Some((base, id))
+                } else {
+                    None
+                };
+                let (state, _) = crate::binary_snapshot::bitpack::decode(&bytes, base, epoch)?;
+                // Reuse the normal validation, full-frame pinning and cap
+                // checks. Cache wire-grid values; normalize only the delivered
+                // state, or later deltas would use a different baseline.
+                let normalize = state.get("CompactSnapshot").is_some();
+                let unpacked = if !delta && id > 0 {
+                    Wire::Full { epoch, id, state }
+                } else {
+                    Wire::Independent { epoch, state }
+                };
+                let (message, feedback) = self.receive_inner(unpacked, normalize)?;
+                if delta {
+                    self.deltas += 1;
+                }
+                return Ok((message, feedback));
+            }
             Wire::Independent { state, .. } => (state, None),
             Wire::Full { id, state, .. } => {
                 if id <= self.retired_through {
@@ -429,7 +562,7 @@ impl Decoder {
                 if bytes.len() > BASE_LIMIT {
                     return Err(io::Error::other("baseline exceeds byte cap"));
                 }
-                validate(&bytes, epoch)?;
+                validate(&bytes, epoch, packed)?;
                 if self.baselines.get(&id).is_some_and(|old| old != &state) {
                     return Err(io::Error::other("baseline identity changed"));
                 }
@@ -457,13 +590,16 @@ impl Decoder {
         if bytes.len() > crate::protocol::MAX_LINE_BYTES {
             return Err(io::Error::other("decoded state exceeds cap"));
         }
-        Ok((Some(validate(&bytes, epoch)?), feedback))
+        Ok((Some(validate(&bytes, epoch, packed)?), feedback))
     }
 }
-fn validate(bytes: &[u8], epoch: u64) -> io::Result<ServerMessage> {
-    let message = crate::snapshot_codec::decode_player_message(bytes)?;
+fn validate(bytes: &[u8], epoch: u64, packed: bool) -> io::Result<ServerMessage> {
+    let mut message = crate::snapshot_codec::decode_player_message(bytes)?;
     if !matches!(&message, ServerMessage::Snapshot(state) if state.input_epoch == epoch) {
         return Err(io::Error::other("invalid baseline state/epoch"));
+    }
+    if packed {
+        crate::binary_snapshot::fixed_point::normalize(&mut message)?;
     }
     Ok(message)
 }
@@ -473,6 +609,113 @@ mod tests {
     use super::*;
     use crate::simulation::Simulation;
     use rm_simulator_world::{Field, FieldConfig};
+
+    #[test]
+    fn binary_chassis_and_projectiles_round_trip_across_baselines_and_epochs() {
+        use crate::{binary_snapshot::fixed_point, layout::ChassisSpawner, protocol::Command};
+        use rm_simulator_world::{ChassisCommand, ChassisConfig, Team};
+        let mut simulation = Simulation::new(Field::new(&FieldConfig::default()).unwrap(), false)
+            .with_spawner(ChassisSpawner {
+                config: ChassisConfig::default(),
+                terrain: None,
+            });
+        let chassis = simulation.spawn_chassis(Team::Red).unwrap();
+        simulation
+            .apply(&Command::Chassis {
+                chassis,
+                command: ChassisCommand {
+                    forward_m_s: 1.23456789,
+                    yaw_rate_rad_s: 0.31234567,
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        let mut encoder = Encoder::binary();
+        let mut decoder = Decoder::default();
+        let mut old = None;
+        for frame in 0..160 {
+            simulation.step(32).unwrap();
+            if frame % 8 == 0 {
+                simulation
+                    .apply(&Command::Fire {
+                        shooter: chassis,
+                        timing: None,
+                    })
+                    .unwrap();
+            }
+            let mut state = simulation.state();
+            let epoch = frame / 64;
+            state.snapshot_id = frame + 1;
+            state.input_epoch = epoch;
+            let source = crate::snapshot_codec::encode_player_message(&ServerMessage::Snapshot(
+                Box::new(state),
+            ));
+            let mut expected: Value = serde_json::from_slice(&source).unwrap();
+            let untouched = expected["CompactSnapshot"]["state"]["field"]["restore"].clone();
+            fixed_point::checkpoint(
+                &mut expected,
+                &mut Default::default(),
+                fixed_point::Quantization::Fine,
+            );
+            assert_eq!(
+                expected["CompactSnapshot"]["state"]["field"]["restore"],
+                untouched
+            );
+            let mut expected = crate::snapshot_codec::decode_player_message(
+                &serde_json::to_vec(&expected).unwrap(),
+            )
+            .unwrap();
+            fixed_point::normalize(&mut expected).unwrap();
+            let bytes = encoder.snapshot(epoch, &source).unwrap();
+            assert!(bytes.starts_with(crate::binary_snapshot::MAGIC));
+            let (actual, feedback) = decoder.receive(wire(&bytes)).unwrap();
+            assert_eq!(actual.as_ref(), Some(&expected));
+            let ServerMessage::Snapshot(actual) = actual.unwrap() else {
+                unreachable!()
+            };
+            Field::restore(
+                &actual.field,
+                &simulation.field().static_geometry_snapshot(),
+                0.,
+            )
+            .unwrap()
+            .step(32)
+            .unwrap();
+            if let Some(feedback) = feedback
+                && let Some(retire) = encoder.feedback(feedback)
+            {
+                let (_, feedback) = decoder.receive(retire).unwrap();
+                encoder.feedback(feedback.unwrap());
+            }
+            assert!(decoder.pinned() <= 2);
+            if frame == 63 {
+                old = Some(bytes);
+            }
+        }
+        assert!(decoder.receive(wire(&old.unwrap())).unwrap().0.is_none());
+        assert!(encoder.deltas > 100);
+    }
+
+    #[test]
+    fn malformed_binary_rotations_are_rejected_before_pinning_a_baseline() {
+        use crate::binary_snapshot::bitpack;
+        let mut state: Value = serde_json::from_slice(&source(0, 0)).unwrap();
+        let mut config = FieldConfig::default();
+        config.chassis.push(rm_simulator_world::ChassisPlacement {
+            team: rm_simulator_world::Team::Red,
+            config: Default::default(),
+            spawn: rm_simulator_world::Pose::at([0., 0., 0.2]),
+        });
+        let snapshot = Field::new(&config).unwrap().snapshot();
+        state["CompactSnapshot"]["state"]["field"]["chassis"] =
+            serde_json::to_value(snapshot.chassis).unwrap();
+        state["CompactSnapshot"]["state"]["field"]["chassis"][0]["pose"]["rotation_wxyz"] =
+            serde_json::json!([0., 0., 0., 0.]);
+        let bytes = bitpack::encode(&state, None, 0, 1, true, true);
+        let mut decoder = Decoder::default();
+        assert!(decoder.receive(parse(&bytes).unwrap().unwrap()).is_err());
+        assert_eq!(decoder.pinned(), 0);
+    }
     fn source(tick: u64, epoch: u64) -> Vec<u8> {
         let mut simulation = Simulation::new(Field::new(&FieldConfig::default()).unwrap(), false);
         simulation.step(tick).unwrap();
@@ -668,7 +911,9 @@ mod tests {
         // enough to win the size guard often, so the margin is narrower than
         // DEFLATE's. Keep the original DEFLATE bound as the production guard.
         assert!(encoder.sent_bytes < encoder.full_bytes);
-        if crate::compression::selected().mode == crate::compression::Mode::Deflate {
+        if encoder.binary.is_none()
+            && crate::compression::selected().mode == crate::compression::Mode::Deflate
+        {
             assert!(encoder.sent_bytes * 2 < encoder.full_bytes);
             assert!(encoder.deltas > 100);
         }
