@@ -16,7 +16,11 @@ use rm_simulator_world::{
     ArmorHit, ArmorTarget, Caliber, ChassisCommand, ChassisConfig, Field, Pose, RuneKind, Shot,
     Team, tick_ns,
 };
-use std::{hint::black_box, path::PathBuf, time::Instant};
+use std::{
+    hint::black_box,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 /// Sampling period for trajectory observations. 500 ms is the smallest whole
 /// number of ticks at 1 kHz, 500 Hz, 250 Hz and exactly 128 Hz alike, so every
@@ -37,7 +41,7 @@ struct Loaded {
     terrain: layout::Terrain,
     cad: cad_assets::CadAssets,
 }
-fn load(root: &PathBuf) -> anyhow::Result<Loaded> {
+fn load(root: &Path) -> anyhow::Result<Loaded> {
     let cad = cad_assets::load(root)?;
     let terrain = layout::load_terrain(&cad)?;
     Ok(Loaded { terrain, cad })
@@ -587,7 +591,7 @@ fn run_chassis_armor(loaded: &Loaded, name: &'static str, moving: bool) -> anyho
     Ok(())
 }
 
-fn fixtures(root: &PathBuf) -> anyhow::Result<()> {
+fn fixtures(root: &Path) -> anyhow::Result<()> {
     let loaded = load(root)?;
     header();
     row_text(
@@ -606,7 +610,7 @@ fn fixtures(root: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn probe(root: &PathBuf) -> anyhow::Result<()> {
+fn probe(root: &Path) -> anyhow::Result<()> {
     let loaded = load(root)?;
     println!("terrain: {}", loaded.terrain.describe());
     // Where a roof stands over a low floor there is a passage to drive through.
@@ -663,7 +667,7 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
     sorted[(((sorted.len() - 1) as f64) * p).ceil() as usize]
 }
 
-fn cpu(root: &PathBuf, args: &[String]) -> anyhow::Result<()> {
+fn cpu(root: &Path, args: &[String]) -> anyhow::Result<()> {
     let robots: usize = args[0].parse()?;
     let mode = args[1].clone();
     let warmup_s: f64 = args[2].parse()?;
@@ -692,7 +696,7 @@ fn cpu(root: &PathBuf, args: &[String]) -> anyhow::Result<()> {
     // Sustained fire: every chassis launches at 20 Hz, the default cadence.
     let fire_every = (50_000_000 / batch_ns).max(1);
     let fire = |field: &mut Field, index: u64| -> anyhow::Result<()> {
-        if mode == "fire" && index % fire_every == 0 {
+        if mode == "fire" && index.is_multiple_of(fire_every) {
             for id in &ids {
                 if let Some(muzzle) = field.chassis_muzzle_pose(*id) {
                     field.fire(muzzle, Shot::at_limit(Caliber::Mm17), Some(*id))?;
@@ -720,7 +724,7 @@ fn cpu(root: &PathBuf, args: &[String]) -> anyhow::Result<()> {
         let start = Instant::now();
         field.step(black_box(batch))?;
         batches.push(start.elapsed().as_secs_f64() * 1e3);
-        if index % 16 == 0 {
+        if index.is_multiple_of(16) {
             in_flight.push(field.projectile_snapshots().len() as f64);
         }
     }

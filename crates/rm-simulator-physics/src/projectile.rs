@@ -694,7 +694,7 @@ impl WorldPhysics {
     /// ```
     /// use rm_simulator_physics::{
     ///     chassis::{ChassisCommand, ChassisConfig},
-    ///     Pose, tick_ns(), TargetFrames, Team, WorldPhysics,
+    ///     Pose, TargetFrames, Team, WorldPhysics, tick_ns,
     /// };
     ///
     /// let config = ChassisConfig::default();
