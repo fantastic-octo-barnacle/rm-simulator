@@ -3,8 +3,11 @@
 # Experiment 8: ZSTD with a trained checkpoint dictionary
 
 Prototype and measurement of a selectable wire codec, comparing the existing
-DEFLATE against ZSTD and against ZSTD with a trained checkpoint dictionary on
-**identical** checkpoint streams for the four canonical probe workloads.
+DEFLATE against ZSTD and against ZSTD with a trained checkpoint dictionary
+across the four canonical probe workloads. Every codec sees **identical** bytes
+on the `envelope` stream; the `selected` acknowledged-delta stream is driven by
+the production encoder per codec, so those streams may carry different numbers
+of delta frames.
 
 This is an in-process result, not a network trial: no socket, no loss, no
 reordering and no blackouts. The codec comparison excludes pacing and native

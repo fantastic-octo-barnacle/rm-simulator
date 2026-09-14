@@ -141,5 +141,8 @@ every scenario check (89 confirmed launches, 6.58 m displacement, 20.7 ms worst
 checkpoint gap). The measured saving matches the in-process prediction
 (−100.6 kbps) and cross-checks the instrument. The other experiments were not
 trialled because they show no standalone win (2, 3, 6) or are tuning that the
-in-process sweep already settles (4); the cadence winner (5) is the next
-candidate for a harness pair.
+in-process sweep already settles (4). The next candidate for a harness pair is
+experiment 8's dictionary-trained ZSTD using the recommended `zstd-dict-3`
+configuration; its fragment reduction is already measured, and only the
+loss-recovery benefit of fewer fragments can be validated under loss. Cadence
+(5) remains a later candidate.
