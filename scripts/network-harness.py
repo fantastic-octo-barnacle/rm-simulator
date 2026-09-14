@@ -582,8 +582,9 @@ def run(args, scenario):
                     'build_profile': args.build_label}
         (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
         server_port, http_port = free_port(socket.SOCK_DGRAM), free_port(socket.SOCK_STREAM)
+        rate_args = ['--physics-rate-hz', str(args.physics_rate_hz)] if args.physics_rate_hz else []
         server = OwnedProcess('server', [str(args.server), '--listen', f'127.0.0.1:{server_port}',
-            '--http', f'127.0.0.1:{http_port}', '--cad-assets', str(args.cad_assets)], output)
+            '--http', f'127.0.0.1:{http_port}', '--cad-assets', str(args.cad_assets), *rate_args], output)
         processes.append(server)
         # This endpoint belongs to the loopback child we just spawned. Never
         # send its readiness probe through an environment or macOS system proxy.
@@ -612,7 +613,7 @@ def run(args, scenario):
             ports[client['name']] = port
             command = [str(args.app), '--connect', f'127.0.0.1:{proxy_port}', '--console', f'127.0.0.1:{port}',
                        '--name', 'harness-' + client['name'], '--team', client.get('team', 'red'),
-                       '--cad-assets', str(args.cad_assets)]
+                       '--cad-assets', str(args.cad_assets), *rate_args]
             if getattr(args, 'network_stats', None):
                 command += ['--network-stats', args.network_stats]
             if not args.manual or client is not scenario['clients'][0]:
@@ -858,13 +859,16 @@ def main():
     parser.add_argument('scenario', type=Path)
     parser.add_argument('--output', type=Path, help='New artifact directory; existing directories are refused')
     parser.add_argument('--validate', action='store_true', help='Validate the scenario and exit without launching')
-    parser.add_argument('--server', type=Path, default=ROOT / 'target/debug/rm-simulator-server')
-    parser.add_argument('--app', type=Path, default=ROOT / 'target/debug/rm-simulator')
+    target = Path(os.environ.get('CARGO_TARGET_DIR') or ROOT / 'target')
+    parser.add_argument('--server', type=Path, default=target / 'debug/rm-simulator-server')
+    parser.add_argument('--app', type=Path, default=target / 'debug/rm-simulator')
     parser.add_argument('--cad-assets', type=Path, default=Path.home() / 'dev/RM/assets/rm2026-field')
     parser.add_argument('--ready-timeout', type=float, default=180)
     parser.add_argument('--console-timeout', type=float, default=CONSOLE_TIMEOUT_S,
                         help='Per-console-command deadline; a missed sample is a recorded gap')
     parser.add_argument('--manual', action='store_true', help='Visible first client; suppress scripted controls')
+    parser.add_argument('--physics-rate-hz', type=int, choices=(1000, 500, 250, 128),
+                        help='Run the host and every client at this shared physics rate')
     parser.add_argument('--network-stats', choices=['off', 'compact', 'detailed'], help='Select the protocol 18+ client overlay')
     parser.add_argument('--screenshot', action='store_true', help='Capture each client after recovery')
     parser.add_argument('--seed', type=int, help='Override the network seed')
