@@ -22,6 +22,9 @@ def summarize(path):
             except json.JSONDecodeError:
                 malformed += 1
                 continue
+            if not isinstance(row, dict):
+                malformed += 1
+                continue
             if row.get('type') == 'header':
                 header = row
                 continue
@@ -29,7 +32,11 @@ def summarize(path):
                 end = row
                 continue
             stage, kind = row.get('stage'), row.get('kind')
-            if not stage or not kind:
+            needs_shot = ((stage == 'enqueue_attempt' and kind == 'shot')
+                          or (stage == 'publish' and kind in ('shot_result', 'shot_rejected')))
+            if (not stage or not kind
+                    or type(row.get('elapsed_ns')) is not int or row['elapsed_ns'] < 0
+                    or (needs_shot and (type(row.get('shot')) is not int or row['shot'] < 0))):
                 malformed += 1
                 continue
             key = f'{stage}.{kind}'

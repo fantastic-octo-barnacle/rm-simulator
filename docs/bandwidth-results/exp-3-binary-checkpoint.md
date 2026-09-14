@@ -155,7 +155,7 @@ RMO3 anchor at 31.25 Hz) and the 0.5 kbps control lane.
 
 The JSON column reproduces experiment 0's remote baseline exactly
 (368.3/453.8/741.0/955.1 kbps), which is the harness's own validation. The
-binary checkpoint removes 1.5–1.6% of total downstream and 1.2–3.8% of the
+binary checkpoint removes 0.8–1.6% of total downstream and 1.2–3.8% of the
 selected world stream. It does not move the budget: the residual gap stays
 162–741 kbps above the 200 kbps target, and 211.8 kbps of that is the owner
 anchor alone, which this experiment does not touch.
@@ -280,7 +280,7 @@ complete checkpoints with the same produced-update count.
 ## Recommendation
 
 - **Do not take the binary checkpoint to a full harness trial on this result.**
-  It buys 1.2–3.8% of the selected world stream and 1.5–1.6% of total
+  It buys 1.2–3.8% of the selected world stream and 0.8–1.6% of total
   downstream, while the residual gap to 200 kbps is 162–741 kbps and the
   unchanged owner anchor alone is 211.8 kbps. A wire-contract change of this
   size is not justified by that. If it is trialled at all, trial it under loss

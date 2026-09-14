@@ -8,7 +8,7 @@ attribution baseline recorded in `perf/bw-exp0`'s
 `docs/bandwidth-results/exp-0-attribution.md` (commit `48f20e6`).
 
 **Recommendation: keep the shipped 32 encoded frames.** 64 is very slightly
-better on the light workloads and clearly worse on `fire`/`twelve`; 8 and 16 are
+better on `idle`, `drive` and `fire`, but worse on `twelve`; 8 and 16 are
 worse everywhere; and a size-triggered rotation policy is either inert or
 strictly harmful. No setting gained from loss.
 
@@ -118,37 +118,30 @@ selected stream against the independent alternative.
 | `twelve` | **32** | **119391.4** | **955.1** | **92847.7** | **906406** | **846328** | 1934846 | **10** | **9** | 0 | 313 | **2966.4** | **1051** |
 | `twelve` | 64 | 122208.7 | 977.7 | 95700.5 | 933842 | 904707 | 1934846 | 5 | 4 | 0 | 313 | 3057.5 | 1103 |
 
-Aggregate of the four workloads, which is how the per-player budget is spent:
+Aggregate of the four workloads (sums recomputed from the measured rows above):
 
 | Lifetime | Total B/s | Total kbps | vs 32 | Total Full | Total Retire | Total resends |
 |---|---:|---:|---:|---:|---:|---:|
-| 8 | 333687.0 | 2669.5 | +7.1% | 160 | 152 | 0 |
-| 16 | 320668.1 | 2565.3 | +2.9% | 80 | 76 | 0 |
-| **32** | **311517.2** | **2492.1** | — | **40** | **36** | 0 |
-| 64 | 306887.0 | 2455.1 | −1.5% | 20 | 16 | 0 |
+| 8 | 337686.3 | 2701.5 | +7.3% | 160 | 152 | 0 |
+| 16 | 322673.1 | 2581.4 | +2.5% | 80 | 76 | 0 |
+| **32** | **314774.9** | **2518.2** | — | **40** | **36** | 0 |
+| 64 | 316350.2 | 2530.8 | +0.5% | 20 | 16 | 0 |
 
 What the sweep says:
 
-- **32 was already the right fixed lifetime, and it is the best on the heavy
-  workloads.** `twelve` is worst at 64 (+2.4%, +22.6 kbps) and best at 32;
-  `fire` is worst at 8 (+5.4%) and best at 32/64. Against 8 and 16, 32 wins
-  everywhere: `twelve` −6.8%/−2.4%, `fire` −4.6%/−1.8%, `drive` −7.5%/−2.9%,
-  `idle` −10.1%/−3.4%.
-- **64 only wins where the world stream is small.** `idle` −0.5%, `drive`
-  −0.9%; those are 3.0 and 4.9 kbps of a 368/454 kbps stream, while its losses
-  on `fire`/`twelve` are 0.6 and 22.6 kbps. The −1.5% aggregate for 64 is bought
-  entirely from the two workloads that do not need help.
-- **Shorter lifetimes do not shrink the checkpoint, they multiply the
-  anchors.** `bytes/checkpoint` falls as the lifetime shortens (idle 781.4 →
-  616.7, twelve 3236.8 → 3057.5) but total bytes rise: every extra world
-  publication also carries an owner anchor (`down_bytes` includes them; see
-  exp0's 211.8 kbps anchor floor), so 4× the rotations means 4× the prologue
-  datagrams. Delta bytes alone would have preferred 8; the checkpoint metric is
-  the one that decides.
-- Each rotation is one `Full` plus one `Retire`, and 10 s at 32 encodes 313
-  frames: exactly `ceil(313 / 32) = 10` proposals, 9 retirements (the last
-  proposal has no older baseline to retire). No `Retire` was ever resent, so the
-  acknowledgement path never stalled on a lossless link.
+- **32 has the lowest aggregate traffic and wins on `twelve`.** Moving
+  `twelve` to 64 adds 2.4%, or 22.6 kbps. Lifetimes 8 and 16 cost more
+  than 32 in every workload.
+- **64 slightly wins on `idle`, `drive` and `fire`.** Relative to 32,
+  savings are 0.5%, 0.9% and 0.5%, respectively (1.8, 4.1 and 4.0 kbps).
+  These savings do not offset the increase on `twelve`.
+- **Shorter lifetimes multiply full proposals and retirement exchanges.**
+  Although delta bytes fall, total traffic rises. The delivered bytes per
+  checkpoint also rise when shortening from 64 to 8 (idle 616.7 → 781.4,
+  twelve 3057.5 → 3236.8).
+- Each rotation is one `Full` plus one `Retire`, and 10 s at 32 encodes
+  313 frames: `ceil(313 / 32) = 10` proposals and 9 retirements. No
+  retirement was resent on the lossless link.
 
 ## Size-triggered rotation, measured against 32/64
 
@@ -198,12 +191,10 @@ The policy either does nothing or thrashes:
   inside the natural spread of the share produces a rotation storm, and each
   rotation also costs its `Retire` exchange, so the failure is superlinear in
   proposal count.
-- **Nowhere does it beat 32.** Best size-triggered rows are byte-identical to
-  64; 64 loses to 32 on `fire`/`twelve`, so the policy has no win to inherit.
+- **The trigger adds no benefit over fixed 64.** Best size-triggered rows
+  match 64, retaining its small `fire` saving and its `twelve` penalty.
 
-There is no hysteresis parameter in this design, and one would not help: a
-cooldown only moves a thrashing threshold toward an inert one, and the inert
-side cannot beat 32. The size trigger is therefore **not adopted**, and the
+There is no hysteresis parameter in this design; a cooldown was not measured. The size trigger is therefore **not adopted**, and the
 `size_trigger_percent` field stays `None` in `RotationPolicy::default`.
 
 ## Loss, reordering and blackout
@@ -212,7 +203,7 @@ Same host/client pair, every datagram crossing the server's own
 `scripted_link::Link` on the manual clock: one seeded SplitMix64 stream per
 direction, scripted loss on the unreliable lane, and a blackout window where the
 unreliable lane drops and the reliable lane delays past the end. Workload
-`fire` (the heaviest world stream), 12 s per row, outage from 3.000 s. `stall`
+`fire`, 12 s per row, outage from 3.000 s. `stall`
 is the client-visible gap from the last complete checkpoint before the outage to
 the first complete one after it; `recov bytes` is the downstream traffic over
 that same window.
@@ -226,29 +217,28 @@ that same window.
 | 1% loss | 8 | 1484 | 1464 | 20 / 4 | 97065.2 | 1.014 | 32 | 2782 | 361 | 14 | 47 | 46 | 0 | 839363 | 666485 |
 | 1% loss | 16 | 1440 | 1421 | 19 / 3 | 94986.7 | 1.008 | 32 | 2776 | 358 | 14 | 25 | 21 | 0 | 813528 | 722257 |
 | 1% loss | **32** | 1421 | 1402 | 19 / 3 | **93308.3** | 1.008 | 32 | 2795 | 362 | 12 | 14 | 11 | 0 | 792779 | 742938 |
-| 1% loss | 64 | 1405 | 1385 | 20 / 4 | 92242.8 | 1.013 | 32 | 2796 | 360 | 15 | 6 | 5 | 0 | 784038 | 762985 |
-| 5% loss | 8 | 1473 | 1405 | 68 / 38 | 94413.6 | 1.041 | 64 | 2813 | 318 | 46 | 47 | 34 | 0 | 846203 | 673463 |
-| 5% loss | 16 | 1446 | 1382 | 64 / 33 | 92232.7 | 1.037 | 32 | 2792 | 326 | 40 | 28 | 19 | 0 | 818846 | 716513 |
-| 5% loss | **32** | 1416 | 1351 | 65 / 41 | **90051.8** | 1.042 | 32 | 2833 | 331 | 43 | 12 | 11 | 0 | 792782 | 749441 |
-| 5% loss | 64 | 1407 | 1343 | 64 / 36 | 89504.1 | 1.043 | 32 | 2831 | 328 | 46 | 7 | 5 | 0 | 787685 | 762622 |
+| 1% loss | 64 | 1405 | 1385 | 20 / 4 | 92242.8 | 1.014 | 32 | 2796 | 360 | 15 | 6 | 5 | 0 | 784038 | 762985 |
+| 5% loss | 8 | 1473 | 1405 | 68 / 38 | 94413.6 | 1.042 | 64 | 2813 | 318 | 46 | 47 | 34 | 0 | 846203 | 673463 |
+| 5% loss | 16 | 1446 | 1382 | 64 / 33 | 92232.7 | 1.038 | 32 | 2792 | 326 | 40 | 28 | 19 | 0 | 818846 | 716513 |
+| 5% loss | **32** | 1416 | 1351 | 65 / 41 | **90051.8** | 1.044 | 32 | 2833 | 331 | 43 | 12 | 11 | 0 | 792782 | 749441 |
+| 5% loss | 64 | 1407 | 1343 | 64 / 36 | 89504.1 | 1.045 | 32 | 2831 | 328 | 46 | 7 | 5 | 0 | 787685 | 762622 |
 | 0.5 s blackout | 8 | 1475 | 1423 | 52 / 31 | 93123.1 | 1.057 | **544** | 2811 | 358 | 0 | 47 | 44 | 0 | 823234 | 652754 |
 | 0.5 s blackout | 16 | 1433 | 1381 | 52 / 31 | 90584.4 | 1.057 | **544** | 2912 | 358 | 0 | 25 | 22 | 0 | 794935 | 704861 |
 | 0.5 s blackout | **32** | 1407 | 1355 | 52 / 31 | **88996.5** | 1.057 | **544** | 2825 | 358 | 0 | 14 | 11 | 0 | 777044 | 727121 |
 | 0.5 s blackout | 64 | 1392 | 1344 | 48 / 31 | 88417.0 | 1.057 | **544** | 2824 | 359 | 0 | 6 | 5 | 0 | 767467 | 746698 |
 
-("Down ratio" is this row's delivered bytes divided by the same lifetime's
-lossless row. Values are 1.0–1.06, which is the burst the handoff asks this
-table to expose.)
+("Down ratio" is the same lifetime's lossless Down B/s divided by this
+row's impaired Down B/s, using the 12 s rows in this table, not the 10 s sweep.
+For example, 94036.0 / 90051.8 = 1.044 at lifetime 32 with 5% loss.
+Ratios above one indicate less delivered traffic under impairment, not a burst.)
 
 What the loss table says:
 
-- **No setting turns loss into excess full-frame traffic.** Across all twelve
-  impaired rows the delivered-byte total is within 1.4–5.7% of the same
-  lifetime's lossless total (1% loss 1.008–1.014×, 5% loss 1.037–1.043×, the
-  blackout 1.057× on every lifetime). Nothing loses 40% of its traffic and
-  nothing doubles: the loss table shows no full-frame storm, and the rank order
-  of the settings is essentially unchanged by loss (32 stays best on `fire`
-  under every profile; only the last decimal of the 32-vs-64 gap moves).
+- **No setting turns loss into excess delivered traffic.** Impaired Down B/s
+  is about 0.8–5.4% below the matching lossless row. Lifetime 64 has slightly
+  lower Down B/s than 32 under every profile. At 1% and 5% loss it also
+  completes fewer checkpoints, so lower delivered traffic alone does not
+  establish better delivery quality.
 - **The stall is a property of the outage, not of the rotation policy.** 1% loss
   recovers within one publication period (32 ms) at every lifetime; 5% costs at
   most one extra publication (64 ms at lifetime 8, 32 ms otherwise); the
@@ -317,22 +307,15 @@ traffic.
 
 ## Recommendation
 
-**Keep 32.** It is the current default and it is the best fixed lifetime for the
-workloads that dominate the downstream budget: best of the four on `twelve`
-(955.1 kbps, −2.4% against 64) and on `fire` (741.0 kbps, tied with 64), and
-−6.8%/−4.6% against 8 and 16 there. 64 is 0.5–0.9% better on `idle`/`drive`
-(+3.0/+4.9 kbps) but 22.6 kbps worse on `twelve`, so adopting it trades the
-budget's largest consumer for the smallest. 8 and 16 lose everywhere; the
-checkpoint does get smaller with a shorter lifetime, but each extra world
-publication also carries an owner anchor, so the anchors grow faster than the
-world frames shrink.
+**Keep 32.** It has the lowest sum across the four measured workloads
+(2518.2 kbps versus 2530.8 at 64), driven by `twelve` at 955.1 kbps
+versus 977.7. Lifetime 64 slightly improves `idle`, `drive` and `fire`;
+`fire` is 737.0 kbps versus 741.0 at 32. Lifetimes 8 and 16 lose on
+all four workloads. This recommendation preserves the existing default based
+on the measured aggregate and `twelve`, not a claim that 32 wins every row.
 
-Do not adopt the size-triggered policy. Above the observed delta share it is
-inert (70% never fires), below it is a rotation storm (55% on `fire`: +38%
-bytes/s; 45%: +50%), and its best rows are identical to 64, which already loses
-to 32 on the heavy workloads. Loss does not change the answer: every lifetime
-delivered within 1.4–5.7% of its lossless byte total (1.008–1.014× at 1% loss,
-1.037–1.043× at 5%, 1.057× under the blackout), `missing` was 0 in all
-16 rows, and the stall after 1%/5% loss and a 0.5 s blackout was 32–64 ms /
-544 ms at every lifetime. There is no loss-driven reason to move off 32, and no
-lossless gain large enough to justify a change.
+Do not adopt the measured size-triggered policy: its best rows match fixed
+64, while lower thresholds increase traffic sharply. Loss rows also show
+slightly lower delivered traffic at 64 than 32, with fewer complete checkpoints
+at 1% and 5% loss. All lifetimes show the same 544 ms blackout stall; these
+single-seed measurements do not establish a playability advantage for 64.

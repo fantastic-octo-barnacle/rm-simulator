@@ -512,14 +512,14 @@ class EventMeasurementTests(unittest.TestCase):
     def test_repeated_polls_do_not_duplicate_events_but_equal_values_do(self):
         first = {'total':2, 'values':[(1,900.),(2,900.)]}
         next_ = {'total':4, 'values':[(1,900.),(2,900.),(3,10.),(4,10.)]}
-        result, missed = runner.event_distribution(self.rows([first,next_,next_,next_]), 'shot_confirmation_ms')
+        result, missed, resets = runner.event_distribution(self.rows([first,next_,next_,next_]), 'shot_confirmation_ms')
         self.assertEqual((result['count'],result['p50'],missed), (2,10.,0))
         self.assertIsNone(result['p95'])
 
     def test_overwrite_is_reported_and_missing_poll_preserves_cursor(self):
         rows = self.rows([{'total':1,'values':[(1,5.)]}, None,
                           {'total':5,'values':[(4,6.),(5,7.)]}])
-        result, missed = runner.event_distribution(rows, 'shot_confirmation_ms')
+        result, missed, resets = runner.event_distribution(rows, 'shot_confirmation_ms')
         self.assertEqual((result['count'],missed), (2,2))
 
     def test_legacy_last_values_are_not_per_event_measurements(self):
@@ -528,10 +528,14 @@ class EventMeasurementTests(unittest.TestCase):
         self.assertEqual(report['clients']['pilot']['metrics']['shot_confirmation_ms']['count'],0)
         self.assertIn('per_shot_execution_and_confirmation_delay',report['unavailable'])
 
-    def test_counter_reset_is_refused(self):
-        with self.assertRaises(ValueError):
-            runner.event_distribution(self.rows([{'total':2,'values':[]},
-                                                  {'total':1,'values':[]}]), 'shot_confirmation_ms')
+    def test_counter_reset_preserves_summary_and_records_failure_metadata(self):
+        rows = self.rows([{'total':2,'values':[]}, {'total':1,'values':[]},
+                          {'total':2,'values':[(2,7.)]}])
+        report = runner.summarize(rows, [], 3)
+        client = report['clients']['pilot']
+        self.assertEqual(client['event_history_resets']['shot_confirmation_ms'], 1)
+        self.assertEqual(client['metrics']['shot_confirmation_ms']['count'], 1)
+        json.dumps(report)
 
     def test_old_last_value_summary_cannot_be_compared_as_events(self):
         old = {'clients':{'pilot':{'metrics':{'rtt_ms':{'p50':1.,'max':2.}}}}}
@@ -630,6 +634,20 @@ class RunnerProcessTests(unittest.TestCase):
         result = subprocess.run([*self.command, *extra], capture_output=True, text=True,
                                 timeout=timeout, env=environment)
         return result, json.loads((self.output/'summary.json').read_text())
+
+    def test_event_reset_writes_failed_summary_and_cleans_processes(self):
+        source = self.fixture.read_text()
+        source = source.replace("'total':replies[0]", "'total':1000-replies[0]")
+        source = source.replace("'values':[(i,42) for i in range(max(1,replies[0]-255),replies[0]+1)]",
+                                "'values':[]")
+        self.fixture.write_text(source)
+        result, report = self.run_harness()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(report['status'], 'failed')
+        checks = [check for check in report['checks'] if check['name'] == 'event_history_complete']
+        self.assertTrue(checks)
+        self.assertTrue(all(check['status'] == 'failed' and check['resets'] > 0 for check in checks))
+        self.assert_cleaned()
 
     def test_loopback_readiness_ignores_proxy_settings(self):
         # Reserve a non-listening port: using this proxy must fail immediately.
