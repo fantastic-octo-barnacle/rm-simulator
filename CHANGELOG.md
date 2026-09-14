@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+- Add a standalone `binary_protocol_comparison` experiment comparing current
+  compressed JSON checkpoints with lossless binary deltas, bitpacking and
+  fixed-point motion fields. It checks decoding and short physics replays,
+  including finer projectile precision and a chassis-only variant, and trains
+  separate binary dictionaries on separate training workloads; see
+  `docs/bandwidth-results/binary-protocol.md`. Live wire formats are unchanged.
+
 - Add a selectable wire compression codec: DEFLATE stays the production default,
   and `RM_NET_CODEC=zstd` or `zstd-dict` selects ZSTD, the latter with a trained
   checkpoint dictionary embedded in the binary. Frames are self-identifying

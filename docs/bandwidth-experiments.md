@@ -24,6 +24,12 @@ dictionary experiment](bandwidth-results/exp-8-zstd-dictionary.md) adds a
 selectable wire codec (`RM_NET_CODEC`), leaves the DEFLATE wire and the
 production default untouched, and measures a 30–58% cut of the selected stream.
 
+The subsequent [binary and fixed-point experiment](bandwidth-results/binary-protocol.md)
+compares lossless binary checkpoints, packed baseline deltas and several
+motion precision assumptions against both compression baselines. It is a
+standalone prototype with round-trip and physics replay measurements; it does
+not change the live wire or prediction precision.
+
 The isolated measurements below are not measurements of the combined build.
 Experiment 1's short unimpaired UDP pair corroborates its bandwidth saving, but
 does not complete the loss/blackout or multi-seed acceptance matrix. Experiment 7

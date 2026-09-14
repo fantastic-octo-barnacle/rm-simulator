@@ -36,3 +36,11 @@ this record and the measurement in
 [`../../../docs/bandwidth-results/exp-8-zstd-dictionary.md`](../../../docs/bandwidth-results/exp-8-zstd-dictionary.md)
 whenever it is regenerated. Bump `protocol::PROTOCOL_VERSION` when replacing
 the dictionary so incompatible peers are rejected during the handshake.
+
+The [binary protocol experiment](../../../docs/bandwidth-results/binary-protocol.md)
+uses `train_binary_dictionaries` to generate separate dictionaries for each
+experimental layout and precision policy. They live with the experiment's
+results, not in this directory, and do not replace the production asset above.
+When changing encoded payloads or numeric precision, train on the new bytes and
+evaluate on separate workloads; reusing this JSON dictionary alone is not an
+adequate compression comparison.
