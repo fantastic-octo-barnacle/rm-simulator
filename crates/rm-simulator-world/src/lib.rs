@@ -1344,6 +1344,32 @@ mod tests {
             Err(FieldError::Restore(_))
         ));
     }
+    /// Partition invariance stated in world time rather than tick counts, so it
+    /// holds at whatever rate `tick_ns` froze. Experiment 1 runs this under
+    /// `RM_SIM_TICK_NS`; the tick-counting tests around it read their durations
+    /// as milliseconds and only describe the 1 kHz default.
+    #[test]
+    fn field_partition_invariance_holds_at_the_configured_rate() {
+        let ticks = |ns: u64| ns / tick_ns();
+        let config = FieldConfig::default();
+        let mut whole = Field::new(&config).unwrap();
+        let mut split = Field::new(&config).unwrap();
+        let muzzle = Pose::yawed([0.0, 0.0, 1.0], 0.6);
+        for field in [&mut whole, &mut split] {
+            field.step(ticks(500_000_000)).unwrap();
+            field
+                .fire(muzzle, Shot::at_limit(Caliber::Mm17), None)
+                .unwrap();
+        }
+        // Split by uneven tick counts; only the total is a fixed world time.
+        let total = ticks(1_500_000_000);
+        whole.step(total).unwrap();
+        for part in [1, 3, 97, total - 101] {
+            split.step(part).unwrap();
+        }
+        assert_eq!(whole.tick(), split.tick());
+        assert_eq!(whole.snapshot(), split.snapshot());
+    }
     #[test]
     fn default_field_steps_deterministically_in_any_partition() {
         let config = FieldConfig::default();
