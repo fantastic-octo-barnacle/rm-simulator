@@ -131,6 +131,7 @@ pub struct FieldConfig {
     #[serde(default)]
     pub projectile_policy: projectile::ProjectilePolicy,
 }
+
 impl Default for FieldConfig {
     fn default() -> Self {
         Self {
@@ -212,8 +213,14 @@ pub struct FieldRestore {
     /// The projectile restitution, flight limit and retirement rule the field
     /// runs, so a restored field spends and retires balls exactly as the field
     /// it was captured from does.
-    #[serde(default)]
+    #[serde(default = "legacy_projectile_policy")]
     pub projectile_policy: projectile::ProjectilePolicy,
+}
+
+/// The policy a checkpoint written before `projectile_policy` existed ran:
+/// the current restitution and flight limit with no low-speed retirement.
+fn legacy_projectile_policy() -> projectile::ProjectilePolicy {
+    projectile::ProjectilePolicy::default().without_retirement()
 }
 
 /// One authoritative tick of the whole field, as an observer or a peer

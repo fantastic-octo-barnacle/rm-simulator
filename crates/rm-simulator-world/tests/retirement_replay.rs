@@ -146,10 +146,48 @@ fn restored_fields_retire_the_same_balls_as_the_run_they_came_from() {
         let mut replayed = Field::restore(&checkpoint, &geometry, 0.0).unwrap();
         assert_eq!(replayed.projectile_policy(), policy, "{name}");
 
-        // Both fields step the same ticks from the same checkpoint.
-        for _ in 0..30 {
-            continuous.step(50).unwrap();
-            replayed.step(50).unwrap();
+        // Both fields step the same ticks from the same checkpoint, compared
+        // every tick so a retirement one tick apart cannot hide inside a batch.
+        continuous.take_projectile_removals();
+        replayed.take_projectile_removals();
+        for _ in 0..1_500 {
+            continuous.step(1).unwrap();
+            replayed.step(1).unwrap();
+            // Removal identity, time and reason must agree exactly; the speed
+            // at removal is only as exact as the snapshot's f32 velocity.
+            let live_removed = continuous.take_projectile_removals();
+            let replay_removed = replayed.take_projectile_removals();
+            assert_eq!(
+                live_removed.len(),
+                replay_removed.len(),
+                "{name}: a restored field removed a different number of balls"
+            );
+            for (a, b) in live_removed.iter().zip(&replay_removed) {
+                assert_eq!(
+                    (
+                        a.projectile,
+                        a.time_ns,
+                        a.reason,
+                        a.lifetime_ns,
+                        a.since_first_contact_ns
+                    ),
+                    (
+                        b.projectile,
+                        b.time_ns,
+                        b.reason,
+                        b.lifetime_ns,
+                        b.since_first_contact_ns
+                    ),
+                    "{name}: a restored field removed a different ball, or at a different time"
+                );
+                assert!(
+                    (a.speed_m_s - b.speed_m_s).abs() < 1e-3,
+                    "{name}: ball {} was removed at {} m/s live but {} m/s after restore",
+                    a.projectile,
+                    a.speed_m_s,
+                    b.speed_m_s
+                );
+            }
             let live = continuous.projectile_snapshots();
             let replay = replayed.projectile_snapshots();
             let live_ids: Vec<u64> = live.iter().map(|ball| ball.id).collect();
@@ -169,8 +207,7 @@ fn restored_fields_retire_the_same_balls_as_the_run_they_came_from() {
                     a.id
                 );
                 assert_eq!(
-                    a.dwell_since_ns.is_some(),
-                    b.dwell_since_ns.is_some(),
+                    a.dwell_since_ns, b.dwell_since_ns,
                     "{name}: ball {} disagrees about its dwell window",
                     a.id
                 );

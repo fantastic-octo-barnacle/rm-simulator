@@ -1427,9 +1427,12 @@ impl WorldPhysics {
                     pair.collider1
                 };
                 touched_anything = true;
-                touching_scenery |= self.world.colliders[other]
-                    .parent()
-                    .is_none_or(|body| self.world.bodies[body].is_fixed());
+                // Mechanism parts are parentless colliders too, but they move;
+                // a ball resting on one is not on stationary scenery.
+                touching_scenery |= match self.world.colliders[other].parent() {
+                    Some(body) => self.world.bodies[body].is_fixed(),
+                    None => !self.mechanisms.iter().any(|(handle, ..)| *handle == other),
+                };
                 let Some(&scorer) = self.target_of.get(&other) else {
                     continue;
                 };

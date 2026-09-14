@@ -4,7 +4,7 @@
 
 ## Unreleased
 
-- Remove spent projectiles: a ball that has stayed below 2 m/s for 50 ms while
+- Remove spent projectiles: a ball that has stayed at or below 2 m/s for 50 ms while
   resting on stationary scenery is retired instead of rolling until the
   four-second flight limit. A ball in free flight, or one that has not touched
   anything yet, is never retired, and a ball that is struck or pushed again

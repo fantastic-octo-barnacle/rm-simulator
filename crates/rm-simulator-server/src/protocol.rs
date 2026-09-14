@@ -21,7 +21,9 @@ use std::io::{self, BufRead, Read, Write};
 /// instead of repeating it in every anchor, with a dedicated reliable frame.
 /// Version 29 combines referenced owner configurations with lossless RMI3 input
 /// batches; experimental version 28 builds carried only one of these changes.
-pub const PROTOCOL_VERSION: u32 = 29;
+/// Version 30 adds the first-contact and dwell times to the compact projectile
+/// wire so a peer predicts spent-ball retirement like the host.
+pub const PROTOCOL_VERSION: u32 = 30;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///

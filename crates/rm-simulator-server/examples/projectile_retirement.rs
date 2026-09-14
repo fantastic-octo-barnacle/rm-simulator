@@ -587,6 +587,12 @@ step_ms_per_sim_s,replay_ms_per_sim_s,snapshot_bytes_per_s,projectile_bytes_per_
     let mut trajectory_text = String::from("arm,projectile,time_ns,x_m,y_m,z_m,speed_m_s\n");
 
     for rate in &rate_hz {
+        if *rate == 0 || *rate > 1_000 || 1_000 % rate != 0 {
+            anyhow::bail!(
+                "--rates {rate}: a launch rate must be a divisor of 1000 so that its \
+                 period is a whole number of 1 ms ticks"
+            );
+        }
         let period_ticks = 1_000 / rate;
         for rep in 0..reps {
             let seed = 0x5EED_0000 + rep as u64 * 7919 + rate;
@@ -672,7 +678,11 @@ step_ms_per_sim_s,replay_ms_per_sim_s,snapshot_bytes_per_s,projectile_bytes_per_
                     if metrics.replay_samples == 0 {
                         0.0
                     } else {
-                        metrics.replay_ns as f64 / 1e6 / sim_s
+                        // Per replayed simulated second, not per measured one.
+                        let replay_sim_s =
+                            metrics.replay_samples as f64 * REPLAY_TICKS as f64 * TICK_NS as f64
+                                / 1e9;
+                        metrics.replay_ns as f64 / 1e6 / replay_sim_s
                     },
                     metrics.snapshot_bytes as f64 / published_s,
                     metrics.projectile_bytes as f64 / published_s,
@@ -687,30 +697,47 @@ step_ms_per_sim_s,replay_ms_per_sim_s,snapshot_bytes_per_s,projectile_bytes_per_
                     let Some(metrics) = by_arm.get(arm.name) else {
                         continue;
                     };
+                    // A ball can strike the same plate more than once, so each
+                    // key holds the ordered sequence of its contacts and the
+                    // arms are compared contact by contact.
                     let key = |hit: &HitRecord| (hit.projectile, hit.target, hit.direct);
-                    let control_map: BTreeMap<_, _> =
-                        control.hits.iter().map(|hit| (key(hit), *hit)).collect();
-                    let arm_map: BTreeMap<_, _> =
-                        metrics.hits.iter().map(|hit| (key(hit), *hit)).collect();
-                    for (id, hit) in &control_map {
-                        let change = match arm_map.get(id) {
-                            None => "lost",
-                            Some(other) if other.detected != hit.detected => "detection_changed",
-                            Some(_) => continue,
-                        };
-                        let _ = writeln!(
-                            disagreements,
-                            "{rate},{rep},{},{},{},{},{},{},{change}",
-                            arm.name,
-                            hit.projectile,
-                            target_key(hit.target),
-                            if hit.direct { "direct" } else { "ricochet" },
-                            hit.detected,
-                            arm_map.get(id).map(|h| h.detected).unwrap_or(false),
-                        );
+                    let mut control_map: BTreeMap<_, Vec<HitRecord>> = BTreeMap::new();
+                    for hit in &control.hits {
+                        control_map.entry(key(hit)).or_default().push(*hit);
                     }
-                    for (id, hit) in &arm_map {
-                        if !control_map.contains_key(id) {
+                    let mut arm_map: BTreeMap<_, Vec<HitRecord>> = BTreeMap::new();
+                    for hit in &metrics.hits {
+                        arm_map.entry(key(hit)).or_default().push(*hit);
+                    }
+                    let empty = Vec::new();
+                    for (id, control_hits) in &control_map {
+                        let arm_hits = arm_map.get(id).unwrap_or(&empty);
+                        for (index, hit) in control_hits.iter().enumerate() {
+                            let (change, arm_detected) = match arm_hits.get(index) {
+                                None => ("lost", false),
+                                Some(other) if other.detected != hit.detected => {
+                                    ("detection_changed", other.detected)
+                                }
+                                Some(other) if other.damage != hit.damage => {
+                                    ("damage_changed", other.detected)
+                                }
+                                Some(_) => continue,
+                            };
+                            let _ = writeln!(
+                                disagreements,
+                                "{rate},{rep},{},{},{},{},{},{},{change}",
+                                arm.name,
+                                hit.projectile,
+                                target_key(hit.target),
+                                if hit.direct { "direct" } else { "ricochet" },
+                                hit.detected,
+                                arm_detected,
+                            );
+                        }
+                    }
+                    for (id, arm_hits) in &arm_map {
+                        let known = control_map.get(id).map_or(0, Vec::len);
+                        for hit in arm_hits.iter().skip(known) {
                             let _ = writeln!(
                                 disagreements,
                                 "{rate},{rep},{},{},{},{},false,{},gained",
