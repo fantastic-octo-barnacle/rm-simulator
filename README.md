@@ -265,6 +265,7 @@ The existing runtime flags remain launch shortcuts.
 | `--wireframe` | Draw visual mesh wireframe lines if supported by the GPU |
 | `--no-field-collision` | Skip the CAD collision meshes; only a flat floor at height zero and armor collide |
 | `--no-referee` | Run the field without a referee: the rune is active from the start and there is no match |
+| `--no-projectile-retirement` | Keep spent projectiles until the four-second flight limit; by default a ball resting on scenery below 2 m/s for 50 ms is removed |
 | `--no-prediction` | Use host-driven movement, aim and firing for comparison |
 | `--transport gns\|tcp` | Gameplay transport, default GNS over UDP; use the same choice on host and guests |
 | `--connect HOST:PORT` | Join a running server instead of simulating locally (field options come from the server) |

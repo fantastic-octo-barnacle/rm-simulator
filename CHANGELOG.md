@@ -4,6 +4,17 @@
 
 ## Unreleased
 
+- Remove spent projectiles: a ball that has stayed below 2 m/s for 50 ms while
+  resting on stationary scenery is retired instead of rolling until the
+  four-second flight limit. A ball in free flight, or one that has not touched
+  anything yet, is never retired, and a ball that is struck or pushed again
+  speeds up and keeps its place. Measured over 60 s of sustained fire on the
+  CAD field at a 20 Hz aggregate launch rate, this cuts the mean number of live
+  balls by 34%, physics CPU per simulated second by 31% and projectile snapshot
+  traffic by 35%. Restitution stays 0.45 and the flight limit, arena bounds and
+  64-ball cap are unchanged. `--no-projectile-retirement` restores the earlier
+  behaviour on the app and the server binary.
+
 - Skip malformed optional network trace metrics before aggregation so diagnostic
   summaries still report valid rows and flag incomplete traces.
 

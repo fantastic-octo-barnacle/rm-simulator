@@ -134,7 +134,10 @@ headless server, the interactive application and the rendering benchmark apart.
   With no projectiles, chassis or referee, `Field::step` advances rune state
   directly to the target tick. A referee keeps the tick loop active even when
   physics is idle; active bodies also advance tick by tick.
-- **Physics.** Projectiles are rapier dynamic balls with CCD; armor housings
+- **Physics.** Projectiles are rapier dynamic balls with CCD, kept until the
+  four-second flight limit, the arena bounds or the 64-ball cap removes them,
+  or until `ProjectilePolicy` retires a spent one that has rested below 2 m/s
+  on stationary scenery for 50 ms; armor housings
   are kinematic cuboids that follow the rule poses each tick; the ground is
   a static trimesh supplied by the server layout adapter from the manifest's
   visual GLBs, including sheets and markings. The rune and outpost contribute
