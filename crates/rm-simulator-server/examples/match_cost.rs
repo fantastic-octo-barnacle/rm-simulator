@@ -38,6 +38,7 @@ fn main() -> anyhow::Result<()> {
             terrain: true,
             referee: true,
             physics_rate_hz: 1000,
+            projectile_policy: Default::default(),
         },
     );
     let mut template = Field::new(&config)?;

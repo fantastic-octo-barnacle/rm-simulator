@@ -40,6 +40,128 @@ pub const MAX_FLIGHT_NS: u64 = 4_000_000_000;
 /// Most projectiles one world keeps in flight. A further launch drops the
 /// oldest.
 pub const MAX_PROJECTILES: usize = 64;
+/// Dwell window a resting ball must stay slow for before low-speed retirement
+/// removes it, in nanoseconds. Only used when a policy asks for retirement.
+pub const RETIRE_DWELL_NS: u64 = 50_000_000;
+/// Residual world speed at or below which a ball resting on stationary scenery
+/// is retired, in metres per second. A 42 mm ball at this speed carries 89 mJ,
+/// 4% of the 2.2 J it needs to reach the Table 5-1 detection speed, so a ball
+/// retired here cannot register a hit from where it lies. Chosen from a
+/// sustained-fire measurement on the CAD field: it cuts the mean live-ball
+/// count by 34% without changing aggregate scoring.
+pub const RETIRE_SPEED_M_S: f64 = 2.0;
+
+/// How long a ball stays in the world: its own contact restitution, the hard
+/// flight limit and the optional low-speed retirement rule.
+///
+/// The default keeps restitution 0.45 and the four-second flight limit, and
+/// retires a ball that has stayed below [`RETIRE_SPEED_M_S`] on stationary
+/// scenery for [`RETIRE_DWELL_NS`]. [`ProjectilePolicy::without_retirement`]
+/// restores the earlier behaviour of holding every ball to its flight limit.
+/// This is a simulation simplification knob, not a rulebook quantity.
+///
+/// Restitution applies to the projectile collider with
+/// `CoefficientCombineRule::Min`. Rapier resolves a pair with the higher-priority
+/// rule of the two colliders (`GeometricMean > ClampedSum > Max > Multiply >
+/// Min > Average`), so a projectile against default-rule scenery or a kinematic
+/// armor housing uses `min(policy, 0.45)`, and against a chassis, whose
+/// colliders already ask for `Min` at 0.05, it stays 0.05. Scenery and chassis
+/// pairs are untouched by this field.
+///
+/// ```
+/// use rm_simulator_physics::projectile::ProjectilePolicy;
+///
+/// let default = ProjectilePolicy::default();
+/// assert_eq!(default.restitution, 0.45);
+/// assert_eq!(default.retire_speed_m_s, Some(2.0));
+/// assert_eq!(default.without_retirement().retire_speed_m_s, None);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProjectilePolicy {
+    /// Contact restitution carried by every projectile collider, combined with
+    /// `Min` as described above. Dimensionless, in `[0, 1]`.
+    pub restitution: f64,
+    /// Residual world speed at or below which a ball resting on stationary
+    /// scenery may be retired, in metres per second. `None` keeps every ball
+    /// until the flight limit, the bounds or the cap remove it.
+    pub retire_speed_m_s: Option<f64>,
+    /// How long the ball must stay slow and in contact before retirement, in
+    /// nanoseconds. Separation or renewed motion resets the window.
+    pub retire_dwell_ns: u64,
+    /// Hard flight limit, in nanoseconds, after which a ball is discarded even
+    /// while it is still rolling.
+    pub max_flight_ns: u64,
+}
+impl Default for ProjectilePolicy {
+    fn default() -> Self {
+        Self {
+            restitution: RESTITUTION,
+            retire_speed_m_s: Some(RETIRE_SPEED_M_S),
+            retire_dwell_ns: RETIRE_DWELL_NS,
+            max_flight_ns: MAX_FLIGHT_NS,
+        }
+    }
+}
+impl ProjectilePolicy {
+    /// The same policy with low-speed retirement switched off, so a ball is
+    /// held until the flight limit, the arena bounds or the cap removes it.
+    /// This is the rollback of the retirement change, exposed as
+    /// `--no-projectile-retirement` on the app and the server binary.
+    pub fn without_retirement(self) -> Self {
+        Self {
+            retire_speed_m_s: None,
+            ..self
+        }
+    }
+    /// Whether the policy is valid: a restitution in `[0, 1]`, a finite
+    /// non-negative retirement speed and a non-zero flight limit.
+    pub fn is_valid(&self) -> bool {
+        self.restitution.is_finite()
+            && (0.0..=1.0).contains(&self.restitution)
+            && self
+                .retire_speed_m_s
+                .is_none_or(|speed| speed.is_finite() && speed >= 0.0)
+            && self.max_flight_ns > 0
+    }
+}
+
+/// Why a ball left the world.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RemovalReason {
+    /// The hard flight limit of [`ProjectilePolicy::max_flight_ns`] elapsed.
+    Expired,
+    /// The ball left the modelled volume: below the catch floor, beyond 200 m
+    /// of the origin, or at a non-finite position.
+    OutOfWorld,
+    /// The ball crossed the arena's projectile bounds and was absorbed.
+    OutOfBounds,
+    /// A launch beyond [`MAX_PROJECTILES`] dropped the oldest ball.
+    Capped,
+    /// Low-speed post-contact retirement removed a spent ball.
+    Retired,
+}
+
+/// One projectile removal, for lifetime and workload accounting. Instrumentation
+/// only: nothing in stepping or scoring reads it, and it is not part of a
+/// snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Removal {
+    /// Identity of the ball, as returned by [`WorldPhysics::fire`].
+    pub projectile: u64,
+    /// Simulation time at which it was removed, in nanoseconds.
+    pub time_ns: u64,
+    /// Why it was removed.
+    pub reason: RemovalReason,
+    /// How long it lived, in nanoseconds.
+    pub lifetime_ns: u64,
+    /// Time between its first contact with anything and its removal, in
+    /// nanoseconds; `None` when it never touched anything.
+    pub since_first_contact_ns: Option<u64>,
+    /// World speed at removal, in metres per second.
+    pub speed_m_s: f64,
+}
+/// Most removals one world remembers before dropping the oldest.
+const REMOVAL_MEMORY: usize = 4096;
 /// Strikes are reported for this long after they happen.
 pub const HIT_MEMORY_NS: u64 = 1_000_000_000;
 /// Outpost middle armor effective detection area (Figure 5-16: the hatched
@@ -212,6 +334,15 @@ pub struct ProjectileSnapshot {
     /// restored field scores the ball for the same robot the host does.
     #[serde(default)]
     pub shooter: Option<u32>,
+    /// Simulation time of the ball's first contact with anything, in
+    /// nanoseconds, or `None` while it has never touched. Diagnostic only.
+    #[serde(default)]
+    pub first_contact_ns: Option<u64>,
+    /// Start of the open low-speed retirement dwell window, in nanoseconds, or
+    /// `None` when no window is open. Carried so a restored field retires the
+    /// same ball on the same tick as the field it was captured from.
+    #[serde(default)]
+    pub dwell_since_ns: Option<u64>,
 }
 
 /// One armor scoring face: origin at the face centre, +x the outward normal,
@@ -354,6 +485,10 @@ struct Projectile {
     collider: ColliderHandle,
     /// Armor colliders touched at the end of the previous tick.
     touching: Vec<ColliderHandle>,
+    /// Simulation time of the first contact with anything, if it happened.
+    first_contact_ns: Option<u64>,
+    /// Start of the current slow-and-touching-scenery window, if one is open.
+    dwell_since_ns: Option<u64>,
 }
 struct TargetBody {
     target: ArmorTarget,
@@ -382,6 +517,12 @@ pub struct WorldPhysics {
     /// scores nothing, which also catches a fast shot that crosses a whole
     /// wall in one tick.
     pub projectile_bounds_m: Option<[[f64; 3]; 2]>,
+    /// Restitution, flight limit and low-speed retirement rule applied to
+    /// projectiles created from now on. Changing it does not alter balls
+    /// already in flight.
+    policy: ProjectilePolicy,
+    /// Recent removals, oldest first, bounded to [`REMOVAL_MEMORY`].
+    removals: std::collections::VecDeque<Removal>,
     world: PhysicsWorld,
     projectiles: Vec<Projectile>,
     /// Velocities before integration, in the current projectile order.
@@ -469,6 +610,8 @@ impl WorldPhysics {
         let mut ballistics = Self {
             world,
             projectile_bounds_m: None,
+            policy: ProjectilePolicy::default(),
+            removals: std::collections::VecDeque::new(),
             projectiles: Vec::new(),
             velocities_before: Vec::new(),
             chassis: Vec::new(),
@@ -902,6 +1045,7 @@ impl WorldPhysics {
         }
         if self.projectiles.len() >= MAX_PROJECTILES {
             let oldest = self.projectiles.remove(0);
+            self.record_removal(&oldest, time_ns, RemovalReason::Capped);
             self.world.remove_body(oldest.body);
         }
         let muzzle = pose(muzzle);
@@ -923,7 +1067,8 @@ impl WorldPhysics {
                 ))
                 .mass(shot.caliber.mass_kg())
                 .friction(FRICTION)
-                .restitution(RESTITUTION),
+                .restitution(self.policy.restitution)
+                .restitution_combine_rule(CoefficientCombineRule::Min),
             Some(body),
         );
         let id = self.next_id;
@@ -937,8 +1082,59 @@ impl WorldPhysics {
             body,
             collider,
             touching: Vec::new(),
+            first_contact_ns: None,
+            dwell_since_ns: None,
         });
         Ok(id)
+    }
+    /// The lifetime policy new projectiles are created with.
+    pub fn projectile_policy(&self) -> ProjectilePolicy {
+        self.policy
+    }
+    /// Choose the lifetime policy for projectiles created from now on. Balls
+    /// already in flight keep the restitution they were built with, so a caller
+    /// that wants one policy for a whole run sets it before the first launch.
+    ///
+    /// ```
+    /// use rm_simulator_physics::{projectile::ProjectilePolicy, WorldPhysics};
+    ///
+    /// let mut physics = WorldPhysics::new(&[], 0.0);
+    /// let policy = ProjectilePolicy {
+    ///     restitution: 0.15,
+    ///     retire_speed_m_s: Some(1.0),
+    ///     ..ProjectilePolicy::default()
+    /// };
+    /// physics.set_projectile_policy(policy)?;
+    /// assert_eq!(physics.projectile_policy(), policy);
+    /// # Ok::<(), &'static str>(())
+    /// ```
+    pub fn set_projectile_policy(&mut self, policy: ProjectilePolicy) -> Result<(), &'static str> {
+        if !policy.is_valid() {
+            return Err("invalid projectile policy");
+        }
+        self.policy = policy;
+        Ok(())
+    }
+    /// Take the recent removal records, oldest first, leaving none behind.
+    /// Instrumentation for lifetime studies; stepping never reads them.
+    pub fn take_removals(&mut self) -> Vec<Removal> {
+        self.removals.drain(..).collect()
+    }
+    fn record_removal(&mut self, projectile: &Projectile, time_ns: u64, reason: RemovalReason) {
+        let body = &self.world.bodies[projectile.body];
+        if self.removals.len() == REMOVAL_MEMORY {
+            self.removals.pop_front();
+        }
+        self.removals.push_back(Removal {
+            projectile: projectile.id,
+            time_ns,
+            reason,
+            lifetime_ns: time_ns.saturating_sub(projectile.launched_ns),
+            since_first_contact_ns: projectile
+                .first_contact_ns
+                .map(|first| time_ns.saturating_sub(first)),
+            speed_m_s: body.linvel().length(),
+        });
     }
     /// Placement revision of one chassis, or `None` when no chassis has that
     /// id. It changes when the chassis is placed or revived, so a client never
@@ -980,7 +1176,8 @@ impl WorldPhysics {
                 ))
                 .mass(state.caliber.mass_kg())
                 .friction(FRICTION)
-                .restitution(RESTITUTION),
+                .restitution(self.policy.restitution)
+                .restitution_combine_rule(CoefficientCombineRule::Min),
             Some(body),
         );
         self.projectiles.push(Projectile {
@@ -991,6 +1188,8 @@ impl WorldPhysics {
             body,
             collider,
             touching: Vec::new(),
+            first_contact_ns: state.first_contact_ns,
+            dwell_since_ns: state.dwell_since_ns,
         });
         Ok(())
     }
@@ -1152,17 +1351,23 @@ impl WorldPhysics {
         while index < self.projectiles.len() {
             let projectile = &self.projectiles[index];
             let position = self.world.bodies[projectile.body].translation();
-            let expired = next_ns.saturating_sub(projectile.launched_ns) > MAX_FLIGHT_NS
-                || position.z < -1.
-                || position.length() > 200.
-                || !position.is_finite()
-                || outside_projectile_bounds(
+            let reason =
+                if next_ns.saturating_sub(projectile.launched_ns) > self.policy.max_flight_ns {
+                    Some(RemovalReason::Expired)
+                } else if position.z < -1. || position.length() > 200. || !position.is_finite() {
+                    Some(RemovalReason::OutOfWorld)
+                } else if outside_projectile_bounds(
                     self.projectile_bounds_m,
                     position,
                     projectile.caliber.diameter_m() / 2.0,
-                );
-            if expired {
+                ) {
+                    Some(RemovalReason::OutOfBounds)
+                } else {
+                    None
+                };
+            if let Some(reason) = reason {
                 let projectile = self.projectiles.remove(index);
+                self.record_removal(&projectile, next_ns, reason);
                 self.world.remove_body(projectile.body);
             } else {
                 index += 1;
@@ -1186,6 +1391,7 @@ impl WorldPhysics {
             }
             body.set_next_kinematic_position(pose(end.pose));
         }
+        let policy = self.policy;
         self.velocities_before.clear();
         for projectile in &self.projectiles {
             let body = &mut self.world.bodies[projectile.body];
@@ -1208,6 +1414,10 @@ impl WorldPhysics {
             .zip(self.velocities_before.iter().copied())
         {
             let mut touching = Vec::new();
+            // Any touch at all starts the ball's post-contact history; only a
+            // fixed body counts as the stationary scenery retirement needs.
+            let mut touched_anything = false;
+            let mut touching_scenery = false;
             for pair in self.world.contact_pairs_with(projectile.collider) {
                 if !pair.has_any_active_contact() {
                     continue;
@@ -1216,6 +1426,13 @@ impl WorldPhysics {
                     pair.collider2
                 } else {
                     pair.collider1
+                };
+                touched_anything = true;
+                // Mechanism parts are parentless colliders too, but they move;
+                // a ball resting on one is not on stationary scenery.
+                touching_scenery |= match self.world.colliders[other].parent() {
+                    Some(body) => self.world.bodies[body].is_fixed(),
+                    None => !self.mechanisms.iter().any(|(handle, ..)| *handle == other),
                 };
                 let Some(&scorer) = self.target_of.get(&other) else {
                     continue;
@@ -1294,6 +1511,21 @@ impl WorldPhysics {
                 });
             }
             projectile.touching = touching;
+            if touched_anything && projectile.first_contact_ns.is_none() {
+                projectile.first_contact_ns = Some(next_ns);
+            }
+            // A spent ball has touched stationary scenery, still touches it and
+            // stays below the residual speed for the whole dwell window. Any
+            // separation or renewed motion reopens the window.
+            let speed_m_s = self.world.bodies[projectile.body].linvel().length();
+            let slow = policy
+                .retire_speed_m_s
+                .is_some_and(|limit| speed_m_s <= limit);
+            if touching_scenery && slow {
+                projectile.dwell_since_ns.get_or_insert(next_ns);
+            } else {
+                projectile.dwell_since_ns = None;
+            }
         }
         // Score contacts first, then absorb perimeter shots. The convex XY volume
         // also catches a fast shot that traverses an entire wall in one tick.
@@ -1301,13 +1533,24 @@ impl WorldPhysics {
         while index < self.projectiles.len() {
             let shot = &self.projectiles[index];
             let position = self.world.bodies[shot.body].translation();
-            let absorbed = outside_projectile_bounds(
+            let reason = if outside_projectile_bounds(
                 self.projectile_bounds_m,
                 position,
                 shot.caliber.diameter_m() / 2.0,
-            );
-            if absorbed {
+            ) {
+                Some(RemovalReason::OutOfBounds)
+            } else if policy.retire_speed_m_s.is_some()
+                && shot
+                    .dwell_since_ns
+                    .is_some_and(|since| next_ns.saturating_sub(since) >= policy.retire_dwell_ns)
+            {
+                Some(RemovalReason::Retired)
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
                 let shot = self.projectiles.remove(index);
+                self.record_removal(&shot, next_ns, reason);
                 self.world.remove_body(shot.body);
             } else {
                 index += 1;
@@ -1329,6 +1572,8 @@ impl WorldPhysics {
                     velocity_m_s: body.linvel().to_array(),
                     angular_velocity_rad_s: body.angvel().to_array(),
                     shooter: projectile.shooter,
+                    first_contact_ns: projectile.first_contact_ns,
+                    dwell_since_ns: projectile.dwell_since_ns,
                 }
             })
             .collect()
@@ -1756,7 +2001,12 @@ mod tests {
                 )
                 .is_ok()
         );
-        // A ball dropped onto the mesh rests on it instead of the floor.
+        // A ball dropped onto the mesh rests on it instead of the floor. Low
+        // speed retirement would remove it once it settles, so this check runs
+        // on the policy that keeps every ball to its flight limit.
+        ballistics
+            .set_projectile_policy(ProjectilePolicy::default().without_retirement())
+            .unwrap();
         ballistics
             .fire(
                 0,

@@ -99,7 +99,10 @@ struct PlayerSnapshot {
     projectiles: Vec<ProjectileWire>,
 }
 /// Stable identity, lifetime and shooter followed by a position and velocity
-/// vector. Spin is not carried: it moves no ball a client can see.
+/// vector, then the retirement bookkeeping. Spin is not carried: it moves no
+/// ball a client can see. The first-contact time and the open low-speed dwell
+/// window are carried so a predicting client retires the same ball on the same
+/// tick as the host does.
 #[derive(Serialize, Deserialize)]
 struct ProjectileWire(
     u64,
@@ -108,6 +111,8 @@ struct ProjectileWire(
     [f32; 3],
     [f32; 3],
     Option<u32>,
+    Option<u64>,
+    Option<u64>,
 );
 impl PlayerSnapshot {
     fn from_state(state: &SimulationState) -> Self {
@@ -122,6 +127,8 @@ impl PlayerSnapshot {
                     ball.position_m.map(|x| x as f32),
                     ball.velocity_m_s.map(|x| x as f32),
                     ball.shooter,
+                    ball.first_contact_ns,
+                    ball.dwell_since_ns,
                 )
             })
             .collect();
@@ -146,7 +153,16 @@ impl PlayerSnapshot {
             .projectiles
             .into_iter()
             .map(
-                |ProjectileWire(id, caliber, launched_ns, position, velocity, shooter)| {
+                |ProjectileWire(
+                    id,
+                    caliber,
+                    launched_ns,
+                    position,
+                    velocity,
+                    shooter,
+                    first_contact_ns,
+                    dwell_since_ns,
+                )| {
                     rm_simulator_world::ProjectileSnapshot {
                         id,
                         caliber,
@@ -155,6 +171,8 @@ impl PlayerSnapshot {
                         velocity_m_s: velocity.map(f64::from),
                         angular_velocity_rad_s: [0.; 3],
                         shooter,
+                        first_contact_ns,
+                        dwell_since_ns,
                     }
                 },
             )
@@ -308,6 +326,8 @@ mod tests {
                 velocity_m_s: [1., 0., 0.],
                 angular_velocity_rad_s: [2.; 3],
                 shooter: None,
+                first_contact_ns: None,
+                dwell_since_ns: None,
             });
         let message = ServerMessage::Snapshot(Box::new(state));
         assert_eq!(

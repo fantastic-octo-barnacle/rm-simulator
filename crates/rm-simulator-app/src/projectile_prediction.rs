@@ -303,6 +303,8 @@ mod tests {
             velocity_m_s: [0., 20., 0.],
             angular_velocity_rad_s: [0.; 3],
             shooter: None,
+            first_contact_ns: None,
+            dwell_since_ns: None,
         });
         let corrected = wait(&snapshot, &flight, 1, true).unwrap();
         assert_eq!(corrected.id, provisional.id);

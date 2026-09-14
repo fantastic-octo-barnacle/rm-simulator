@@ -514,6 +514,9 @@ pub struct LayoutOptions {
     /// an unoffered rate leaves the frozen default in place. Every peer in one
     /// match must agree on it, which the handshake enforces.
     pub physics_rate_hz: u32,
+    /// Ball restitution, hard flight limit and low-speed retirement rule the
+    /// hosted field runs. Defaults to the simulator's control behaviour.
+    pub projectile_policy: rm_simulator_world::projectile::ProjectilePolicy,
 }
 impl Default for LayoutOptions {
     /// The shipped configuration: no rune, a still outpost, CAD terrain, a
@@ -599,6 +602,7 @@ pub fn field_config(cad: &CadAssets, options: &LayoutOptions) -> FieldConfig {
         }),
         runes,
         outposts,
+        projectile_policy: options.projectile_policy,
     }
 }
 
@@ -912,6 +916,7 @@ mod tests {
             terrain: true,
             referee: true,
             physics_rate_hz: DEFAULT_RATE_HZ,
+            projectile_policy: Default::default(),
         };
         let config = field_config(&cad, &options);
         assert_eq!(config.runes.len(), 2);
@@ -944,6 +949,7 @@ mod tests {
                 terrain: false,
                 referee: false,
                 physics_rate_hz: DEFAULT_RATE_HZ,
+                projectile_policy: Default::default(),
                 ..options
             },
         );
@@ -971,6 +977,7 @@ mod tests {
                 terrain: false,
                 referee: true,
                 physics_rate_hz: DEFAULT_RATE_HZ,
+                projectile_policy: Default::default(),
             },
         );
         let referee = config.referee.unwrap();

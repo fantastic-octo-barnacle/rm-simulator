@@ -53,6 +53,7 @@ impl PredictionScene {
                 terrain: true,
                 referee: true,
                 physics_rate_hz: 1000,
+                projectile_policy: Default::default(),
             },
         ))
         .map_err(|e| e.to_string())?;

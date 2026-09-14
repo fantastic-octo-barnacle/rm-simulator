@@ -95,6 +95,7 @@ impl Trace {
                 terrain: false,
                 referee: false,
                 physics_rate_hz: 1000,
+                projectile_policy: Default::default(),
             },
             Some(ChassisConfig::default()),
             false,
