@@ -2,7 +2,7 @@
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
 //! CAD-free moving armor and projectiles. No referee, server, renderer or host clock.
 use rm_simulator_physics::{
-    ArmorTarget, Caliber, Pose, Shot, TICK_NS, TargetFace, TargetFrames, WorldPhysics,
+    ArmorTarget, Caliber, Pose, Shot, TargetFace, TargetFrames, WorldPhysics, tick_ns,
 };
 
 fn face(time_ns: u64) -> TargetFace {
@@ -20,7 +20,7 @@ fn main() -> Result<(), &'static str> {
     let mut frames = TargetFrames::new(vec![face(0)]);
     let mut contacts = 0;
     for tick in 0..1_000 {
-        let time_ns = tick * TICK_NS;
+        let time_ns = tick * tick_ns();
         if tick % 100 == 0 {
             physics.fire(
                 time_ns,
@@ -30,7 +30,7 @@ fn main() -> Result<(), &'static str> {
             )?;
         }
         frames.begin(|faces| faces[0] = face(time_ns))?;
-        frames.update(|faces| faces[0] = face(time_ns + TICK_NS))?;
+        frames.update(|faces| faces[0] = face(time_ns + tick_ns()))?;
         // The caller may detect and score these contacts; this example only observes them.
         contacts += physics.step(time_ns, &frames)?.len();
     }

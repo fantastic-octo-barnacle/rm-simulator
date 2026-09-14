@@ -10,7 +10,7 @@ use crate::math::{gltf_child, quat_axis_angle, rotate};
 use anyhow::ensure;
 use rm_simulator_world::{
     ChassisConfig, ChassisPlacement, Field, FieldConfig, OutpostConfig, Pose, RefereeConfig,
-    RuneConfig, RuneKind, Team,
+    RuneConfig, RuneKind, Team, set_tick_ns, tick_ns_for_hz,
 };
 
 /// Rune face pivots inside the extracted rune asset (glTF axes, metres).
@@ -509,15 +509,47 @@ pub struct LayoutOptions {
     /// A referee owning the runes and outposts by field side (`rune_team`,
     /// `outpost_team`).
     pub referee: bool,
+    /// Shared physics rate in Hz, one of [`rm_simulator_world::OFFERED_RATES_HZ`]. It names the
+    /// tick length the whole process runs at; [`field_config`] freezes it, and
+    /// an unoffered rate leaves the frozen default in place. Every peer in one
+    /// match must agree on it, which the handshake enforces.
+    pub physics_rate_hz: u32,
     /// Ball restitution, hard flight limit and low-speed retirement rule the
     /// hosted field runs. Defaults to the simulator's control behaviour.
     pub projectile_policy: rm_simulator_world::projectile::ProjectilePolicy,
 }
+impl Default for LayoutOptions {
+    /// The shipped configuration: no rune, a still outpost, CAD terrain, a
+    /// referee, the default 1 kHz physics rate and spent-ball retirement.
+    fn default() -> Self {
+        Self {
+            rune: None,
+            outpost_speed_rad_s: 0.0,
+            terrain: true,
+            referee: true,
+            physics_rate_hz: DEFAULT_RATE_HZ,
+            projectile_policy: Default::default(),
+        }
+    }
+}
+
+/// The shipped physics rate in Hz, matching `rm_simulator_world::tick_ns`'s
+/// default of 1 ms per tick. It is the control path and the rollback value.
+pub const DEFAULT_RATE_HZ: u32 = 1000;
 
 /// The field configuration for a CAD package.
 ///
+/// This is also where `options.physics_rate_hz` freezes the process-wide tick
+/// length, before any field exists to read it. A rate outside
+/// [`rm_simulator_world::OFFERED_RATES_HZ`], or a second call naming a different one, leaves the
+/// already frozen value alone; callers that must refuse a mismatch compare
+/// [`rm_simulator_world::tick_ns`] afterwards.
+///
 /// Panics if the rune asset has no placement.
 pub fn field_config(cad: &CadAssets, options: &LayoutOptions) -> FieldConfig {
+    if let Some(ns) = tick_ns_for_hz(options.physics_rate_hz) {
+        set_tick_ns(ns);
+    }
     let rune_root = &cad.rune.placements[0];
     let runes: Vec<RuneConfig> = options
         .rune
@@ -884,6 +916,7 @@ mod tests {
             outpost_speed_rad_s: 1.0,
             terrain: true,
             referee: true,
+            physics_rate_hz: DEFAULT_RATE_HZ,
             projectile_policy: Default::default(),
         };
         let config = field_config(&cad, &options);
@@ -916,6 +949,7 @@ mod tests {
                 rune: None,
                 terrain: false,
                 referee: false,
+                physics_rate_hz: DEFAULT_RATE_HZ,
                 projectile_policy: Default::default(),
                 ..options
             },
@@ -943,6 +977,7 @@ mod tests {
                 outpost_speed_rad_s: 1.0,
                 terrain: false,
                 referee: true,
+                physics_rate_hz: DEFAULT_RATE_HZ,
                 projectile_policy: Default::default(),
             },
         );

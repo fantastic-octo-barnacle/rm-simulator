@@ -108,6 +108,12 @@ pub struct Args {
     /// Starting muzzle speed; defaults to 25 m/s.
     #[arg(long, conflicts_with = "connect")]
     pub muzzle_speed_m_s: Option<f64>,
+    /// Shared physics rate in Hz: 1000 (the default), 500, 250 or 128. It sets
+    /// the tick length the whole process integrates at, 128 Hz meaning exactly
+    /// 7,812,500 ns, and any other value is refused. On a remote host it states
+    /// the rate this client predicts at, and the host refuses a mismatch.
+    #[arg(long, default_value_t = 1000, value_parser = parse_physics_rate_hz)]
+    pub physics_rate_hz: u32,
     /// Shots per second while the trigger is held.
     #[arg(long, default_value_t = 20.0, conflicts_with = "connect")]
     pub fire_rate_hz: f64,
@@ -218,6 +224,31 @@ impl From<TeamArg> for Team {
             TeamArg::Red => Team::Red,
             TeamArg::Blue => Team::Blue,
         }
+    }
+}
+
+/// Accept only a measured physics rate. 128 Hz must mean exactly 7,812,500 ns
+/// per tick, so a rate that does not divide one second exactly is refused
+/// rather than rounded into a clock nobody asked for.
+fn parse_physics_rate_hz(text: &str) -> Result<u32, String> {
+    let offered = || {
+        rm_simulator_world::OFFERED_RATES_HZ
+            .iter()
+            .map(|(hz, _)| hz.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let hz: u32 = text
+        .trim()
+        .parse()
+        .map_err(|_| format!("`{text}` is not a physics rate in Hz; use {}", offered()))?;
+    if rm_simulator_world::tick_ns_for_hz(hz).is_some() {
+        Ok(hz)
+    } else {
+        Err(format!(
+            "unsupported physics rate `{hz}` Hz; use {}",
+            offered()
+        ))
     }
 }
 
@@ -371,6 +402,37 @@ mod tests {
         }
         assert!(Args::try_parse_from(["rm-simulator", "--window-mode", "hidden"]).is_err());
     }
+    #[test]
+    fn only_the_measured_physics_rates_parse() {
+        assert_eq!(Args::parse_from(["rm-simulator"]).physics_rate_hz, 1000);
+        for hz in [1000, 500, 250, 128] {
+            let args = Args::parse_from(["rm-simulator", "--physics-rate-hz", &hz.to_string()]);
+            assert_eq!(args.physics_rate_hz, hz);
+            // 128 Hz must mean exactly 7,812,500 ns, not a rounded division.
+            assert_eq!(
+                rm_simulator_world::tick_ns_for_hz(args.physics_rate_hz).unwrap() * u64::from(hz),
+                1_000_000_000
+            );
+        }
+        for bad in ["0", "60", "333", "1001", "128.0", "many"] {
+            let error = Args::try_parse_from(["rm-simulator", "--physics-rate-hz", bad])
+                .expect_err(bad)
+                .to_string();
+            assert!(error.contains("1000, 500, 250, 128"), "{bad}: {error}");
+        }
+        // A remote client states its rate too, so the option survives --connect.
+        assert!(
+            Args::try_parse_from([
+                "rm-simulator",
+                "--connect",
+                "localhost:7700",
+                "--physics-rate-hz",
+                "128",
+            ])
+            .is_ok()
+        );
+    }
+
     #[test]
     fn hero_defaults_to_42_mm_but_explicit_weapon_override_wins() {
         let hero = Args::parse_from(["rm-simulator", "--robot", "hero"]);

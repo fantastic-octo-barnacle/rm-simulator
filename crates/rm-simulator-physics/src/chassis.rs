@@ -18,8 +18,9 @@
 //! infantry with 153 mm omni wheels and M3508 drives and are assumed, not
 //! measured.
 use crate::{
-    Pose, TICK_NS, Team,
+    Pose, Team,
     projectile::{FRICTION, SMALL_ARMOR_HOUSING_HALF_M},
+    tick_ns,
 };
 use rapier3d_f64::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -745,7 +746,7 @@ impl Chassis {
     /// Cast the wheel rays and load the body with this tick's suspension and
     /// tyre forces. Call once per tick before the world steps.
     pub(crate) fn apply_forces(&mut self, world: &mut PhysicsWorld) {
-        let dt_s = TICK_NS as f64 * 1e-9;
+        let dt_s = tick_ns() as f64 * 1e-9;
         self.step_gimbal(dt_s);
         let cfg = &self.config;
         let (pose, linvel, angvel, com) = {
@@ -1001,14 +1002,15 @@ mod tests {
         assert_eq!(physics.chassis_snapshots()[0].held_aim_rad, [0.; 2]);
         let frames = TargetFrames::new(Vec::new());
         let mut previous_rate = [0.; 2];
+        let tick_s = tick_ns() as f64 * 1e-9;
         for tick in 0..200 {
-            physics.step(tick * TICK_NS, &frames).unwrap();
+            physics.step(tick * tick_ns(), &frames).unwrap();
             let motor = physics.chassis_snapshots()[0].gimbal_velocity_rad_s;
             for axis in 0..2 {
                 assert!(motor[axis].abs() <= config.dynamics.gimbal_max_speed_rad_s + 1e-10);
                 assert!(
                     (motor[axis] - previous_rate[axis]).abs()
-                        <= config.dynamics.gimbal_max_acceleration_rad_s2 * 0.001 + 1e-10
+                        <= config.dynamics.gimbal_max_acceleration_rad_s2 * tick_s + 1e-10
                 );
             }
             previous_rate = motor;
@@ -1017,8 +1019,8 @@ mod tests {
         let mut restored = chassis_world(config, saved.pose);
         restored.reset_chassis(&saved).unwrap();
         for tick in 200..500 {
-            physics.step(tick * TICK_NS, &frames).unwrap();
-            restored.step(tick * TICK_NS, &frames).unwrap();
+            physics.step(tick * tick_ns(), &frames).unwrap();
+            restored.step(tick * tick_ns(), &frames).unwrap();
             assert_eq!(
                 physics.chassis_snapshots()[0].held_aim_rad,
                 restored.chassis_snapshots()[0].held_aim_rad
@@ -1031,7 +1033,7 @@ mod tests {
         assert!((physics.chassis_snapshots()[0].held_aim_rad[0] - 1.).abs() < 0.01);
         physics.set_chassis_defeated(0, true);
         let frozen = physics.chassis_snapshots()[0].held_aim_rad;
-        physics.step(500 * TICK_NS, &frames).unwrap();
+        physics.step(500 * tick_ns(), &frames).unwrap();
         assert_eq!(physics.chassis_snapshots()[0].held_aim_rad, frozen);
         assert_eq!(
             physics.chassis_snapshots()[0].gimbal_velocity_rad_s,
@@ -1068,7 +1070,7 @@ mod tests {
         let frames = TargetFrames::new(Vec::new());
         let mut highest = 0.6_f64;
         for tick in 0..3000 {
-            physics.step(tick * TICK_NS, &frames).unwrap();
+            physics.step(tick * tick_ns(), &frames).unwrap();
             highest = highest.max(physics.chassis_snapshots()[0].pose.translation_m[2]);
         }
         let state = physics.chassis_snapshots().remove(0);
@@ -1131,7 +1133,7 @@ mod tests {
     fn run(ballistics: &mut WorldPhysics, ticks: u64) -> ChassisSnapshot {
         let frames = TargetFrames::new(Vec::new());
         for tick in 0..ticks {
-            ballistics.step(tick * TICK_NS, &frames).unwrap();
+            ballistics.step(tick * tick_ns(), &frames).unwrap();
         }
         ballistics.chassis_snapshots().remove(0)
     }

@@ -398,6 +398,7 @@ fn talk(
             name,
             team,
             role,
+            tick_ns,
         }) => {
             if protocol != PROTOCOL_VERSION {
                 let mut stream = stream;
@@ -405,6 +406,21 @@ fn talk(
                     &mut stream,
                     &ServerMessage::Rejected {
                         reason: crate::protocol::version_mismatch(PROTOCOL_VERSION, protocol),
+                    },
+                )?;
+                return Ok(());
+            }
+            // One match runs at one physics rate, so a peer predicting at a
+            // different tick length is refused before it holds a seat.
+            if tick_ns != rm_simulator_world::tick_ns() {
+                let mut stream = stream;
+                write_message(
+                    &mut stream,
+                    &ServerMessage::Rejected {
+                        reason: crate::protocol::rate_mismatch(
+                            rm_simulator_world::tick_ns(),
+                            tick_ns,
+                        ),
                     },
                 )?;
                 return Ok(());
@@ -751,6 +767,7 @@ impl Client {
                 name: name.to_string(),
                 team,
                 role,
+                tick_ns: rm_simulator_world::tick_ns(),
             },
         )?;
         stream.set_read_timeout(Some(HELLO_TIMEOUT))?;
@@ -1643,7 +1660,9 @@ mod tests {
             ..FieldConfig::default()
         })
         .unwrap();
-        field.step(u64::MAX / rm_simulator_world::TICK_NS).unwrap();
+        field
+            .step(u64::MAX / rm_simulator_world::tick_ns())
+            .unwrap();
         let simulation = Simulation::new(field, false);
         let mut server = Server::bind("127.0.0.1:0", simulation).unwrap();
         let mut client =
@@ -1921,6 +1940,7 @@ mod tests {
                     chassis: None,
                     weapon: Default::default(),
                     weapon_limits: Default::default(),
+                    tick_ns: rm_simulator_world::tick_ns(),
                 },
                 latest: None,
                 roster: Vec::new(),
@@ -2343,6 +2363,7 @@ mod tests {
                 name: "old".into(),
                 team: None,
                 role: Role::Pilot,
+                tick_ns: rm_simulator_world::tick_ns(),
             },
         )
         .unwrap();
@@ -2371,6 +2392,7 @@ mod tests {
                 name: "sloth".into(),
                 team: None,
                 role: Role::Spectator,
+                tick_ns: rm_simulator_world::tick_ns(),
             },
         )
         .unwrap();

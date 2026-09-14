@@ -29,7 +29,9 @@ use rune::{BigRune, RuneError, SmallRune};
 pub use rune::{BigRuneMotion, HitOutcome, Rune, RuneKind, RuneSnapshot, RuneState};
 use serde::{Deserialize, Serialize};
 
-pub use rm_simulator_physics::{Pose, TICK_NS};
+pub use rm_simulator_physics::{
+    OFFERED_RATES_HZ, Pose, hz_for_tick_ns, set_tick_ns, tick_ns, tick_ns_for_hz,
+};
 
 /// One armor module pose on a rotating mechanism, keyed by face index.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -233,7 +235,7 @@ pub struct FieldSnapshot {
     pub bases: Vec<BaseSnapshot>,
     /// Ticks elapsed since the field was built.
     pub tick: u64,
-    /// `tick` times `TICK_NS`, the field's own clock in nanoseconds.
+    /// `tick` times `tick_ns()`, the field's own clock in nanoseconds.
     pub time_ns: u64,
     /// One frame per rune, in referee index order.
     pub runes: Vec<RuneSnapshot>,
@@ -262,15 +264,15 @@ pub struct FieldSnapshot {
 /// never advances time.
 ///
 /// ```rust
-/// use rm_simulator_world::{Field, FieldConfig, TICK_NS};
+/// use rm_simulator_world::{Field, FieldConfig, tick_ns};
 ///
 /// let mut field = Field::new(&FieldConfig::default()).unwrap();
 /// assert_eq!(field.tick(), 0);
 /// assert_eq!(field.time_ns(), 0);
-/// // Time moves only through explicit ticks of TICK_NS nanoseconds.
+/// // Time moves only through explicit ticks of tick_ns() nanoseconds.
 /// field.step(1).unwrap();
 /// assert_eq!(field.tick(), 1);
-/// assert_eq!(field.time_ns(), TICK_NS);
+/// assert_eq!(field.time_ns(), tick_ns());
 /// ```
 pub struct Field {
     bases: Vec<BaseSnapshot>,
@@ -749,9 +751,9 @@ impl Field {
     pub fn tick(&self) -> u64 {
         self.tick
     }
-    /// `tick` times `TICK_NS`: the field's own clock, never the host's.
+    /// `tick` times `tick_ns()`: the field's own clock, never the host's.
     pub fn time_ns(&self) -> u64 {
-        self.tick * TICK_NS
+        self.tick * tick_ns()
     }
     /// The field's runes in referee index order.
     ///
@@ -863,7 +865,7 @@ impl Field {
     /// bodies and no referee, rune state advances directly to the target time.
     ///
     /// ```rust
-    /// use rm_simulator_world::{Field, FieldConfig, TICK_NS};
+    /// use rm_simulator_world::{Field, FieldConfig, tick_ns};
     ///
     /// let mut whole = Field::new(&FieldConfig::default()).unwrap();
     /// let mut split = Field::new(&FieldConfig::default()).unwrap();
@@ -872,7 +874,7 @@ impl Field {
     ///     split.step(ticks).unwrap();
     /// }
     /// assert_eq!(whole.tick(), 1_000);
-    /// assert_eq!(whole.time_ns(), 1_000 * TICK_NS);
+    /// assert_eq!(whole.time_ns(), 1_000 * tick_ns());
     /// // Partitioning the ticks does not change the result.
     /// assert_eq!(whole.snapshot().runes, split.snapshot().runes);
     /// ```
@@ -901,13 +903,13 @@ impl Field {
         let end = self
             .tick
             .checked_add(ticks)
-            .filter(|tick| tick.checked_mul(TICK_NS).is_some())
+            .filter(|tick| tick.checked_mul(tick_ns()).is_some())
             .ok_or(FieldError::TickOverflow)?;
         while self.tick < end {
             let idle = self.physics.is_idle();
             if idle && self.referee.is_none() {
                 for rune in &mut self.runes {
-                    rune.advance_to(end * TICK_NS)?;
+                    rune.advance_to(end * tick_ns())?;
                 }
                 self.tick = end;
                 self.sync_mechanisms();
@@ -1031,13 +1033,13 @@ impl Field {
     /// rule state a `restore` needs.
     ///
     /// ```rust
-    /// use rm_simulator_world::{Field, FieldConfig, RuneState, TICK_NS};
+    /// use rm_simulator_world::{Field, FieldConfig, RuneState, tick_ns};
     ///
     /// let mut field = Field::new(&FieldConfig::default()).unwrap();
     /// field.step(250).unwrap();
     /// let snapshot = field.snapshot();
     /// assert_eq!(snapshot.tick, 250);
-    /// assert_eq!(snapshot.time_ns, 250 * TICK_NS);
+    /// assert_eq!(snapshot.time_ns, 250 * tick_ns());
     /// assert_eq!(snapshot.runes[0].state, RuneState::Activating);
     /// assert!(snapshot.restore.is_some());
     /// ```
@@ -1122,7 +1124,7 @@ impl Field {
         if !floor_height_m.is_finite() {
             return Err(FieldError::Restore("the floor height must be finite"));
         }
-        if snapshot.tick.checked_mul(TICK_NS) != Some(snapshot.time_ns) {
+        if snapshot.tick.checked_mul(tick_ns()) != Some(snapshot.time_ns) {
             return Err(FieldError::Restore("the snapshot tick and time disagree"));
         }
         for base in &snapshot.bases {
@@ -1381,6 +1383,35 @@ mod tests {
             Field::restore(&broken, &StaticGeometry::default(), 0.0),
             Err(FieldError::Restore(_))
         ));
+    }
+    /// Partition invariance stated in world time rather than tick counts, so it
+    /// holds at whatever rate `tick_ns` froze. Experiment 1 runs this under
+    /// `RM_SIM_TICK_NS`; the tick-counting tests around it read their durations
+    /// as milliseconds and only describe the 1 kHz default.
+    #[test]
+    fn field_partition_invariance_holds_at_the_configured_rate() {
+        let ticks = |ns: u64| ns / tick_ns();
+        let config = FieldConfig::default();
+        let mut whole = Field::new(&config).unwrap();
+        let mut split = Field::new(&config).unwrap();
+        let muzzle = Pose::yawed([0.0, 0.0, 1.0], 0.6);
+        for field in [&mut whole, &mut split] {
+            field.step(ticks(500_000_000)).unwrap();
+            field
+                .fire(muzzle, Shot::at_limit(Caliber::Mm17), None)
+                .unwrap();
+        }
+        // Split by uneven tick counts derived from the total, so the parts
+        // still sum to it at the slowest offered rate.
+        let total = ticks(1_500_000_000);
+        whole.step(total).unwrap();
+        let parts = [1, total / 7, total / 3];
+        let rest = total - parts.iter().sum::<u64>();
+        for part in parts.into_iter().chain([rest]) {
+            split.step(part).unwrap();
+        }
+        assert_eq!(whole.tick(), split.tick());
+        assert_eq!(whole.snapshot(), split.snapshot());
     }
     #[test]
     fn default_field_steps_deterministically_in_any_partition() {
@@ -1810,7 +1841,9 @@ mod tests {
             assert_eq!(hit.target, ArmorTarget::Rune { rune: 0, blade });
             assert!(hit.detected, "{hit:?}");
             assert!((hit.normal_speed_m_s - speed_m_s).abs() < 0.2, "{hit:?}");
-            field.step(projectile::MAX_FLIGHT_NS / TICK_NS + 1).unwrap();
+            field
+                .step(projectile::MAX_FLIGHT_NS / tick_ns() + 1)
+                .unwrap();
             assert!(field.snapshot().projectiles.is_empty());
         }
     }

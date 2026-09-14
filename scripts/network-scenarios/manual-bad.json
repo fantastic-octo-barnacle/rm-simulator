@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "seed": 7,
+  "warmup_s": 2,
+  "duration_s": 600,
+  "recovery_s": 1,
+  "sample_hz": 2,
+  "name": "manual-bad",
+  "clients": [
+    {
+      "name": "pilot",
+      "team": "red",
+      "upstream": {
+        "delay_ms": 100,
+        "jitter_ms": 40,
+        "loss_percent": 10,
+        "rate_kbps": 256
+      },
+      "downstream": {
+        "delay_ms": 100,
+        "jitter_ms": 40,
+        "loss_percent": 10,
+        "rate_kbps": 512
+      }
+    }
+  ],
+  "events": [],
+  "expectations": {
+    "checks": [
+      {
+        "name": "no_unresolved_shot_outcomes",
+        "metric": "unresolved_shot_outcomes_delta",
+        "op": "==",
+        "value": 0,
+        "per_client": true
+      },
+      {
+        "name": "checkpoint_gap_bounded",
+        "metric": "checkpoint_gap_ms.max",
+        "op": "<=",
+        "value": 10000,
+        "per_client": true,
+        "on_missing": "skip"
+      }
+    ]
+  }
+}

@@ -4,7 +4,7 @@
 //! Results are presentation only and never mutate authoritative state.
 use rm_simulator_server::prediction::muzzle_for;
 use rm_simulator_world::{
-    ChassisSnapshot, Field, FieldSnapshot, ProjectileSnapshot, Shot, StaticGeometry, TICK_NS,
+    ChassisSnapshot, Field, FieldSnapshot, ProjectileSnapshot, Shot, StaticGeometry, tick_ns,
 };
 use std::{
     collections::BTreeMap,
@@ -131,10 +131,10 @@ impl Scene {
                     self.fired.insert(flight.id, id);
                 }
             }
-            if self.time_ns.saturating_add(TICK_NS) > end || self.field.step(1).is_err() {
+            if self.time_ns.saturating_add(tick_ns()) > end || self.field.step(1).is_err() {
                 return;
             }
-            self.time_ns = self.time_ns.saturating_add(TICK_NS);
+            self.time_ns = self.time_ns.saturating_add(tick_ns());
         }
     }
 }

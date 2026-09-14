@@ -19,8 +19,9 @@ use rm_simulator_server::{
 };
 use rm_simulator_world::{
     ArmorTarget, Caliber, ChassisCommand, Field, FieldSnapshot, Pose, RuneKind, Shot,
-    StaticGeometry, TICK_NS, Team,
+    StaticGeometry, Team,
     projectile::{ProjectilePolicy, RemovalReason},
+    tick_ns,
 };
 use std::{collections::BTreeMap, fmt::Write as _, path::PathBuf, time::Instant};
 
@@ -369,6 +370,7 @@ fn run_arm(
         // No referee: the volley must not be throttled by ammo allowances, and
         // no robot may be defeated out of the workload half way through a run.
         referee: false,
+        physics_rate_hz: layout::DEFAULT_RATE_HZ,
         projectile_policy: arm.policy,
     };
     let mut config = layout::field_config(cad, &options);
@@ -643,7 +645,7 @@ step_ms_per_sim_s,replay_ms_per_sim_s,snapshot_bytes_per_s,projectile_bytes_per_
                     .iter()
                     .map(|ns| *ns as f64 / 1e6)
                     .collect();
-                let sim_s = measure_ticks as f64 * TICK_NS as f64 / 1e9;
+                let sim_s = measure_ticks as f64 * tick_ns() as f64 / 1e9;
                 let publications = metrics.publications.max(1) as f64;
                 let published_s = publications / PUBLISH_HZ as f64;
                 let _ = writeln!(
@@ -680,7 +682,7 @@ step_ms_per_sim_s,replay_ms_per_sim_s,snapshot_bytes_per_s,projectile_bytes_per_
                     } else {
                         // Per replayed simulated second, not per measured one.
                         let replay_sim_s =
-                            metrics.replay_samples as f64 * REPLAY_TICKS as f64 * TICK_NS as f64
+                            metrics.replay_samples as f64 * REPLAY_TICKS as f64 * tick_ns() as f64
                                 / 1e9;
                         metrics.replay_ns as f64 / 1e6 / replay_sim_s
                     },

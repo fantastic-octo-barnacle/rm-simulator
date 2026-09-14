@@ -5,9 +5,10 @@
 //! ball/scenery and ball/robot pairs, that free flight is never retired, and
 //! that the dwell window survives a checkpoint.
 use rm_simulator_physics::{
-    Caliber, Pose, Shot, TICK_NS, TargetFrames, Team, WorldPhysics,
+    Caliber, Pose, Shot, TargetFrames, Team, WorldPhysics,
     chassis::ChassisConfig,
     projectile::{MAX_FLIGHT_NS, ProjectilePolicy, RETIRE_DWELL_NS, RemovalReason},
+    tick_ns,
 };
 
 /// A muzzle pose pitched about world +y: a positive angle aims downward.
@@ -37,7 +38,7 @@ fn bounce_speed_m_s(policy: ProjectilePolicy) -> f64 {
         .unwrap();
     let mut rebound: f64 = 0.0;
     for tick in 0..200 {
-        physics.step(tick * TICK_NS, &frames).unwrap();
+        physics.step(tick * tick_ns(), &frames).unwrap();
         if let Some(ball) = physics.snapshot().first() {
             rebound = rebound.max(ball.velocity_m_s[2]);
         }
@@ -92,7 +93,7 @@ fn projectile_restitution_scales_ball_bounces_and_keeps_robot_contacts() {
             .unwrap();
         let mut back: f64 = 0.0;
         for tick in 0..300 {
-            physics.step(tick * TICK_NS, &frames).unwrap();
+            physics.step(tick * tick_ns(), &frames).unwrap();
             if let Some(ball) = physics.snapshot().first() {
                 back = back.max(-ball.velocity_m_s[0]);
             }
@@ -129,14 +130,14 @@ fn retirement_waits_for_the_dwell_and_spares_balls_in_flight() {
         .unwrap();
     let mut removed_ns = None;
     for tick in 0..4_000 {
-        physics.step(tick * TICK_NS, &frames).unwrap();
+        physics.step(tick * tick_ns(), &frames).unwrap();
         let alive = !physics.snapshot().is_empty();
         if tick < 60 {
             // Climbing, at the apex or falling, never touching anything.
             assert!(alive, "a ball in free flight was retired at tick {tick}");
         }
         if !alive {
-            removed_ns = Some((tick + 1) * TICK_NS);
+            removed_ns = Some((tick + 1) * tick_ns());
             break;
         }
     }
@@ -165,7 +166,7 @@ fn retirement_waits_for_the_dwell_and_spares_balls_in_flight() {
         )
         .unwrap();
     for tick in 0..2_000 {
-        control.step(tick * TICK_NS, &frames).unwrap();
+        control.step(tick * tick_ns(), &frames).unwrap();
     }
     assert_eq!(control.snapshot().len(), 1);
 }
@@ -192,11 +193,11 @@ fn dwell_state_survives_a_snapshot_and_restore() {
         .unwrap();
     let mut open_ns = None;
     for tick in 0..2_000 {
-        physics.step(tick * TICK_NS, &frames).unwrap();
+        physics.step(tick * tick_ns(), &frames).unwrap();
         if let Some(ball) = physics.snapshot().first()
             && ball.dwell_since_ns.is_some()
         {
-            open_ns = Some((tick + 1) * TICK_NS);
+            open_ns = Some((tick + 1) * tick_ns());
             break;
         }
     }

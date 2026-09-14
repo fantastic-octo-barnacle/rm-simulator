@@ -128,8 +128,11 @@ headless server, the interactive application and the rendering benchmark apart.
   half is +x and blue's is −x (the V1.2.0 CAD paints its red markings
   there); `layout::side_team`, `rune_team` and `outpost_team` derive
   ownership from that, and the render `TeamColor` follows it.
-- **Time.** World time advances only through explicit ticks (`TICK_NS`,
-  1 ms). Never read host time in physics, world or gameplay code. Stepping must be deterministic
+- **Time.** World time advances only through explicit ticks (`tick_ns()`,
+  1 ms by default; `--physics-rate-hz` selects one of the offered 1000, 500,
+  250 or 128 Hz rates, frozen once per process and shared by every peer in a
+  match). Rule durations stay in nanoseconds, never tick counts. Never read
+  host time in physics, world or gameplay code. Stepping must be deterministic
   and independent of how ticks are partitioned; there is a test for this.
   With no projectiles, chassis or referee, `Field::step` advances rune state
   directly to the target tick. A referee keeps the tick loop active even when

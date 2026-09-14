@@ -704,6 +704,7 @@ mod tests {
                 name: "lossy referee".into(),
                 team: None,
                 role: Role::Referee,
+                tick_ns: rm_simulator_world::tick_ns(),
             },
             ClientMessage::Command(Command::Step { ticks: 17 }),
             ClientMessage::Command(Command::Step { ticks: 19 }),

@@ -188,6 +188,19 @@ impl Session {
         spawn_yaw_deg: f64,
         progress: impl Fn(f32, &str),
     ) -> anyhow::Result<Opened> {
+        // The tick length is process-wide and frozen on first use, so the first
+        // match of a run fixes it. A later match asking for another rate is
+        // refused here rather than silently running at the frozen one.
+        let wanted = rm_simulator_world::tick_ns_for_hz(args.physics_rate_hz).ok_or_else(|| {
+            anyhow::anyhow!("unsupported physics rate {} Hz", args.physics_rate_hz)
+        })?;
+        let frozen = rm_simulator_world::set_tick_ns(wanted);
+        anyhow::ensure!(
+            frozen == wanted,
+            "this run already froze the physics rate at {} Hz; relaunch with --physics-rate-hz {}",
+            rm_simulator_world::hz_for_tick_ns(frozen).unwrap_or(0),
+            args.physics_rate_hz,
+        );
         let role = args.role();
         let (client, host) = if let Some(address) = &args.connect {
             progress(0.3, "Connecting to host");
@@ -222,6 +235,7 @@ impl Session {
                 outpost_speed_rad_s: args.outpost_speed_rad_s,
                 terrain: !args.no_field_collision,
                 referee: !args.no_referee,
+                physics_rate_hz: args.physics_rate_hz,
                 projectile_policy: if args.no_projectile_retirement {
                     ProjectilePolicy::default().without_retirement()
                 } else {
@@ -588,7 +602,8 @@ impl Session {
                     input_epoch: self.input_epoch,
                     sequence: pending.sequence,
                     sampled_time_ns: pending.time_ns,
-                    duration_ticks: 16,
+                    // A 16 ms sample interval, however many ticks that is.
+                    duration_ticks: rm_simulator_server::simulation::step_ticks().max(1) as u32,
                     placement_revision: self.own_chassis().map_or(0, |c| c.placement_revision),
                     command: input,
                 };
@@ -745,8 +760,8 @@ impl Session {
                 self.owner_time_ns()
                     .saturating_add(rm_simulator_server::prediction::MAX_CONTINUOUS_REPLAY_NS),
             )
-            / rm_simulator_world::TICK_NS
-            * rm_simulator_world::TICK_NS;
+            / rm_simulator_world::tick_ns()
+            * rm_simulator_world::tick_ns();
         if !self.prediction_limited() {
             self.frame_time_ns = frame_time_ns.max(self.frame_time_ns);
         }
@@ -1090,8 +1105,8 @@ impl Session {
                 self.owner_time_ns()
                     .saturating_add(rm_simulator_server::prediction::MAX_CONTINUOUS_REPLAY_NS),
             )
-            / rm_simulator_world::TICK_NS
-            * rm_simulator_world::TICK_NS
+            / rm_simulator_world::tick_ns()
+            * rm_simulator_world::tick_ns()
     }
     fn prediction_limited(&self) -> bool {
         self.client.disconnected().is_some()
@@ -1149,7 +1164,7 @@ pub fn advance_world(
     mut commands: Commands,
 ) {
     use crate::bindings::InputAction;
-    use rm_simulator_server::simulation::STEP_TICKS;
+    use rm_simulator_server::simulation::step_ticks;
     use rm_simulator_world::{MatchPhase, RefereeCommand};
     if ui.blocks_input() {
         poll_session(&mut session, &mut commands);
@@ -1192,7 +1207,9 @@ pub fn advance_world(
             .controls
             .just_pressed(InputAction::Step, &keys, buttons.as_deref())
     {
-        session.apply(Command::Step { ticks: STEP_TICKS });
+        session.apply(Command::Step {
+            ticks: step_ticks(),
+        });
     }
     if ui
         .controls

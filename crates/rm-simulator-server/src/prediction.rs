@@ -3,7 +3,7 @@
 //! Prediction contracts and bounded replay, independent of rendering and sockets.
 use crate::{cad_assets::CadAssets, layout::LayoutOptions};
 use rm_simulator_world::{
-    ChassisCommand, ChassisSnapshot, Field, FieldSnapshot, StaticGeometry, TICK_NS,
+    ChassisCommand, ChassisSnapshot, Field, FieldSnapshot, StaticGeometry, tick_ns,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -52,6 +52,7 @@ impl PredictionScene {
                 outpost_speed_rad_s: 0.0,
                 terrain: true,
                 referee: true,
+                physics_rate_hz: 1000,
                 projectile_policy: Default::default(),
             },
         ))
@@ -259,7 +260,7 @@ impl Replayer {
         rewind: bool,
         observer: &mut dyn FnMut(ReplayEvent),
     ) -> Result<ChassisSnapshot, &'static str> {
-        let start_ns = replay.snapshot_time_ns / TICK_NS * TICK_NS;
+        let start_ns = replay.snapshot_time_ns / tick_ns() * tick_ns();
         let baseline = (epoch, replay.snapshot_id, replay.context_id);
         if rewind || self.baseline != Some(baseline) {
             self.field = Some(self.restore(replay, start_ns)?);
@@ -292,7 +293,7 @@ impl Replayer {
                 time_ns: self.time_ns,
                 owner: &owner,
             });
-            if self.time_ns.saturating_add(TICK_NS) > end {
+            if self.time_ns.saturating_add(tick_ns()) > end {
                 return Ok(owner);
             }
             for remote in replay
@@ -311,7 +312,7 @@ impl Replayer {
                     .map_err(|_| "replay peer changed")?;
             }
             field.step(1).map_err(|_| "replay stepping failed")?;
-            self.time_ns = self.time_ns.saturating_add(TICK_NS);
+            self.time_ns = self.time_ns.saturating_add(tick_ns());
             let owner = field
                 .chassis_snapshot(replay.chassis)
                 .ok_or("prediction chassis missing")?;
@@ -326,7 +327,7 @@ impl Replayer {
     /// the context tick on the first step instead of being extrapolated.
     fn restore(&self, replay: &Replay, start_ns: u64) -> Result<Field, &'static str> {
         let mut context = (*replay.snapshot).clone();
-        context.tick = start_ns / TICK_NS;
+        context.tick = start_ns / tick_ns();
         context.time_ns = start_ns;
         context.chassis = replay.states.clone();
         for remote in context
@@ -483,7 +484,7 @@ mod tests {
                     snapshot_time_ns: snapshot.time_ns,
                     context_time_ns: snapshot.time_ns,
                     context_id: round,
-                    target_time_ns: snapshot.time_ns + 64 * TICK_NS,
+                    target_time_ns: snapshot.time_ns + 64 * tick_ns(),
                     inputs: Vec::new(),
                 };
                 let retained_state = retained
@@ -510,7 +511,7 @@ mod tests {
         // way and one 100 ms stall. Every packet eventually arrives, in order;
         // this does not model UDP loss.
         let mut host = crate::simulation::Simulation::new(field(), false);
-        host.advance(200 * TICK_NS).unwrap();
+        host.advance(200 * tick_ns()).unwrap();
         let geometry = host.field().static_geometry_snapshot();
         let mut history = InputHistory::default();
         let mut deliveries = VecDeque::new();
@@ -520,7 +521,7 @@ mod tests {
         let mut maximum: f64 = 0.0;
         let mut delivered_at = 0;
         for tick in 200..1200u64 {
-            let time = tick * TICK_NS;
+            let time = tick * tick_ns();
             if tick.is_multiple_of(16) {
                 let command = if (224..624).contains(&tick) {
                     drive()
@@ -579,7 +580,7 @@ mod tests {
                     assert!(distance(&predicted, &host.snapshot().chassis[0]) < 0.01);
                 }
             }
-            host.advance(TICK_NS).unwrap();
+            host.advance(tick_ns()).unwrap();
         }
         assert!(
             observed_start,
@@ -632,11 +633,11 @@ mod tests {
         let mut history = InputHistory::default();
         for tick in 0..MAX_PENDING_INPUTS + 2 {
             history
-                .push(tick as u64 * TICK_NS, Default::default())
+                .push(tick as u64 * tick_ns(), Default::default())
                 .unwrap();
         }
         assert!(history.inputs().is_none());
-        history.finalize(3 * TICK_NS);
+        history.finalize(3 * tick_ns());
         assert_eq!(history.inputs().unwrap().len(), MAX_PENDING_INPUTS - 1);
     }
 }

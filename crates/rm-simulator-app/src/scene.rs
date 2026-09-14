@@ -867,7 +867,7 @@ mod tests {
         // Step into the dark half of a 2 Hz blink.
         let dark_at = since + 300_000_000;
         field
-            .step((dark_at - snapshot.time_ns) / rm_simulator_world::TICK_NS)
+            .step((dark_at - snapshot.time_ns) / rm_simulator_world::tick_ns())
             .unwrap();
         let dark = scene_state(&field.snapshot(), flash(2.0));
         assert_eq!(dark.runes[0].activated_blades, [false; 5]);

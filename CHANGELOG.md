@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+- Add `--physics-rate-hz` to the app and the headless server, offering the
+  measured 1000, 500, 250 and 128 Hz rates (128 Hz is exactly 7,812,500 ns per
+  tick) and refusing any other value. The title screen remembers it, the HUD
+  shows the active rate, and a host refuses a client that predicts at another
+  rate or states none. The paused `F7` step covers the first tick boundary at
+  or after 16 ms, so it is never shorter than 16 ms at a reduced rate.
+
 - Remove spent projectiles: a ball that has stayed at or below 2 m/s for 50 ms while
   resting on stationary scenery is retired instead of rolling until the
   four-second flight limit. A ball in free flight, or one that has not touched

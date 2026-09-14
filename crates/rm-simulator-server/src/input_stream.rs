@@ -22,7 +22,8 @@ pub struct InputFrame {
     pub sequence: u64,
     /// Server-clock time in ns the client sampled this state for.
     pub sampled_time_ns: u64,
-    /// Ticks of 1 ms the sample covers; a valid frame carries 1 to 32.
+    /// Ticks of `tick_ns` the sample covers; a valid frame carries 1 to 32.
+    /// It describes the client sample interval, so it scales with the rate.
     pub duration_ticks: u32,
     /// Chassis placement revision this input belongs to. Input naming another
     /// life is refused rather than applied to the current one.
