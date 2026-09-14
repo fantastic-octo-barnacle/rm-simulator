@@ -52,6 +52,7 @@ impl PredictionScene {
                 outpost_speed_rad_s: 0.0,
                 terrain: true,
                 referee: true,
+                projectile_policy: Default::default(),
             },
         ))
         .map_err(|e| e.to_string())?;

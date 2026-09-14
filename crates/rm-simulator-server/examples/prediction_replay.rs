@@ -13,6 +13,7 @@ fn main() -> anyhow::Result<()> {
             rune: None,
             terrain: true,
             referee: true,
+            projectile_policy: Default::default(),
             outpost_speed_rad_s: 0.0,
         },
         Some(ChassisConfig::default()),
