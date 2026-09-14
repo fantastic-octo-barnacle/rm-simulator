@@ -1,4 +1,0 @@
-best of 5, 20000 ticks each
-empty fast-forward       0.001 ms total,       0.0 ns/tick
-referee only             0.178 ms total,       8.9 ns/tick
-one chassis             80.492 ms total,    4024.6 ns/tick

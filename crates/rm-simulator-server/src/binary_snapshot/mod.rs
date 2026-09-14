@@ -53,9 +53,7 @@ mod tests {
         );
         assert_eq!(
             dictionary(),
-            include_bytes!(
-                "../../../../docs/bandwidth-results/binary-protocol/dictionaries/fixed-fine.zstd"
-            )
+            include_bytes!("../../assets/binary-fixed-fine.zstd")
         );
     }
 }

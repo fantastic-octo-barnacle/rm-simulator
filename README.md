@@ -355,8 +355,8 @@ Disabling bloom can also change the apparent colors of bright armor and target
 lights; the settings panel warns when it is disabled.
 
 VSync is on by default; depth prepass and occlusion culling are opt-in on every
-preset. All options remain customizable. The [NVIDIA effect sweep](docs/render-effects-2026-09-12.md)
-explains the cascade choices; Mac performance still needs separate measurements.
+preset. All options remain customizable. Shadow cascade choices were measured on
+an NVIDIA laptop GPU; Mac performance still needs separate measurements.
 
 Press Escape to open the Pause menu with Resume, Settings, and Exit Match.
 Singleplayer pauses until you resume; multiplayer keeps running, including when
@@ -649,12 +649,10 @@ button also restores the original upright spawn pose and stops the robot, while
 keeping its identity, ammunition and team gold. O buys one 17 mm round and I buys
 one 42 mm round during Running, using the existing resource policy and team gold.
 Prices default to 1 and 10 gold and remain editable in the referee panel.
-The [networking roadmap](docs/multiplayer-networking.md) records the historical baseline
-and follow-up experiments for bandwidth, packet loss, input/shot timing and desyncs.
-The [implementation plan](docs/networking-implementation-plan.md) defines the
-implemented delivery contracts, validation limits and historical design slices.
-The [network harness guide and stats design](docs/network-harness-and-stats.md)
-documents the standalone trial runner and implemented player-facing stats overlay.
+The [bandwidth experiment record](docs/bandwidth-experiments.md) retains the
+isolated trials behind the current delivery contracts, including the measured
+savings and the outstanding bandwidth target. Open networking issues and
+measurement gaps are tracked in [known issues](KNOWN_ISSUES.md).
 Run `just network-test` to verify the harness without building Rust. With matching
 binaries built, `just network-trial scripts/network-scenarios/smoke-single.json
 --output /tmp/rm-network-smoke` launches an isolated bandwidth/loss/latency trial
@@ -755,16 +753,13 @@ checkpoints at 64 ms intervals. Compare the selectable compression codecs
 compression_comparison`. Protocol 32 defaults periodic UDP world checkpoints to
 bitpacked fine fixed point with a separately trained, embedded ZSTD dictionary.
 Both peers must run this build. Owner anchors and full confirmations retain
-their existing precision. See the [live binary test guide](docs/bandwidth-results/binary-protocol-live.md).
+their existing precision.
 
 Set `RM_NET_SNAPSHOT=json` on the host to compare the previous checkpoint format.
 `RM_NET_CODEC=zstd` or `RM_NET_CODEC=zstd-dict` selects compression for that JSON
 path and other compressed message kinds; unset means DEFLATE for those messages.
 `RM_NET_DEFLATE_LEVEL` and `RM_NET_ZSTD_LEVEL` override their compression effort.
 Binary checkpoints always use their fine fixed-point dictionary at ZSTD level 3.
-See the
-[cadence and compression measurements](docs/bandwidth-results/cadence-deflate-followup.md)
-for live trials and a progressive degraded-network play command.
 
 `GET /api/fire-records` on the host HTTP endpoint returns the latest 256 accepted
 pilot shots, oldest first. Records include client-relative input time, estimated
@@ -847,8 +842,8 @@ the same source faces with separate tolerances. Unmarked legacy proxies remain
 ignored and those assets use their visual geometry. This does not change
 rule-driven scoring shapes or joint motion.
 
-Scene reference fixes and reproducible rune-state captures are documented in
-[the scene audit](docs/scene-reference-audit.md). Rune arrows follow simulation
+Scene reference fixes and reproducible rune-state captures were audited against
+the rule manual. Rune arrows follow simulation
 time, including pause and step. Neutral lamps preserve the imported field paint;
 only rune optics receive the state-dependent material treatment.
 

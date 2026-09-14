@@ -27,6 +27,6 @@ lobby directory uses HTTP, and TCP game handshakes carry lobby passwords without
 encryption. Use a match-specific password, not one reused for another service.
 Keep referee and console endpoints restricted to trusted access.
 
-See [multiplayer networking](docs/multiplayer-networking.md) and the
+See the [server and clients](README.md#server-and-clients) overview and the
 [lobby service documentation](services/lobby/README.md) for the current transport
 and deployment limitations.

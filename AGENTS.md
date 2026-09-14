@@ -33,6 +33,21 @@ headless server, the interactive application and the rendering benchmark apart.
   cream, with flush cream markings; the renderer's scenery override
   recolours that cream only (`is_unpainted`), never white or painted
   materials. A re-export of V2.0.0 cannot add colour the STEP lacks.
+- **Four asset locations, deliberately separate.** Never merge them; the loader
+  and the licensing rules depend on the split.
+  (1) `assets/` is tracked build input: armor-atlas, mask and title PNG/JSON/SVG
+  sources embedded with `include_bytes!` from the render and app crates.
+  (2) `crates/rm-simulator-server/assets/` is tracked build input too: the JSON
+  and binary protocol 32 ZSTD checkpoint dictionaries, also embedded. Both
+  tracked directories must stay small and free of DJI CAD.
+  (3) `local-assets/` is the gitignored development scratch area: the extracted
+  `field` package, its dated `field.before-*` backups, coarse and preview
+  exports, harness reports and previews. Nothing here is source; delete local
+  variants freely and never reference them from committed code or docs except as
+  development commands.
+  (4) `~/dev/RM/assets/` is outside the repository: the home-directory field
+  install and the legacy V2.0.0 extraction that the loader falls back to. It is
+  not this repository's `assets/` and must not be confused with it.
 - **Field assets use Git LFS.** The exported runtime package is versioned in
   `field/` through Git LFS, with its upstream ownership notice retained. It is
   selected by `--cad-assets` when supplied; otherwise the loader prefers
@@ -87,7 +102,9 @@ headless server, the interactive application and the rendering benchmark apart.
 | `crates/rm-simulator-server` | Bevy-free glue and the `rm-simulator-server` binary. `cad_assets.rs` (manifest parsing, checksums, CAD frame to FLU poses), `collision_mesh.rs` (visual GLBs to named FLU triangle parts, ground lookup), `compression.rs` (selectable wire codec: DEFLATE or ZSTD with an embedded trained checkpoint dictionary, self-identifying frames), `math.rs` (wxyz quaternion and column-major matrix helpers, the glTF root pose convention), `layout.rs` (rune hubs, outpost origins, terrain into the field, team spawn slots and the `ChassisSpawner`, `FieldConfig` from options), `simulation.rs` (`Simulation`: paused flag, bounded real-time advance, command application, chassis spawning per player), `protocol.rs` (JSON-lines `ClientMessage`/`ServerMessage`, roles), `host.rs` (single-owner simulation worker, roster and command authority), `net.rs` (TCP sockets, in-process owner channels, peer delivery and `Client`), `network_trace.rs` (bounded metadata tracing and local counters), `udp_codec.rs` (the per-peer UDP codec with no socket in it: fragment framing, reassembly, input batches, delta coding and pacing, all on an explicit `now`), `gns_transport.rs` (the GNS sockets that drive that codec), `scripted_link.rs` (a deterministic datagram link with scripted loss, reordering, duplication, delay and blackouts, for tests), `http.rs` and `panel.html` (minimal HTTP/1.1 server and the referee page), `main.rs` (headless binary). Depends on the world crate; the only place besides the app that reads host time. |
 | `crates/rm-simulator-app` | The `rm-simulator` binary. `main.rs` (app wiring), `args.rs` (clap arguments), `loading.rs` (the match lifecycle: a `JoinRequest` prepares a session on a worker behind a splash, `Ready` unlocks gameplay, a `LeaveRequest` or any failure tears the match down to the title screen), `title.rs` (the title screen and the remembered fields; every choice becomes the arguments a command line would have given), `session.rs` (`Session` over a `Client` for both embedded and remote hosts, prediction state and match keys), `controls.rs` (gimbal camera, drive and fly, gun, mouse capture), `scene.rs` (CAD instances, overlay spawning, world-to-scene adaptation and flashes), `hud.rs` (overlay text), `debug.rs` (collision wireframe view), `screenshot.rs` (`--screenshot`), `frames.rs` (FLU-to-Bevy conversions). |
 | `crates/rm-simulator-bench` | Standalone fixed-camera visual CAD benchmark. Shares renderer and graphics presets; never depends on physics, world, server or gameplay. GPU timestamp readbacks, CPU frame distributions, settings cases and optional raw output. See `docs/render-benchmark.md`. |
-| `assets/` | Armor artwork masks embedded with `include_bytes!`. |
+| `assets/` | Tracked build input embedded with `include_bytes!`: armor-atlas artwork masks, outpost/title art and their sources. Small and CAD-free; local CAD packages live in the ignored `local-assets/`. |
+| `crates/rm-simulator-server/assets/` | Tracked build input embedded with `include_bytes!`: the JSON and binary protocol 32 checkpoint ZSTD dictionaries. |
+| `local-assets/` | Gitignored development scratch: extracted `field` package, dated backups, coarse/preview exports, harness reports. Never source; not referenced from committed code. |
 | `scripts/check-module-dependencies.py` | Asserts the crate boundaries above. |
 | `scripts/check-mpl-compliance.py` | Asserts every resolved MPL-2.0 dependency is allowlisted in `deny.toml`, named at its locked version in `NOTICE.md`, and unmodified. |
 | `LICENSE-MIT`, `LICENSE-APACHE`, `LICENSES/MPL-2.0.txt` | The workspace's dual license and the vendored MPL-2.0 text. |

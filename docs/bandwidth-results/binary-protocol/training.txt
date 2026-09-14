@@ -1,5 +1,0 @@
-training scenario=idle chassis=0 frames=500
-training scenario=patrol chassis=2 frames=700
-training scenario=skirmish chassis=4 frames=600
-training scenario=melee chassis=12 frames=400
-training scenario=rune chassis=4 frames=500

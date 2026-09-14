@@ -101,8 +101,8 @@ Three sequential runs used the same checksummed `local-assets/field` package;
 compilation completed before measurements. These are local comparisons, not
 capacity figures for the target Windows/Linux machines.
 
-[Commands, binary/asset hashes and machine metadata](performance/architecture-2026-09-12/baseline.json)
-and the adjacent text files retain each CPU run. Percentiles are reported by
+Commands, binary/asset hashes and machine metadata for the refactor baseline were
+retained with the runs. Percentiles are reported by
 the existing probes; no independent samples were combined into a new percentile.
 
 | Loaded match measurement | Run 1 | Run 2 | Run 3 |
@@ -123,9 +123,9 @@ physics work. Replay medians in that run were 0.25, 0.54, 0.87 and 1.92 ms for
 The original CAD renderer was captured separately on Metal, CPU-only, offscreen,
 High at 1920×1080, with 10 seconds warmup and 20 seconds sampling. Its CPU frame
 interval median was 2.844 ms, p95 3.520 ms and p99 4.690 ms across 6,903 samples.
-[Renderer report](performance/architecture-2026-09-12/render-baseline.json)
-records the resolved settings and asset hashes. Raw frames and the inspected
-screenshot are retained locally at `/tmp/rm-architecture-baseline/render`.
+The renderer report recorded the resolved settings and asset hashes. Raw frames
+and the inspected screenshot are retained locally at
+`/tmp/rm-architecture-baseline/render`.
 This scene has no chassis or projectiles and cannot measure the ECS changes.
 GPU timings are unavailable in this Mac capture.
 
@@ -134,7 +134,7 @@ GPU timings are unavailable in this Mac capture.
 After the graphics build finished, the retained original binaries and the final
 candidate were run in alternating groups, three times each, with no concurrent
 builds or rendering. Each cell below is the range of the three reported values,
-not a pooled percentile. [Comparison metadata and commands](performance/architecture-2026-09-12/comparison.json)
+not a pooled percentile. The comparison metadata and commands
 record binary hashes, a Rust-source fingerprint and power state. The same asset
 package and release build settings were used.
 
@@ -158,8 +158,7 @@ check for this architectural change, not its claimed benefit.
 
 The first candidate unnecessarily resolved mechanism state in worlds without
 moving scenery. Making that conditional removed most of the extra referee-only
-work. [Initial comparison](performance/architecture-2026-09-12/initial-comparison.json)
-retains those measurements separately from the final candidate.
+work. The initial comparison was retained separately from the final candidate.
 
 The chassis ECS change was checked with headless component tests and inspected
 hit/defeated robot screenshots at `/tmp/rm-architecture-robots-hit.png` and

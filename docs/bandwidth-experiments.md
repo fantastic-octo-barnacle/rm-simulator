@@ -16,19 +16,19 @@ client must use matching builds.
 
 Cadence, baseline rotation, checkpoint representation, outcome recovery, numeric
 precision and pacing defaults are unchanged. Experiments 2–6 are retained as
-investigation records, not enabled production changes. The subsequent [cadence/deflate follow-up](bandwidth-results/cadence-deflate-followup.md)
-measures 64 ms world checkpoints with 32 ms owner updates and a separate
-selected-stream deflate 1/4 sweep. Both remain experimental, with production
-defaults unchanged and constrained-link acceptance failed. A later [ZSTD
-dictionary experiment](bandwidth-results/exp-8-zstd-dictionary.md) adds a
-selectable wire codec (`RM_NET_CODEC`), leaves the DEFLATE wire and the
-production default untouched, and measures a 30–58% cut of the selected stream.
+investigation records, not enabled production changes. The subsequent cadence and
+deflate follow-up measures 64 ms world checkpoints with 32 ms owner updates and a
+separate selected-stream deflate 1/4 sweep. Both remain experimental, with
+production defaults unchanged and constrained-link acceptance failed. A later
+ZSTD dictionary experiment adds a selectable wire codec (`RM_NET_CODEC`), leaves
+the DEFLATE wire and the production default untouched, and measures a 30–58% cut
+of the selected stream.
 
-The subsequent [binary and fixed-point experiment](bandwidth-results/binary-protocol.md)
-compares lossless binary checkpoints, packed baseline deltas and several
-motion precision assumptions against both compression baselines. It is a
-standalone prototype with round-trip and physics replay measurements; it does
-not change the live wire or prediction precision.
+The subsequent binary and fixed-point experiment compares lossless binary
+checkpoints, packed baseline deltas and several motion precision assumptions
+against both compression baselines. It is a standalone prototype with round-trip
+and physics replay measurements; it does not change the live wire or prediction
+precision.
 
 The isolated measurements below are not measurements of the combined build.
 Experiment 1's short unimpaired UDP pair corroborates its bandwidth saving, but
@@ -37,9 +37,9 @@ has only in-process bandwidth evidence. NET-001 remains open; see
 [known issues](../KNOWN_ISSUES.md). The canonical probe still needs populated
 hit and shot-result workloads before drawing recovery-history conclusions.
 
-See the [integration follow-up](bandwidth-results/integration-followup.md) for
-corrected event measurements, the RTT repeat, targeted live trials and the
-subsequent wire-tag tracing fix. Historical per-class trace counts before that
+The integration follow-up corrected event measurements, repeated the RTT trial
+and ran targeted live trials; a subsequent wire-tag tracing fix followed.
+Historical per-class trace counts before that
 fix misclassified RMO4/RMI3 traffic as control; total byte counts are unaffected.
 
 ## Problem and budget
@@ -209,7 +209,8 @@ dirty diff, binary hashes, protocol version, CAD manifest hashes, settings,
 platform, seeds and workload. Change protocol compatibility when changing wire
 contracts. Keep raw captures and generated reports outside Git.
 
-Use [the harness guide](network-harness-and-stats.md) and existing scenario JSON
+Use the existing scenario JSON under `scripts/network-scenarios/` and the console
+tracing described in [network tracing](network-tracing.md)
 as starting points. The smoke scenarios are functionality checks, with loose
 gap/underrun gates and some missing metrics skipped; passing them does not prove
 playability or meeting the bandwidth budget. Author stricter experiment scenarios.
@@ -266,10 +267,9 @@ UDP issue; TCP snapshots must remain independent of previous transmitted frames.
 ## Results (executed 13 September 2026)
 
 Every experiment in the order above was run in an isolated worktree on its own
-branch (`perf/bw-exp0` … `perf/bw-exp7`), each with a per-experiment results
-file under [`bandwidth-results/`](bandwidth-results/). The execution log,
-the measurement instrument and the harness hazards found while running are in
-[the plan and log](bandwidth-results/PLAN.md). Headline outcomes:
+branch (`perf/bw-exp0` … `perf/bw-exp7`). The execution log, the measurement
+instrument and the harness hazards found while running are retained in Git
+history. Headline outcomes:
 
 | # | Experiment | Outcome |
 |---|---|---|
@@ -281,7 +281,7 @@ the measurement instrument and the harness hazards found while running are in
 | 5 | Separate cadence from encoding | **Largest measured lever.** 31.25/15.625 Hz gives −20.5…−36.8%; 15.625/15.625 gives ≈ −49%. Decoupling to 62.5/15.625 is a *loss* until the anchor shrinks. At 15.625 Hz the complete-context gap is 64 ms nominal and three consecutive lost checkpoints (256 ms) still fit the 300 ms limit; the fourth exceeds it. |
 | 6 | Reduce repeated outcome recovery | **Leave it in place.** The share is zero on the canonical workloads (they record no shot results and land no hits). In a populated scenario the two collections cost 1015 B/frame ≈ 20% and identity-keyed splices save 6.6%, which does not move NET-001 while owner anchors and `state.chassis` dominate. |
 | 7 | Compact upstream repetition | **Win.** A versioned RMI3 batch (shared header, exact changed-value masks, LEB128 relative fields, exact fallback) cuts upstream 22–27%: 36.5 → 27.0 kbps idle, 73.4 → 56.6 driving, 76.4 → 59.6 firing, losslessly. After compaction the offered upstream fits the existing 10 KiB/s `limited` budget, so **no pacing change is justified**. |
-| 8 | ZSTD with a trained dictionary | **Win, opt-in.** A selectable wire codec (`RM_NET_CODEC`) leaves the DEFLATE wire unchanged. Plain ZSTD cuts the selected stream by up to 38%; a 32 KiB trained dictionary cuts the selected acknowledged-delta stream 30–58% and independent envelopes 58–82% against `deflate-1`, halves fragments on `drive` and cuts them 26% on `fire`, and lowers CPU in both directions. Out of sample: a leave-one-out dictionary is only 8–22% better. See [exp-8](bandwidth-results/exp-8-zstd-dictionary.md). |
+| 8 | ZSTD with a trained dictionary | **Win, opt-in.** A selectable wire codec (`RM_NET_CODEC`) leaves the DEFLATE wire unchanged. Plain ZSTD cuts the selected stream by up to 38%; a 32 KiB trained dictionary cuts the selected acknowledged-delta stream 30–58% and independent envelopes 58–82% against `deflate-1`, halves fragments on `drive` and cuts them 26% on `fire`, and lowers CPU in both directions. Out of sample: a leave-one-out dictionary is only 8–22% better. |
 
 What this says about the 100–200 kbps target: no single experiment reaches it.
 The owner stream alone is 111 kbps after experiment 1, and the world stream is
@@ -312,5 +312,3 @@ still the production default.
 Two coordination hazards are worth carrying forward: a shared
 `CARGO_TARGET_DIR` lets a concurrent `cargo test` silently run another
 worktree's artifact, and `git stash` is repository-global across worktrees.
-Both are documented with their workarounds in
-[the plan and log](bandwidth-results/PLAN.md).

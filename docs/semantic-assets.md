@@ -57,14 +57,11 @@ checksummed files, matching border declarations and finite error metadata.
 Checks sample 4,096 triangles per direction; these are not certified maximum
 errors against STEP. The coarser backing geometry remains visible up close.
 
-Reproduce the candidate with rm-map-tools'
-`benchmarks/2026-09-11-native-textures/build.py`. Its README records source
-inputs, exporter settings, counts and validation. The preceding installed
-package is retained at
-`../assets/rm2026-before-collision-artwork-20260911T110406`.
-The native-texture deployment preserves local package additions and regenerates
-the minimap against the new manifest hashes. No frame-time improvement has
-been measured for this package.
+Reproduce the candidate with rm-map-tools' native-texture build script. It
+records source inputs, exporter settings, counts and validation. The native-
+texture deployment preserves local package additions and regenerates the minimap
+against the new manifest hashes. No frame-time improvement has been measured for
+this package.
 
 ## What comes from the export
 

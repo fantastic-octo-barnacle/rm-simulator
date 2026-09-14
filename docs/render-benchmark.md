@@ -20,8 +20,26 @@ On Linux or Windows, use native Vulkan or DX12 for GPU timestamp measurements:
 
 ```sh
 target/release/rm-simulator-bench --cad-assets local-assets/field-coarse \
-  --case benchmarks/render-case.json --backend vulkan \
-  --detail raw --screenshot --output /tmp/rm-render-high
+  --backend vulkan --detail raw --screenshot --output /tmp/rm-render-high
+```
+
+Omitting `--case` uses the built-in High 1080p defaults. For another case, write a
+JSON file and pass it as `--case /tmp/render-case.json`:
+
+```json
+{
+  "name": "high-1080p",
+  "resolution": [1920, 1080],
+  "graphics": {"preset": "High", "overrides": {"vsync": false}},
+  "camera_position_flu_m": [10, 0, 0.7],
+  "camera_target_flu_m": [0, 0, 0.7],
+  "vertical_fov_deg": 60,
+  "geometry": "normal",
+  "stadium": true,
+  "warmup_seconds": 10,
+  "sample_seconds": 20,
+  "timeout_seconds": 120
+}
 ```
 
 On Windows, the executable has an `.exe` suffix. Adjust output paths as needed.
@@ -32,7 +50,7 @@ Mac runs support CPU-only measurements:
 
 ```sh
 target/release/rm-simulator-bench --cad-assets local-assets/field-coarse \
-  --case benchmarks/render-case.json --backend metal --cpu-only \
+  --backend metal --cpu-only \
   --detail raw --screenshot --output /tmp/rm-render-metal
 ```
 
@@ -49,8 +67,10 @@ image without presentation. Compare offscreen and windowed results separately.
 
 ## Settings sweeps
 
+Write a sweep file and pass it to the driver:
+
 ```sh
-python3 scripts/benchmark-render.py benchmarks/render-1080p.json \
+python3 scripts/benchmark-render.py /tmp/render-1080p.json \
   --binary target/release/rm-simulator-bench \
   --cad-assets local-assets/field-coarse --backend vulkan \
   --detail raw --output /tmp/rm-render-sweep
@@ -138,8 +158,8 @@ and this rendering-only workload does not establish full-game FPS on either box.
 
 ## Effect sweep
 
-`benchmarks/render-effects.json` changes one option at a time from the original
-Ultra settings at 1080p and 4K, twice in a seeded shuffled order. It covers shadow
+A useful effect sweep changes one option at a time from the original Ultra
+settings at 1080p and 4K, twice in a seeded shuffled order. It covers shadow
 resolution, cascade count and distance, shadows off, MSAA, bloom, depth prepass,
 occlusion culling, sparse geometry and the stadium. It uses the same fixed
 camera throughout. Sparse geometry changes surface coverage as well as triangle
@@ -147,7 +167,7 @@ count, and disabling the stadium changes lighting geometry and shadows; neither
 is a pure geometry throughput test.
 
 ```sh
-python3 scripts/benchmark-render.py benchmarks/render-effects.json \
+python3 scripts/benchmark-render.py /tmp/render-effects.json \
   --binary target/release/rm-simulator-bench \
   --cad-assets local-assets/field-coarse --backend vulkan \
   --headless --detail passes --output /tmp/rm-render-effects
@@ -160,5 +180,5 @@ baseline/candidate runs before using them to change a preset. The static scene
 cannot measure projectile detail, and appearance-only controls such as exposure
 and emission strength are not performance switches.
 
-[Measured effects and preset decisions](render-effects-2026-09-12.md) include the
-NVIDIA results, thermal limitations and the separate preset confirmation sweep.
+No sweep result is committed. Treat a single sweep as a hypothesis rather than a
+preset decision, and keep the raw reports with the change that used them.
