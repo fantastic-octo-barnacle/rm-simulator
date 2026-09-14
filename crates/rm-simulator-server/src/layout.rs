@@ -509,6 +509,9 @@ pub struct LayoutOptions {
     /// A referee owning the runes and outposts by field side (`rune_team`,
     /// `outpost_team`).
     pub referee: bool,
+    /// Ball restitution, hard flight limit and low-speed retirement rule the
+    /// hosted field runs. Defaults to the simulator's control behaviour.
+    pub projectile_policy: rm_simulator_world::projectile::ProjectilePolicy,
 }
 
 /// The field configuration for a CAD package.
@@ -568,6 +571,7 @@ pub fn field_config(cad: &CadAssets, options: &LayoutOptions) -> FieldConfig {
         }),
         runes,
         outposts,
+        projectile_policy: options.projectile_policy,
     }
 }
 
@@ -880,6 +884,7 @@ mod tests {
             outpost_speed_rad_s: 1.0,
             terrain: true,
             referee: true,
+            projectile_policy: Default::default(),
         };
         let config = field_config(&cad, &options);
         assert_eq!(config.runes.len(), 2);
@@ -911,6 +916,7 @@ mod tests {
                 rune: None,
                 terrain: false,
                 referee: false,
+                projectile_policy: Default::default(),
                 ..options
             },
         );
@@ -937,6 +943,7 @@ mod tests {
                 outpost_speed_rad_s: 1.0,
                 terrain: false,
                 referee: true,
+                projectile_policy: Default::default(),
             },
         );
         let referee = config.referee.unwrap();

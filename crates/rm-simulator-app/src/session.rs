@@ -13,6 +13,7 @@ use rm_simulator_server::{
 };
 use rm_simulator_world::{
     ChassisCommand, ChassisConfig, ChassisSnapshot, FieldSnapshot, RefereeSnapshot, RuneKind, Team,
+    projectile::ProjectilePolicy,
 };
 use std::collections::VecDeque;
 
@@ -221,6 +222,11 @@ impl Session {
                 outpost_speed_rad_s: args.outpost_speed_rad_s,
                 terrain: !args.no_field_collision,
                 referee: !args.no_referee,
+                projectile_policy: if args.no_projectile_retirement {
+                    ProjectilePolicy::default().without_retirement()
+                } else {
+                    ProjectilePolicy::default()
+                },
             };
             let simulation = Simulation::from_cad(
                 cad,

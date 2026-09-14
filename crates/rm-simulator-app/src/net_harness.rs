@@ -94,6 +94,7 @@ impl Trace {
                 outpost_speed_rad_s: 0.0,
                 terrain: false,
                 referee: false,
+                projectile_policy: Default::default(),
             },
             Some(ChassisConfig::default()),
             false,

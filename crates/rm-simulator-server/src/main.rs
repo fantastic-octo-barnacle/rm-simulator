@@ -11,7 +11,9 @@ use rm_simulator_server::{
     net::Server,
     simulation::{BuildProgress, Simulation},
 };
-use rm_simulator_world::{Caliber, ChassisConfig, RuneKind, Shot, outpost};
+use rm_simulator_world::{
+    Caliber, ChassisConfig, RuneKind, Shot, outpost, projectile::ProjectilePolicy,
+};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -78,6 +80,10 @@ struct Args {
     /// Run without a referee: the runes stay in their training policy.
     #[arg(long)]
     no_referee: bool,
+    /// Keep spent projectiles until the four-second flight limit instead of
+    /// retiring a ball that has rested slowly on scenery.
+    #[arg(long)]
+    no_projectile_retirement: bool,
     /// Open with the world clock paused.
     #[arg(long)]
     start_paused: bool,
@@ -107,6 +113,11 @@ fn main() -> anyhow::Result<()> {
         outpost_speed_rad_s: args.outpost_speed_rad_s,
         terrain: !args.no_field_collision,
         referee: !args.no_referee,
+        projectile_policy: if args.no_projectile_retirement {
+            ProjectilePolicy::default().without_retirement()
+        } else {
+            ProjectilePolicy::default()
+        },
     };
     let simulation = Simulation::from_cad(
         &cad,

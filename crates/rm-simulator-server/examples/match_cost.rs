@@ -37,6 +37,7 @@ fn main() -> anyhow::Result<()> {
             outpost_speed_rad_s: 0.4,
             terrain: true,
             referee: true,
+            projectile_policy: Default::default(),
         },
     );
     let mut template = Field::new(&config)?;

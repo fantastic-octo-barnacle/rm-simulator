@@ -19,6 +19,7 @@ fn main() -> anyhow::Result<()> {
             outpost_speed_rad_s: 0.,
             terrain: true,
             referee: true,
+            projectile_policy: Default::default(),
         };
         let mut config = layout::field_config(&cad, &options);
         config.bases = bases;

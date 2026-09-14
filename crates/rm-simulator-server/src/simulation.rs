@@ -876,6 +876,7 @@ mod tests {
             outpost_speed_rad_s: 1.0,
             terrain: false,
             referee: true,
+            projectile_policy: Default::default(),
         }
     }
 

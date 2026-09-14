@@ -69,6 +69,10 @@ pub struct Args {
     /// Omit the rune rules; the CAD rune stays static.
     #[arg(long, conflicts_with = "big_rune")]
     pub no_rune: bool,
+    /// Keep spent projectiles until the four-second flight limit instead of
+    /// retiring a ball that has rested slowly on scenery.
+    #[arg(long, conflicts_with = "connect")]
+    pub no_projectile_retirement: bool,
     /// Outpost rotor speed in rad/s; defaults to the section 5.5.1 value of 0.8π.
     #[arg(long, default_value_t = outpost_rules::DEFAULT_SPEED_RAD_S)]
     pub outpost_speed_rad_s: f64,
