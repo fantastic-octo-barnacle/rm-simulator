@@ -5,6 +5,9 @@ target/
 # Local dependency caches.
 .cache/
 
+# Local Git worktrees.
+/.worktrees/
+
 # Editors and local tools.
 .vscode/
 .idea/
