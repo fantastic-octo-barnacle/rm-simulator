@@ -729,6 +729,7 @@ impl Owner {
             chassis: chassis.clone(),
             weapon: self.simulation.weapon(),
             weapon_limits: self.simulation.weapon_limits(),
+            tick_ns: rm_simulator_world::tick_ns(),
         };
         let peer = Peer {
             info: PlayerInfo {

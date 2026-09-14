@@ -28,6 +28,12 @@ struct Args {
     /// Starting muzzle speed; defaults to 25 m/s.
     #[arg(long)]
     muzzle_speed_m_s: Option<f64>,
+    /// Shared physics rate in Hz: 1000 (the default), 500, 250 or 128. It sets
+    /// the tick length this host integrates at, 128 Hz meaning exactly
+    /// 7,812,500 ns, and any other value is refused. Every client must predict
+    /// at the same rate, which the handshake enforces.
+    #[arg(long, default_value_t = 1000, value_parser = parse_physics_rate_hz)]
+    physics_rate_hz: u32,
     /// Starting shots per second per chassis.
     #[arg(long, default_value_t = 20.0)]
     fire_rate_hz: f64,
@@ -87,6 +93,31 @@ fn default_cad_assets() -> std::path::PathBuf {
     cad_assets::default_cad_assets()
 }
 
+/// Accept only a measured physics rate. 128 Hz must mean exactly 7,812,500 ns
+/// per tick, so a rate that does not divide one second exactly is refused
+/// rather than rounded into a clock nobody asked for.
+fn parse_physics_rate_hz(text: &str) -> Result<u32, String> {
+    let offered = || {
+        rm_simulator_world::OFFERED_RATES_HZ
+            .iter()
+            .map(|(hz, _)| hz.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let hz: u32 = text
+        .trim()
+        .parse()
+        .map_err(|_| format!("`{text}` is not a physics rate in Hz; use {}", offered()))?;
+    if rm_simulator_world::tick_ns_for_hz(hz).is_some() {
+        Ok(hz)
+    } else {
+        Err(format!(
+            "unsupported physics rate `{hz}` Hz; use {}",
+            offered()
+        ))
+    }
+}
+
 fn parse_caliber(text: &str) -> Result<u32, String> {
     match text.trim() {
         "17" => Ok(17),
@@ -107,6 +138,7 @@ fn main() -> anyhow::Result<()> {
         outpost_speed_rad_s: args.outpost_speed_rad_s,
         terrain: !args.no_field_collision,
         referee: !args.no_referee,
+        physics_rate_hz: args.physics_rate_hz,
     };
     let simulation = Simulation::from_cad(
         &cad,

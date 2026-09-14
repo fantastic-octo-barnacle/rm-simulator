@@ -102,6 +102,59 @@ pub fn set_tick_ns(ns: u64) -> u64 {
     *TICK_NS_CELL.get_or_init(|| ns)
 }
 
+/// The physics rates offered on the command line, in Hz, paired with the exact
+/// tick length each one means in nanoseconds.
+///
+/// Only these four are offered because each has been measured; 128 Hz is listed
+/// as its exact 7,812,500 ns rather than the 7,812,500.0 a division would give.
+///
+/// ```
+/// use rm_simulator_physics::{OFFERED_RATES_HZ, valid_tick_ns};
+///
+/// for (hz, ns) in OFFERED_RATES_HZ {
+///     assert!(valid_tick_ns(*ns));
+///     assert_eq!(*ns * u64::from(*hz), 1_000_000_000);
+/// }
+/// ```
+pub const OFFERED_RATES_HZ: &[(u32, u64)] = &[
+    (1000, 1_000_000),
+    (500, 2_000_000),
+    (250, 4_000_000),
+    (128, 7_812_500),
+];
+
+/// The tick length for one of [`OFFERED_RATES_HZ`], or `None` for any other
+/// rate. A rate that does not divide one second exactly is refused rather than
+/// rounded, so no caller silently gets a different clock than it asked for.
+///
+/// ```
+/// use rm_simulator_physics::tick_ns_for_hz;
+///
+/// assert_eq!(tick_ns_for_hz(128), Some(7_812_500));
+/// assert_eq!(tick_ns_for_hz(300), None);
+/// ```
+pub fn tick_ns_for_hz(hz: u32) -> Option<u64> {
+    OFFERED_RATES_HZ
+        .iter()
+        .find(|(rate, _)| *rate == hz)
+        .map(|(_, ns)| *ns)
+}
+
+/// The offered rate in Hz matching `ns`, or `None` when the frozen tick length
+/// is not one of them.
+///
+/// ```
+/// use rm_simulator_physics::{hz_for_tick_ns, tick_ns};
+///
+/// assert_eq!(hz_for_tick_ns(tick_ns()), Some(1000));
+/// ```
+pub fn hz_for_tick_ns(ns: u64) -> Option<u32> {
+    OFFERED_RATES_HZ
+        .iter()
+        .find(|(_, tick)| *tick == ns)
+        .map(|(hz, _)| *hz)
+}
+
 /// A rigid pose in forward/left/up coordinates, metres and a wxyz quaternion.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct Pose {

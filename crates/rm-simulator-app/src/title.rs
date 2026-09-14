@@ -105,6 +105,11 @@ pub struct TitleFields {
     /// Remembered host weapon fire rate text.
     #[serde(default)]
     pub fire_rate: String,
+    /// Remembered shared physics rate in Hz, as typed. Blank keeps the rate the
+    /// command line gave. It is frozen for the process once a match starts, so
+    /// changing it here only takes effect on the next launch.
+    #[serde(default)]
+    pub physics_rate: String,
     /// Remembered host rate cap in Hz.
     #[serde(default)]
     pub max_fire_rate: String,
@@ -175,6 +180,11 @@ impl TitleFields {
                 remembered.fire_rate,
                 Some(base.fire_rate_hz.to_string()),
                 "20",
+            ),
+            physics_rate: pick(
+                remembered.physics_rate,
+                Some(base.physics_rate_hz.to_string()),
+                "1000",
             ),
             muzzle_speed: pick(
                 remembered.muzzle_speed,
@@ -267,6 +277,19 @@ pub fn join_args(base: &Args, fields: &TitleFields, choice: Choice) -> Result<Ar
             args.password.clear();
         }
         _ => return Err("nothing to join".into()),
+    }
+    // Every peer in a match shares the physics rate, so it is applied to a
+    // remote join as well: the host refuses a client that predicts at another.
+    if !fields.physics_rate.trim().is_empty() {
+        let hz: u32 = fields
+            .physics_rate
+            .trim()
+            .parse()
+            .map_err(|_| "Physics rate must be 1000, 500, 250 or 128 Hz")?;
+        if rm_simulator_world::tick_ns_for_hz(hz).is_none() {
+            return Err("Physics rate must be 1000, 500, 250 or 128 Hz".into());
+        }
+        args.physics_rate_hz = hz;
     }
     if choice != Choice::Connect {
         if !fields.fire_rate.trim().is_empty() {
@@ -441,6 +464,7 @@ enum LobbyInput {
     JoinPassword,
     Advertised,
     FireRate,
+    PhysicsRate,
     MaxFireRate,
     MaxMuzzleSpeed,
     MuzzleSpeed,
@@ -972,6 +996,13 @@ fn sync_title(
     field(
         &mut commands,
         weapon_fields,
+        "Physics rate (Hz: 1000, 500, 250 or 128; set at launch)",
+        fields.physics_rate.clone(),
+        LobbyInput::PhysicsRate,
+    );
+    field(
+        &mut commands,
+        weapon_fields,
         "Starting muzzle speed (m/s, blank = 25)",
         fields.muzzle_speed.clone(),
         LobbyInput::MuzzleSpeed,
@@ -1293,6 +1324,7 @@ fn title_input(
                 LobbyInput::JoinPassword => fields.join_password = value,
                 LobbyInput::Advertised => fields.advertised = value,
                 LobbyInput::FireRate => fields.fire_rate = value,
+                LobbyInput::PhysicsRate => fields.physics_rate = value,
                 LobbyInput::MaxFireRate => fields.max_fire_rate = value,
                 LobbyInput::MaxMuzzleSpeed => fields.max_muzzle_speed = value,
                 LobbyInput::MuzzleSpeed => fields.muzzle_speed = value,

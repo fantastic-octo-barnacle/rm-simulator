@@ -187,6 +187,19 @@ impl Session {
         spawn_yaw_deg: f64,
         progress: impl Fn(f32, &str),
     ) -> anyhow::Result<Opened> {
+        // The tick length is process-wide and frozen on first use, so the first
+        // match of a run fixes it. A later match asking for another rate is
+        // refused here rather than silently running at the frozen one.
+        let wanted = rm_simulator_world::tick_ns_for_hz(args.physics_rate_hz).ok_or_else(|| {
+            anyhow::anyhow!("unsupported physics rate {} Hz", args.physics_rate_hz)
+        })?;
+        let frozen = rm_simulator_world::set_tick_ns(wanted);
+        anyhow::ensure!(
+            frozen == wanted,
+            "this run already froze the physics rate at {} Hz; relaunch with --physics-rate-hz {}",
+            rm_simulator_world::hz_for_tick_ns(frozen).unwrap_or(0),
+            args.physics_rate_hz,
+        );
         let role = args.role();
         let (client, host) = if let Some(address) = &args.connect {
             progress(0.3, "Connecting to host");
@@ -221,6 +234,7 @@ impl Session {
                 outpost_speed_rad_s: args.outpost_speed_rad_s,
                 terrain: !args.no_field_collision,
                 referee: !args.no_referee,
+                physics_rate_hz: args.physics_rate_hz,
             };
             let simulation = Simulation::from_cad(
                 cad,

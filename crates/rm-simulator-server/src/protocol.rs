@@ -21,7 +21,30 @@ use std::io::{self, BufRead, Read, Write};
 /// instead of repeating it in every anchor, with a dedicated reliable frame.
 /// Version 29 combines referenced owner configurations with lossless RMI3 input
 /// batches; experimental version 28 builds carried only one of these changes.
-pub const PROTOCOL_VERSION: u32 = 29;
+pub const PROTOCOL_VERSION: u32 = 30;
+
+/// The refusal a host sends a client whose physics rate differs from its own.
+/// Both are stated in Hz where the rate is one that is offered, and otherwise
+/// in nanoseconds per tick.
+///
+/// ```
+/// use rm_simulator_server::protocol::rate_mismatch;
+///
+/// assert!(rate_mismatch(7_812_500, 1_000_000).contains("128"));
+/// ```
+pub fn rate_mismatch(host_tick_ns: u64, client_tick_ns: u64) -> String {
+    let name = |ns: u64| match rm_simulator_world::hz_for_tick_ns(ns) {
+        Some(hz) => format!("{hz} Hz"),
+        None => format!("{ns} ns per tick"),
+    };
+    format!(
+        "Physics rate mismatch: host runs at {}, you run at {}. Relaunch with --physics-rate-hz {}.",
+        name(host_tick_ns),
+        name(client_tick_ns),
+        rm_simulator_world::hz_for_tick_ns(host_tick_ns)
+            .map_or_else(|| "<unsupported>".to_string(), |hz| hz.to_string()),
+    )
+}
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///
@@ -577,6 +600,7 @@ pub struct FireTiming {
 ///     name: "pilot".into(),
 ///     team: None,
 ///     role: Role::Pilot,
+///     tick_ns: rm_simulator_world::tick_ns(),
 /// };
 /// let start = ClientMessage::Command(Command::Referee(
 ///     rm_simulator_world::RefereeCommand::StartMatch,
@@ -618,6 +642,11 @@ pub struct FireTiming {
 ///         ..
 ///     }
 /// ));
+/// // An omitted physics rate means the reader's own.
+/// assert!(matches!(
+///     old,
+///     ClientMessage::Hello { tick_ns, .. } if tick_ns == rm_simulator_world::tick_ns()
+/// ));
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 // Keep small fixed-size control records inline in bounded transport queues.
@@ -655,6 +684,11 @@ pub enum ClientMessage {
         /// operator, so this is a request rather than an assignment.
         #[serde(default)]
         role: Role,
+        /// Tick length in nanoseconds this client predicts at, from its own
+        /// `--physics-rate-hz`. The whole match must share one rate, so a host
+        /// refuses a client whose value differs from its own.
+        #[serde(default = "rm_simulator_world::tick_ns")]
+        tick_ns: u64,
     },
     /// One action on the field, addressed to a chassis or to the match.
     Command(Command),
@@ -699,6 +733,11 @@ pub struct Welcome {
     pub weapon: WeaponConfig,
     /// Host caps, independent of the starting settings.
     pub weapon_limits: WeaponLimits,
+    /// Tick length in nanoseconds this host integrates at. It equals the value
+    /// the client sent in its `Hello`, because a mismatch is refused before a
+    /// Welcome is written; a client stores it to show the active rate.
+    #[serde(default = "rm_simulator_world::tick_ns")]
+    pub tick_ns: u64,
 }
 /// One connected client, as listed in the roster.
 ///
@@ -920,6 +959,7 @@ mod tests {
             name: "pilot".into(),
             team: Some(Team::Blue),
             role: Role::Pilot,
+            tick_ns: rm_simulator_world::tick_ns(),
         };
         let fire = ClientMessage::Command(Command::Fire {
             shooter: 3,
@@ -1002,6 +1042,12 @@ mod tests {
                 role: Role::Pilot,
                 ..
             }
+        ));
+        // An omitted rate means the reader's own, so an old client is refused
+        // by the rate check rather than by a decode failure.
+        assert!(matches!(
+            hello,
+            ClientMessage::Hello { tick_ns, .. } if tick_ns == rm_simulator_world::tick_ns()
         ));
         let command: Command = serde_json::from_str(
             r#"{"Chassis":{"chassis":1,"command":{"forward_m_s":1.0,"left_m_s":0.0,"yaw_rate_rad_s":0.0}}}"#,

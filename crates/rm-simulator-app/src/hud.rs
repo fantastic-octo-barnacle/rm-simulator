@@ -739,6 +739,14 @@ pub fn update_hud(
                         ));
                     }
                 }
+                // Which physics arm this session runs, so a play-test of
+                // `--physics-rate-hz` always says which rate is on screen.
+                value.push_str(&match rm_simulator_world::hz_for_tick_ns(
+                    rm_simulator_world::tick_ns(),
+                ) {
+                    Some(hz) => format!("\n{hz} Hz PHYSICS"),
+                    None => format!("\n{} ns PER TICK", rm_simulator_world::tick_ns()),
+                });
                 value
             }
             Hud::Ammo => {

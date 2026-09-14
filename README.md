@@ -252,6 +252,7 @@ The existing runtime flags remain launch shortcuts.
 | `--screenshot PATH` | Capture the window or headless camera to a PNG once loaded and settled, then exit |
 | `--projectile-mm 17\|42` | Host projectile caliber (default 17; 42 with `--robot hero`; unavailable with `--connect`) |
 | `--muzzle-speed-m-s V` | Starting muzzle speed, default 25 m/s for either caliber; unavailable with `--connect` |
+| `--physics-rate-hz R` | Shared physics rate: 1000 (default), 500, 250 or 128 Hz; 128 Hz is exactly 7,812,500 ns per tick. Every peer in a match must use the same rate, and a host refuses a client that does not |
 | `--fire-rate-hz R` | Starting firing rate in simulation time, default 20 Hz; unavailable with `--connect` |
 | `--max-fire-rate-hz R` | Host firing-rate cap, default 30 Hz; unavailable with `--connect` |
 | `--max-muzzle-speed-m-s V` | Host actual launch-speed cap, default 30 m/s; unavailable with `--connect` |

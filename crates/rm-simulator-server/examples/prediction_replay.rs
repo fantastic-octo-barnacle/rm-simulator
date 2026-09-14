@@ -13,6 +13,7 @@ fn main() -> anyhow::Result<()> {
             rune: None,
             terrain: true,
             referee: true,
+            physics_rate_hz: 1000,
             outpost_speed_rad_s: 0.0,
         },
         Some(ChassisConfig::default()),

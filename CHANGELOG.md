@@ -4,6 +4,12 @@
 
 ## Unreleased
 
+- Add `--physics-rate-hz` to the app and the headless server, offering the
+  measured 1000, 500, 250 and 128 Hz rates (128 Hz is exactly 7,812,500 ns per
+  tick) and refusing any other value. The title screen remembers it, the HUD
+  shows the active rate, and a host refuses a client that predicts at another
+  rate.
+
 - Skip malformed optional network trace metrics before aggregation so diagnostic
   summaries still report valid rows and flag incomplete traces.
 

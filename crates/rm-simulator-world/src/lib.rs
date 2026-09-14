@@ -29,7 +29,9 @@ use rune::{BigRune, RuneError, SmallRune};
 pub use rune::{BigRuneMotion, HitOutcome, Rune, RuneKind, RuneSnapshot, RuneState};
 use serde::{Deserialize, Serialize};
 
-pub use rm_simulator_physics::{Pose, tick_ns};
+pub use rm_simulator_physics::{
+    OFFERED_RATES_HZ, Pose, hz_for_tick_ns, set_tick_ns, tick_ns, tick_ns_for_hz,
+};
 
 /// One armor module pose on a rotating mechanism, keyed by face index.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
