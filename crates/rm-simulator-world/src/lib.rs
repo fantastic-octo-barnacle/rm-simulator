@@ -124,6 +124,12 @@ pub struct FieldConfig {
     /// base/outpost damage still applies, but no referee tracks robot HP or a match.
     #[serde(default)]
     pub referee: Option<RefereeConfig>,
+    /// Ball restitution, hard flight limit and low-speed retirement rule. The
+    /// default is the simulator's control behaviour. A host and every client
+    /// predicting for it must use the same value, so it travels in the
+    /// snapshot's [`FieldRestore`] as well.
+    #[serde(default)]
+    pub projectile_policy: projectile::ProjectilePolicy,
 }
 impl Default for FieldConfig {
     fn default() -> Self {
@@ -132,6 +138,7 @@ impl Default for FieldConfig {
             floor_height_m: 0.0,
             chassis: Vec::new(),
             referee: None,
+            projectile_policy: projectile::ProjectilePolicy::default(),
             runes: vec![RuneConfig::default()],
             outposts: [-1.0, 1.0]
                 .into_iter()
@@ -202,6 +209,11 @@ pub struct FieldRestore {
     /// Per-module time of the last detected strike, oldest kept, in target
     /// order, so the detection intervals of section 5.1.1 survive a restore.
     pub last_detection_ns: Vec<(ArmorTarget, u64)>,
+    /// The projectile restitution, flight limit and retirement rule the field
+    /// runs, so a restored field spends and retires balls exactly as the field
+    /// it was captured from does.
+    #[serde(default)]
+    pub projectile_policy: projectile::ProjectilePolicy,
 }
 
 /// One authoritative tick of the whole field, as an observer or a peer
@@ -347,7 +359,13 @@ impl Field {
             tick: 0,
             runes,
             outposts,
-            physics: WorldPhysics::new(&faces, config.floor_height_m),
+            physics: {
+                let mut physics = WorldPhysics::new(&faces, config.floor_height_m);
+                physics
+                    .set_projectile_policy(config.projectile_policy)
+                    .map_err(FieldError::Shot)?;
+                physics
+            },
             target_frames: TargetFrames::new(faces),
             hits: Vec::new(),
             hits_detected: 0,
@@ -684,6 +702,15 @@ impl Field {
     /// The muzzle is 0.35 m along the turret's +x barrel line.
     pub fn chassis_muzzle_pose(&self, id: u32) -> Option<Pose> {
         self.physics.chassis_muzzle_pose(id)
+    }
+    /// The ball restitution, flight limit and retirement rule this field runs.
+    pub fn projectile_policy(&self) -> projectile::ProjectilePolicy {
+        self.physics.projectile_policy()
+    }
+    /// Take the recent projectile removal records, oldest first. Lifetime
+    /// instrumentation; no rule reads them.
+    pub fn take_projectile_removals(&mut self) -> Vec<projectile::Removal> {
+        self.physics.take_removals()
     }
     /// Every ball in flight, without building a whole field snapshot; a
     /// provisional-shot replay reads its own balls and nothing else.
@@ -1030,6 +1057,7 @@ impl Field {
                 outposts: self.outposts.clone(),
                 referee: self.referee.clone(),
                 next_chassis_id: self.physics.next_chassis_id(),
+                projectile_policy: self.physics.projectile_policy(),
                 last_detection_ns: {
                     // A hash map has no order; sort so equal fields snapshot equal.
                     let mut detections: Vec<_> = self
@@ -1108,6 +1136,9 @@ impl Field {
         let mut faces = Vec::new();
         Self::write_target_faces(&runes, &outposts, &snapshot.bases, time_ns, &mut faces);
         let mut physics = WorldPhysics::new(&faces, floor_height_m);
+        physics
+            .set_projectile_policy(rules.projectile_policy)
+            .map_err(FieldError::Restore)?;
         physics.insert_geometry(geometry);
         let mut field = Self {
             bases: snapshot.bases.clone(),
@@ -1897,6 +1928,7 @@ mod tests {
             outposts: Vec::new(),
             floor_height_m: 0.0,
             referee: None,
+            projectile_policy: Default::default(),
             chassis: vec![ChassisPlacement {
                 config: ChassisConfig::default(),
                 spawn: Pose::at([0.0, 0.0, ChassisConfig::default().rest_height_m()]),
