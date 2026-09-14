@@ -55,10 +55,9 @@ impl Outbound {
     }
     pub(crate) fn compressed(&self) -> &[u8] {
         self.compressed.get_or_init(|| {
-            miniz_oxide::deflate::compress_to_vec(
-                &crate::snapshot_codec::encode_player_message(&self.message),
-                1,
-            )
+            crate::compression::compress(&crate::snapshot_codec::encode_player_message(
+                &self.message,
+            ))
         })
     }
     pub(crate) fn encoded(&self) -> &str {

@@ -15,6 +15,7 @@ pub mod base_layout;
 pub mod cad_assets;
 pub mod clock;
 pub mod collision_mesh;
+pub mod compression;
 pub mod host;
 pub mod http;
 pub mod layout;

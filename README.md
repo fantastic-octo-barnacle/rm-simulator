@@ -749,7 +749,13 @@ Measure snapshot bytes and codec CPU with
 `cargo run -p rm-simulator-server --example network_bandwidth --locked`.
 Use `cargo run --release --locked -p rm-simulator-server --example
 network_bandwidth -- --deflate-sweep` to compare deflate 1/4 on identical selected
-checkpoints at 64 ms intervals. See the
+checkpoints at 64 ms intervals. Compare the selectable compression codecs
+(DEFLATE, ZSTD, ZSTD with the embedded checkpoint dictionary) with
+`cargo run --release --locked -p rm-simulator-server --example
+compression_comparison`. Set `RM_NET_CODEC=zstd` or `RM_NET_CODEC=zstd-dict`
+for a host/client pair running this build; unset means DEFLATE.
+`RM_NET_DEFLATE_LEVEL` and `RM_NET_ZSTD_LEVEL` override compression effort.
+See the
 [cadence and compression measurements](docs/bandwidth-results/cadence-deflate-followup.md)
 for live trials and a progressive degraded-network play command.
 

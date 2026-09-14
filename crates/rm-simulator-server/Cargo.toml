@@ -23,4 +23,5 @@ serde_json = { workspace = true, features = ["float_roundtrip"] }
 sha2.workspace = true
 game-networking-sockets = "0.3.0"
 miniz_oxide = "0.8"
+zstd.workspace = true
 if-addrs = "0.15"

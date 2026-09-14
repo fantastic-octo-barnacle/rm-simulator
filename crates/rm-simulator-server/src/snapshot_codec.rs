@@ -25,7 +25,21 @@ pub enum Patch {
 /// Smallest structural patch turning `before` into `after`, or `None` when they
 /// are equal. A nested patch is returned only when it is smaller than replacing
 /// the subtree, so a delta never costs more than the state it describes.
-pub(crate) fn difference(before: &Value, after: &Value) -> Option<Patch> {
+///
+/// ```
+/// use rm_simulator_server::snapshot_codec::{apply, difference};
+/// use serde_json::json;
+///
+/// let before = json!({"tick": 1, "projectiles": [{"id": 3, "x": 0.0, "y": 1.0}]});
+/// let after = json!({"tick": 2, "projectiles": [{"id": 3, "x": 0.0, "y": 1.5}]});
+/// let patch = difference(&before, &after).expect("values differ");
+/// let mut value = before.clone();
+/// apply(&mut value, patch, 0).unwrap();
+/// assert_eq!(value, after);
+/// // Equal values need no patch at all.
+/// assert!(difference(&after, &after).is_none());
+/// ```
+pub fn difference(before: &Value, after: &Value) -> Option<Patch> {
     if before == after {
         return None;
     }
@@ -68,7 +82,7 @@ fn invalid() -> io::Error {
 /// Applies one patch to a decoded baseline, in place. Errors when the patch no
 /// longer matches the value's shape or nests deeper than 32 levels, both of
 /// which mean the patch and baseline disagree.
-pub(crate) fn apply(value: &mut Value, patch: Patch, depth: usize) -> io::Result<()> {
+pub fn apply(value: &mut Value, patch: Patch, depth: usize) -> io::Result<()> {
     if depth > 32 {
         return Err(invalid());
     }
