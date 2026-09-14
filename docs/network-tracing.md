@@ -2,10 +2,27 @@
 <!-- Copyright (c) 2026 hxyulin <hxyulin@proton.me> -->
 # Network tracing
 
-The game keeps cumulative metadata counters even with disk tracing disabled.
-Console `state` exposes them under `network.trace`. The detailed network overlay
-shows whether recording is off, active, capped or failed. Reading diagnostics
-never requests a host snapshot or waits for a transport worker.
+Packet metadata, capture commands and local channel diagnostics for the
+gameplay transport. The game keeps cumulative metadata counters even with disk
+tracing disabled. Console `state` exposes them under `network.trace`. The
+detailed network overlay shows whether recording is off, active, capped or
+failed. Reading diagnostics never requests a host snapshot or waits for a
+transport worker.
+
+## Contents
+
+- [Enable recording](#enable-recording)
+- [Trace files and event records](#trace-files-and-event-records)
+- [Stages](#stages)
+- [Measurement semantics](#measurement-semantics)
+- [Byte counters](#byte-counters)
+- [Bounds and incomplete recordings](#bounds-and-incomplete-recordings)
+- [Summary tool](#summary-tool)
+- [Embedded play](#embedded-play)
+- [Packet classification](#packet-classification)
+- [Deterministic bandwidth probe](#deterministic-bandwidth-probe)
+
+## Enable recording
 
 Enable recording before launching each process:
 
@@ -21,6 +38,8 @@ The simulation worker, UDP host reactor and each client/ TCP writer have separat
 files. Local player files use the `local` role. The environment variable is read
 when an observer is constructed, so restart the session/process to change it.
 
+## Trace files and event records
+
 Each JSONL file starts with a schema/protocol header. Events record observer-local
 elapsed nanoseconds, stage, class and relevant snapshot, fragment, input, shooter,
 shot, projectile or hit identifiers. Host command observations include the host
@@ -28,7 +47,7 @@ simulation tick time; input events include intended simulation time. No payloads
 player names, addresses, passwords or rejection text are recorded. File paths
 appear in local console diagnostics only.
 
-## What the stages mean
+## Stages
 
 | Stage | Meaning |
 |---|---|
@@ -42,6 +61,8 @@ appear in local console diagnostics only.
 | `tcp_write` / `tcp_bytes` | TCP host message and its JSON-line bytes written |
 | `work` | Measured transport work duration, including encoding, decoding or typed local publication |
 
+## Measurement semantics
+
 A host decode/submit measurement includes waiting to submit to the host mailbox.
 Host encode/pace includes the whole pump, not just compression. Local publication
 includes cloning the typed message and updating the inbox. These are measured
@@ -53,6 +74,8 @@ GNS provider rates remain separate in `network.stats.native`. Do not sum stages:
 the same bytes can appear at submission and receipt. Typed local messages have
 `bytes: null` in counters because they have no wire representation; their event
 counts and publication work are the useful measurements.
+
+## Byte counters
 
 Host delivery reports expose `encoding` counters once per second:
 
@@ -83,6 +106,8 @@ process termination can leave an incomplete final line or no terminal status.
 The summary tool reports this instead of treating the file as complete. At the
 size cap the writer stops recording new events; console counters still update.
 
+## Summary tool
+
 ```sh
 python3 scripts/network-trace.py /tmp/rm-network-traces/*.jsonl > /tmp/rm-network-summary.json
 ```
@@ -106,6 +131,8 @@ outbox overflow closes the peer explicitly. Dropping the client removes its seat
 server teardown joins its delivery workers. Standalone sessions create no gameplay
 listener, while listen hosts use channels for their local player and GNS/TCP for
 remote players. Snapshot cloning and physics replay still cost time.
+
+## Packet classification
 
 Packet classification recognizes both RMO3/RMO4 owner anchors and RMI2/RMI3
 input batches. Before `e678491`, the protocol 29 tags were counted as `control`;

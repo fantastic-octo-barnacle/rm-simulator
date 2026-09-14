@@ -12,20 +12,24 @@ and design decisions for their named revision, not current API guarantees.
 | Topic | Guide |
 |---|---|
 | Open issues and measurement gaps | [Known issues](../KNOWN_ISSUES.md) |
+| Contribution rules and review | [Contributing](../CONTRIBUTING.md) |
+| Environment, `just` targets, tests and commits | [Development](development.md) |
+| CI checks, validation reuse and releases | [CI and releases](releases.md) |
 | Crate ownership, ticks, restore and ECS | [Simulation architecture](architecture-refactor.md) |
 | Standalone physics and optional rendering | [Physics reuse](physics-reuse.md) |
-| Contribution workflow and checks | [Contributing](../CONTRIBUTING.md) |
-| License, provenance and third-party notices | [Notices](../NOTICE.md) |
-| Implemented live rules and assumptions | [Referee rules](referee-rules.md) |
 | Standalone gameplay and its live integration | [Gameplay](gameplay.md) |
+| Implemented live rules and assumptions | [Referee rules](referee-rules.md) |
+| Command-line options, controls and interface | [App options](app-options.md) |
 | App automation, headless rendering and screenshots | [Console](console.md) |
 | Packet metadata and local channel diagnostics | [Network tracing](network-tracing.md) |
+| Field package layout, discovery, composition, collision | [Field package](field-package.md) |
 | Asset contracts and composition | [Semantic assets](semantic-assets.md) |
 | Reproducible simplification and installation | [Field detail](field-detail.md) |
 | Robot geometry and artwork assumptions | [Robot equipment](robot-equipment.md) |
 | CPU measurements and reproducibility | [Performance](performance.md) |
 | Renderer benchmark commands and interpretation | [Render benchmark](render-benchmark.md) |
 | Optional Steam integration | [Steam](steam.md) |
+| License, provenance and third-party notices | [Notices](../NOTICE.md) |
 
 ## Experiment records
 

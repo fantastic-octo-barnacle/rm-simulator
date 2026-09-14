@@ -4,13 +4,20 @@
 
 Physics and prescribed motion live in `rm-simulator-physics`. The complete
 `Field` facade in `rm-simulator-world` coordinates them with live rules and the
-referee on one explicit 1 ms clock. Rendering consumes caller-owned appearance
+referee on one explicit clock (1 ms per tick by default). Rendering consumes caller-owned appearance
 and has no dependency on physics or gameplay. The server host worker owns each
 live simulation and roster; app systems and transports submit commands to it.
 
-See [physics reuse](physics-reuse.md) for the public integration API and examples.
-The broader standalone gameplay engine remains only partly integrated through
-`live::Resources`; extracting physics did not enable additional live rules.
+The authoritative engineering rules behind this layout are in `AGENTS.md`; this
+guide explains how the pieces fit together. Each crate's own `README.md` states
+what it owns, its module layout and its permitted dependencies, and
+`scripts/check-module-dependencies.py` enforces the boundaries in CI.
+
+See [physics reuse](physics-reuse.md) for the public integration API and examples,
+and [development](development.md) for the targets that build and test the
+workspace. The broader standalone gameplay engine remains only partly integrated
+through `live::Resources`; extracting physics did not enable additional live
+rules. [Gameplay](gameplay.md) covers that engine's own coverage.
 
 ## Ownership
 
@@ -78,6 +85,6 @@ scene input leaves the visuals untouched. Projectile spheres retain their pool.
 
 Tests cover unchanged transforms, first-frame poses, wheel visibility, light
 states, chassis removal, legacy outpost serialization, tick partitioning and
-complete-world replay. Before/after measurements and their limits are in
-[performance checks](performance.md#refactor-comparison). The comparison is a
-regression check, not evidence of a renderer or gameplay speedup.
+complete-world replay. Before/after measurements and their limits are in the
+[dated refactor comparison](performance.md#refactor-comparison). The comparison
+is a regression check, not evidence of a renderer or gameplay speedup.

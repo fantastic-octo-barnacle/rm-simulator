@@ -7,6 +7,10 @@ cylinders and wheel rollers. It does not load the module STEP files at runtime.
 The original files remain in the supplied Downloads directory. This is a visual
 and driving prototype, not a competition-compliant robot design.
 
+The `--robot` chassis preset, `--projectile-mm` caliber and view flags are in
+[app options](app-options.md); [field package](field-package.md) owns the field.
+The [documentation index](README.md) lists every guide.
+
 ## Reference audit
 
 Sources were inspected on 2026-09-11. Page numbers below count PDF pages,
@@ -95,7 +99,9 @@ with zero emission. Defeat removes emission while the diffuser stays white;
 the printed identifier stays passive white in every state.
 
 The powered appearance was compared against original photos in the sibling
-`Vision/Yolo-Detector/data/armor_image_corpus_v2/images` corpus, including
+`Vision/Yolo-Detector` repository's `data/armor_image_corpus_v2/images` corpus.
+That corpus is an external source and is not retained in either checkout, so the
+comparison cannot be re-run from this repository. The named references include
 `armor27c_curated/gkd/images/train/4263.jpg`,
 `gkd_labeled_rar/已标注数据集/已标注数据集/train/image/3676.jpg` and
 `gmaster_detection_zip/XJTLU_2023_Detection_ALL/images/8469.jpg`.

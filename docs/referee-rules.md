@@ -15,6 +15,20 @@ The `rm-simulator-gameplay::live` component now supplies resource tracking to
 this referee. The separate full-match engine also extends standalone coverage. See [gameplay.md](gameplay.md) for its implemented
 rules, integration boundary and ambiguous clauses in the English manual.
 
+## Contents
+
+- [Match clock (sections 6.5 and 6.6)](#match-clock-sections-65-and-66)
+- [Team assignment (section 4.3.2.2, section 5.5.1)](#team-assignment-section-4322-section-551)
+- [Rune stages and opportunities (section 5.5.2)](#rune-stages-and-opportunities-section-552)
+- [Rune activation mechanics (section 5.5.2.1)](#rune-activation-mechanics-section-5521)
+- [Rune buffs (Tables 5-16 and 5-17)](#rune-buffs-tables-5-16-and-5-17)
+- [Outposts (section 5.5.1, Tables 5-1 and 5-2, Figure 5-16)](#outposts-section-551-tables-5-1-and-5-2-figure-5-16)
+- [Robots (Tables 5-1, 5-2 and 5-13, Figure 5-16)](#robots-tables-5-1-5-2-and-5-13-figure-5-16)
+- [Live resources and operator overrides](#live-resources-and-operator-overrides)
+- [Live base scoring and training bots](#live-base-scoring-and-training-bots)
+- [Assumptions, not rules](#assumptions-not-rules)
+- [Citation index](#citation-index)
+
 ## Match clock (sections 6.5 and 6.6)
 
 | Item | Value | Source |
@@ -31,6 +45,20 @@ while a rune's own 2.5 s hit windows keep world time. `StartMatch` seeds the
 runes' target streams from the referee config's seed; `ResetMatch` returns to
 Idle and gives the runes back their training policy (Small Rune, lowest
 unhit blade, restart after completion).
+
+## Team assignment (section 4.3.2.2, section 5.5.1)
+
+The rune has a red side and a blue side; each team activates its own face
+and each outpost stands on its team's half. The manual's field figures
+place one team per end but name no axis; the V1.2.0 CAD paints its red
+markings on the +x half and its blue markings on the −x half, so the
+layout (`layout::side_team`) takes +x as red. A rune face belongs to the
+team whose half its front normal faces; an outpost to the team whose half
+it stands on. With the shipped package that is one face and one outpost
+each. Any other ownership goes in `FieldConfig.referee` (rune and outpost
+teams by index; `RefereeConfig::alternating` is the index-based fallback
+used by tests). Rune targets and outpost light bars render in the owner's
+colour.
 
 ## Rune stages and opportunities (section 5.5.2)
 
@@ -63,8 +91,8 @@ blinks are an assumption (`--rune-flash-hz`, `--rune-flashes`).
   and `ω ∈ [1.884, 2.000]`, drawn once per activation from the seeded
   stream. Five groups of two lit targets; the first is required, the second
   scores a bonus within one second.
-- Only 17 mm projectiles above 12 m/s normal speed count, inside the 150 mm
-  effective disk (Table 5-1, Figure 5-18).
+- Only 17 mm projectiles above 12 m/s normal speed count, inside the 300 mm
+  effective disk (150 mm radius, Table 5-1, Figure 5-18).
 - Rings: ten rings 15 mm wide across the 150 mm radius, ring 10 at the
   centre (width read off Figure 5-18; the text only gives 1 mm radial
   accuracy). After one Big Rune activation the rune detects only rings 4 to
@@ -138,29 +166,6 @@ further damage. `DamageRobot` applies the same path without a shooter.
 The sentry and full competition progression remain outside this live referee.
 Live base scoring is described below.
 
-## Team assignment (section 4.3.2.2, section 5.5.1)
-
-The rune has a red side and a blue side; each team activates its own face
-and each outpost stands on its team's half. The manual's field figures
-place one team per end but name no axis; the V1.2.0 CAD paints its red
-markings on the +x half and its blue markings on the −x half, so the
-layout (`layout::side_team`) takes +x as red. A rune face belongs to the
-team whose half its front normal faces; an outpost to the team whose half
-it stands on. With the shipped package that is one face and one outpost
-each. Any other ownership goes in `FieldConfig.referee` (rune and outpost
-teams by index; `RefereeConfig::alternating` is the index-based fallback
-used by tests). Rune targets and outpost light bars render in the owner's
-colour.
-
-## Assumptions, not rules
-
-- Activated rune arms blink three times at 2 Hz, then stay lit.
-- A struck armor module shows grey for 50 ms (`--hit-flash-ms`).
-- Ring width 15 mm (figure reading).
-- Robot damage rounding to the nearest HP follows the manual's rounding
-  note in its terms section; the exact rounding rule for buffs is not
-  spelled out for every case.
-
 ## Live resources and operator overrides
 
 The referee drives `rm-simulator-gameplay::live::Resources` on its round clock.
@@ -188,7 +193,6 @@ Pilots can use O/I to buy one 17 mm/42 mm round during Running. Purchases use
 team gold and the configured prices, defaulting to 1/10, and fail atomically
 when funds are insufficient. The host restricts purchases to the sender's chassis.
 
-
 ## Live base scoring and training bots
 
 Section 5.5.1 supplies 5,000 base HP, a separate initial 150-point shield, and
@@ -213,3 +217,34 @@ and scoring. Lower placements inherit the exporter's approximate reconstruction.
 Bots are privileged training chassis, capped at 32. Constant spin commands use the
 ordinary motors and suspension on world ticks. They have normal HP, stop on defeat,
 resume after revival, never shoot, and are removed independently of connected pilots.
+
+## Assumptions, not rules
+
+- Activated rune arms blink three times at 2 Hz, then stay lit.
+- A struck armor module shows grey for 50 ms (`--hit-flash-ms`).
+- Ring width 15 mm (figure reading).
+- Robot damage rounding to the nearest HP follows the manual's rounding
+  note in its terms section; the exact rounding rule for buffs is not
+  spelled out for every case.
+
+## Citation index
+
+| Citation | Clause it maps to |
+|---|---|
+| Section 4.3.2.2 | Team assignment: one team per end, rune face and outpost ownership |
+| Section 5.5.1 | Outpost HP and behaviour; base HP, shield and outpost protection; rebuild scans; base damage centre square |
+| Section 5.5.2 | Rune stages, opportunities and buff sources |
+| Section 5.5.2.1 | Rune activation mechanics and ring restrictions |
+| Section 6.5 | Countdown before the round, 5 s |
+| Section 6.6 | Round length, 7 min |
+| Table 5-1 | Detection speeds and the rune's 17 mm > 12 m/s criterion |
+| Table 5-2 | Damage values for the outpost, robots and (in V2.2.0) bases |
+| Table 5-5 | Income schedule |
+| Table 5-6 | Resupply exchange |
+| Table 5-7 | Initial allowances |
+| Table 5-13 | Robot max HP, 200 HP infantry |
+| Table 5-16 | Big Rune buff from the number of lit arms |
+| Table 5-17 | Big Rune buff from the average hit ring |
+| Figure 5-16 | Armor detection area, 101 × 94 mm |
+| Figure 5-18 | Rune effective disk and ring widths |
+| Figure 5-23 | Activated rune arms are lit |

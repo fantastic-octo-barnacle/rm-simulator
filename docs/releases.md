@@ -7,6 +7,8 @@ repository hooks, workflow lint, dependency boundaries and licensing/advisory
 checks, plus Python regression tests. It does not compile Bevy or build release
 packages. The stable **CI required** job fails if any preceding check fails.
 The workflow also handles `merge_group` events for a future merge queue.
+Local `just` targets and commit conventions are in [development](development.md);
+the [documentation index](README.md) lists every guide.
 
 ## Full validation and commit reuse
 
@@ -79,6 +81,16 @@ personal token or signing secrets. If upload fails after draft creation, remove
 the incomplete draft and tag before retrying. Existing releases are never
 overwritten.
 
+### Release packages
+
+Each ZIP contains `bin/`, `field/`, notices, license texts, dependency lockfile,
+and a file checksum manifest. Windows also includes the existing launchers and
+MSVC runtime DLLs. macOS includes relocated Homebrew dylibs and ad-hoc signatures.
+Linux includes linked non-glibc libraries and relative loader paths, and requires
+glibc 2.39 or newer plus graphics/display drivers. `--help` checks catch loader
+failures but do not replace gameplay tests on clean machines. There is no code
+signing identity, notarization, installer, `.deb`, or `.app` packaging yet.
+
 ## Build caches and debug information
 
 Full validation and packaging share per-platform **release-profile** caches.
@@ -142,13 +154,9 @@ not enable a merge queue or auto-merge. Protection is not enabled merely by
 checking these files into Git. Apply it after the new check exists, so the
 bootstrap change is not blocked by a check that has never run.
 
-Each ZIP contains `bin/`, `field/`, notices, license texts, dependency lockfile,
-and a file checksum manifest. Windows also includes the existing launchers and
-MSVC runtime DLLs. macOS includes relocated Homebrew dylibs and ad-hoc signatures.
-Linux includes linked non-glibc libraries and relative loader paths, and requires
-glibc 2.39 or newer plus graphics/display drivers. `--help` checks catch loader
-failures but do not replace gameplay tests on clean machines. There is no code
-signing identity, notarization, installer, `.deb`, or `.app` packaging yet.
+The setup script also enables squash and rebase merges, disables merge commits,
+and uses the PR title and body for squash commit messages. CI checks PR titles
+and all proposed commit messages before either merge method.
 
 ## Field assets in Git LFS
 
@@ -191,7 +199,3 @@ as a local override before the versioned `field/` package.
 Git LFS storage and downloads have their own allowance and billing, separate
 from Actions caches. Lightweight CI skips downloads; native test/package jobs
 fetch the approximately 52 MiB field. See [GitHub's LFS billing documentation](https://docs.github.com/en/billing/concepts/product-billing/git-lfs).
-
-The setup script also enables squash and rebase merges, disables merge commits,
-and uses the PR title and body for squash commit messages. CI checks PR titles
-and all proposed commit messages before either merge method.

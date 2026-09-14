@@ -2,12 +2,25 @@
 <!-- Copyright (c) 2026 hxyulin <hxyulin@proton.me> -->
 # Semantic assets
 
+The asset-contract guide: rm-map-tools' semantic sidecar, the collision and
+simplification contracts, the recorded geometry counts, and each build's
+provenance and checksums. [Field package](field-package.md) owns package
+composition, discovery, deployment and terrain; [field detail](field-detail.md)
+records reproducible simplification and installation. The
+[documentation index](README.md) lists every guide.
+
 The simulator loads rm-map-tools' `articulation.json` alongside the checksummed
-visual and collision GLBs.
-The local package lives in `local-assets/field` and is ignored by Git.
-Both binaries first look for `field/` beside an installed `bin/` directory,
-then the build checkout's `local-assets/field`, then the home-directory fallback.
-`--cad-assets` overrides discovery.
+visual and collision GLBs. A declared but invalid sidecar stops loading: the
+loader checks hashes, schema, units, coordinate conventions, unique IDs,
+hierarchy, joint frames and zero rest transforms, and it rejects unsupported
+gameplay joint axes/frames rather than silently placing scoring targets
+incorrectly. Packages without semantic data retain the legacy loader. The local
+package lives in `local-assets/field` and is ignored by Git; `--cad-assets`
+overrides discovery, whose full order (`field/` beside an installed `bin/`
+directory, the build checkout's `local-assets/field`, the checkout's LFS
+`field/`, then `~/dev/RM/assets/rm2026-field`) is in
+[field package](field-package.md). New exports may declare the
+`source-tessellation-v1` collision contract, also described there.
 
 A development installation can place built executables at `local-assets/bin/rm-simulator` and
 `local-assets/bin/rm-simulator-server`. They find the package at `../field` relative to their `bin` directory, so a
@@ -34,12 +47,15 @@ python3 scripts/build-semantic-assets.py \
 ```
 
 The compositor verifies input hashes and records them in `build-provenance.json`.
-It uses optimized scenery and the reference's semantic rune, outpost, base and
+It uses optimized scenery and the reference's semantic rune, outpost, base,
+tech-core and
 dart station. The gate selection uses exact triangle ranges, so the compositor
 keeps its pinned source geometry during composition. It does not transplant ranges
 onto a different tessellation. The subsequent mesh simplifier operates within
 already bound primitives, so it can reduce those meshes without reapplying the
 original triangle selectors.
+
+## Geometry counts and contracts
 
 The earlier native-texture build contained 878,139 placed visual triangles,
 including artwork quads, compared with 1,172,056 in the preceding package.
@@ -78,12 +94,6 @@ this package.
 - Explicit collision exclusions read from live node/primitive metadata. The
   sidecar's historical exclusion indices refer to geometry before filtering;
   they are never applied again to the compacted collision mesh.
-
-A declared but invalid sidecar stops loading. The loader checks hashes, schema,
-units, coordinate conventions, unique IDs, hierarchy, joint frames and zero rest
-transforms. Unsupported gameplay joint axes/frames are rejected rather than
-silently placing scoring targets incorrectly. Packages without semantic data
-retain the legacy loader.
 
 ## Remaining fitted data
 
@@ -143,9 +153,11 @@ Changing either creates a new asset build, even with identical settings.
 `mesh-simplification.json` in the output records per-primitive results and sampled
 source deviations; those samples are not certified geometric error bounds.
 
-The installed package has 1,192,800 placed visual triangles versus 6,486,053
-before simplification, an 81.6% reduction. The preceding installed package had
-781,913, so this richer semantic reference is still heavier overall. Manifest
+The semantic reference build has 1,192,800 placed visual triangles versus
+6,486,053 before simplification, an 81.6% reduction. The installed
+standard-detail package carries 497,886. The preceding installed package had
+781,913, so this richer semantic reference is still heavier overall than either
+installed package. Manifest
 counts include all declared instances; the inspector separately reports static
 physics triangles, excluding mechanism subtrees managed as moving colliders.
 All 14 visual and collision joint records are identical before and after the
@@ -179,6 +191,8 @@ Run after simplification so face fits refer to the checked geometry:
 cargo run -p rm-simulator-server --example inspect_assets -- local-assets/field-base-artwork-rebuild
 ```
 
-The installed package's `base-armor-artwork.json` records the exact invocation,
-script and helper hashes, atlas hash, placement recipe and output hash. The
+The artwork-rebuild candidate package's `base-armor-artwork.json` records the
+exact invocation, script and helper hashes, atlas hash, placement recipe and
+output hash. It lives in the candidate at `local-assets/field-base-artwork`, not
+in the installed runtime package, whose base entry carries no artwork record. The
 pre-artwork package is retained at `local-assets/field.before-base-artwork`.

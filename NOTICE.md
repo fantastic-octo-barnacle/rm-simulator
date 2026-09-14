@@ -40,8 +40,8 @@ The RMUC 2026 field geometry is loaded at run time from exported glTF files.
 The approved runtime package is stored in `field/` through Git LFS. Its geometry,
 textures and source data remain the property of DJI / RoboMaster under their
 original terms, not this workspace's software license. `field/CAD-NOTICE.md`
-retains the rm-map-tools upstream notice verbatim; references there to a
-tooling-only repository describe rm-map-tools, not this simulator's LFS package.
+retains the rm-map-tools upstream notice verbatim; the repository it names there
+is the exporter that produced this package, not this simulator.
 The original archive URL and checksum are retained as import provenance in
 `scripts/release-field.json`. The CAD scene plugin follows the `cad_scene`
 module of `rm-vision-sim`.

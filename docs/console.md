@@ -2,11 +2,21 @@
 <!-- Copyright (c) 2026 hxyulin <hxyulin@proton.me> -->
 # App automation console
 
+The app automation console drives one local `rm-simulator` process over a
+loopback TCP endpoint: controls, clock, camera, inspection options and
+screenshot paths. It is separate from the multiplayer TCP server. The typed
+`ConsoleCommand` handler runs on the app thread independently of socket
+parsing, so a future in-game console can translate text into these commands and
+use the same completion handling. For the interactive flags and bindings the
+console stands in for, see [app options](app-options.md).
+
 Start the app with a local console. Window mode is chosen at launch.
 
 ~~~sh
 just run --console --window-mode headless
 ~~~
+
+## Window modes
 
 | Mode | Behavior |
 |---|---|
@@ -20,11 +30,23 @@ Whether a visible window can start unfocused depends on the operating system and
 window manager. `--window-mode unfocused` sets the native window's initial focus
 request; it does not keep forcing focus away later.
 
+## Endpoint
+
 `--console` defaults to `127.0.0.1:7790`. Use `--console 127.0.0.1:0` for an
 allocated port; the app prints the actual address. Only loopback addresses are
 accepted. This is an app automation endpoint, separate from the multiplayer TCP
 server. It has access to the local app's controls and screenshot filesystem paths.
 One controller connects at a time; additional connections are closed.
+
+Hold a single connection open for multi-command input sequences. Disconnecting
+releases console-held keys and mouse buttons and releases mouse capture.
+Discrete commands already sent to the simulation are not rolled back.
+
+Existing launch flags such as `--spawn`, `--third-person`, `--start-paused`,
+`--collision-view`, and `--screenshot` remain available as shortcuts. The
+screenshot flag still captures once and exits; the console command supports
+repeated captures without exiting. Both use the window in visible modes and
+the camera image in headless mode.
 
 ## Send commands
 
@@ -46,16 +68,6 @@ The app stays open. Send `{"type":"quit"}` to close it. The client also reads
 command objects, one per line, from stdin. Use `--host` and `--port` to select
 another local endpoint and `--no-wait` for queries or shutdown during loading.
 
-Hold a single connection open for multi-command input sequences. Disconnecting
-releases console-held keys and mouse buttons and releases mouse capture.
-Discrete commands already sent to the simulation are not rolled back.
-
-Existing launch flags such as `--spawn`, `--third-person`, `--start-paused`,
-`--collision-view`, and `--screenshot` remain available as shortcuts. The
-screenshot flag still captures once and exits; the console command supports
-repeated captures without exiting. Both use the window in visible modes and
-the camera image in headless mode.
-
 ## Wire format and completion
 
 Send one JSON request per line:
@@ -71,22 +83,14 @@ Replies echo the unsigned integer ID:
 {"id":2,"ok":false,"error":"pause the simulation before stepping"}
 ~~~
 
-State replies include camera, chassis, role and UI fields. `ui.unfocused` and
-`ui.consumed` identify focus and one-frame input blocking. `auto_aim` reports the
-selected target/status, execution time, observation age and fire permission.
-`network.confirmed_launches` counts this client's accepted launches once, unlike
-the global `shots_fired` counter. `network.downstream_queues` reports control,
-owner and world queue bytes, oldest age in ms and cumulative bytes sent.
-`network.hit_feedback` reports event count, impact tick, receipt age and the last
-receipt-to-scene interval in ms. Scene submission does not measure GPU scanout.
-Requests are executed sequentially, including pipelined requests. There is at
-most one command in progress. Malformed requests get an error; unparsable IDs
-are returned as `null`. Unknown fields and commands are errors.
+Malformed requests get an error; unparsable IDs are returned as `null`. Unknown
+fields and commands are errors.
 
-The input buffer is limited to 64 KiB, including pipelined requests. Exceeding
-that limit closes the connection and releases held inputs. A command waiting on
-readiness, a snapshot or a screenshot times out after 120 seconds. Socket reads
-and writes are nonblocking and bounded per frame.
+Requests are executed sequentially, including pipelined requests. There is at
+most one command in progress. The input buffer is limited to 64 KiB, including
+pipelined requests. Exceeding that limit closes the connection and releases held
+inputs. A command waiting on readiness, a snapshot or a screenshot times out
+after 120 seconds. Socket reads and writes are nonblocking and bounded per frame.
 
 Successful input and world-command replies wait for the app to process the
 input and receive the server's resulting snapshot. Host rejections are errors,
@@ -95,11 +99,6 @@ permissions. A screenshot succeeds only after the scene, pipelines, requested
 collision geometry and command snapshots are ready, and the PNG has been saved.
 Blank frames are retried. Save errors are returned without closing the app.
 A timeout does not cancel a simulation command already submitted.
-
-For repeatable world motion, pause, press the controls, step an exact number of
-ticks, release the controls, then capture. Each tick is 1 ms. Free-camera keyboard
-movement and held firing use app frames and are not deterministic tick scripts;
-use explicit camera poses or the `world` command for those cases.
 
 ## Commands
 
@@ -114,7 +113,7 @@ positive pitch looks up. Camera pitch follows the existing gameplay limits.
 | `camera` | Optional `position_m: [x,y,z]`, `yaw_deg`, `pitch_deg`, `third_person` | Set free-camera position or pilot aim; third person requires a pilot |
 | `spawn` | `position_m: [x,y,z]`, optional `yaw_deg` default 0 | Place the existing local pilot using the ground below z, or move a free camera. Resets pitch, body velocity and wheel contacts; preserves ID, HP and defeat state. Remote pilot placement is rejected |
 | `pause` | `paused: bool` | Set the clock's paused state |
-| `step` | `ticks: 1..60000` | Advance a paused world by this many milliseconds |
+| `step` | `ticks: 1..60000` | Advance a paused world by this many physics ticks (1 ms per tick at the default 1000 Hz rate) |
 | `screenshot` | `path: "file.png"` | Save the current rendered view and HUD; relative paths use the app's working directory; parent directory must exist |
 | `key` | `key: string`, `pressed: bool` | Hold or release a game key |
 | `mouse_button` | `button: "left"`, `"right"` or `"middle"`, `pressed: bool` | Press or release a button in gameplay and UI picking |
@@ -126,6 +125,8 @@ positive pitch looks up. Camera pitch follows the existing gameplay limits.
 | `world` | `command`: multiplayer protocol `Command` object | Submit a world command through the existing session, with its normal host permissions |
 | `quit` | None | Reply, then exit |
 
+## Keys
+
 Keys include case-insensitive letters `a`–`z`, digits `0`–`9`, `f1`–`f12`,
 `space`, `escape`, `enter`, `tab`, `backspace`, `arrow_up`, `arrow_down`,
 `arrow_left`, `arrow_right`, `shift`, `control`, `alt`, `shift_left`,
@@ -133,6 +134,8 @@ Keys include case-insensitive letters `a`–`z`, digits `0`–`9`, `f1`–`f12`,
 These are physical game controls, not text entry. Panels block automation input
 the same way they block physical input. For example, press and release `f3` to
 open the debug panel.
+
+## World commands
 
 The `world` command uses the existing externally tagged protocol shape:
 
@@ -145,11 +148,49 @@ The `world` command uses the existing externally tagged protocol shape:
 console does not grant remote referee privileges and never creates a robot for
 a spectator or referee.
 
-The typed `ConsoleCommand` handler runs on the app thread independently of
-socket parsing. A future in-game console can translate text into these commands
-and use the same completion handling.
+## Reply fields
+
+A reply is `{"id":<id>,"ok":true,"result":{...}}` or
+`{"id":<id>,"ok":false,"error":"..."}`. The `state` result carries these
+top-level fields:
+
+| Field | Meaning |
+|---|---|
+| `ready` | Whether loading has completed. A `state` call with no session returns only `{"ready":false}` |
+| `tick` | Current world tick |
+| `paused` | Clock paused state |
+| `presentation_time_ns` | Estimated presentation time |
+| `role` | Client role |
+| `chassis_id` | Own chassis id |
+| `chassis` | Own confirmed chassis state |
+| `presented_chassis` | Presentation-only chassis state |
+| `pending_shots` | Pending launch count |
+| `auto_aim` | Selected target/status, execution time, observation age and fire permission |
+| `connection_toast` | Connection notice |
+| `network` | Network diagnostics, below |
+| `shots_fired` | Global accepted launch counter |
+| `hits_detected` | Global detected-hit counter |
+| `notices` | Pending notices |
+| `camera` | `position_m`, `yaw_deg`, `pitch_deg`, `captured` and `third_person` |
+| `ui` | `debug_panel`, `settings`, `blocks_input`, `unfocused` and `consumed` |
+| `commands` | Supported command names |
+
+`ui.unfocused` and `ui.consumed` identify focus and one-frame input blocking.
+`network.confirmed_launches` counts this client's accepted launches once, unlike
+the global `shots_fired` counter. `network.downstream_queues` reports control,
+owner and world queue bytes, oldest age in ms and cumulative bytes sent.
+`network.hit_feedback` reports event count, impact tick, receipt age and the last
+receipt-to-scene interval in ms. Scene submission does not measure GPU scanout.
 
 The `state` reply includes `network.trace`: cumulative stage/class counters,
 trace path, dropped observations, contention and writer errors. Host-produced
 snapshot/owner byte counters are under `network.downstream_queues.encoding`.
 See [network tracing](network-tracing.md) for recording and accounting details.
+
+## Deterministic tick scripts
+
+For repeatable world motion, pause, press the controls, step an exact number of
+ticks, release the controls, then capture. Each tick is 1 ms at the default
+1000 Hz rate, and longer at the reduced `--physics-rate-hz` rates. Free-camera keyboard
+movement and held firing use app frames and are not deterministic tick scripts;
+use explicit camera poses or the `world` command for those cases.

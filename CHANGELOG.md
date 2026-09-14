@@ -44,6 +44,24 @@
   roles of `assets/`, `crates/rm-simulator-server/assets/`, `local-assets/` and
   `~/dev/RM/assets/` in `AGENTS.md`.
 
+- Rewrite the documentation. `README.md` is now a structured front door with a
+  table of contents: the command-line reference, weapon settings, HUD and
+  controls move to the new `docs/app-options.md`, the field package material to
+  the new `docs/field-package.md`, and the developer workflow to the new
+  `docs/development.md`. `AGENTS.md` gains a documentation map and separates
+  architecture, simulation, and code rules. Every crate gains a `README.md`
+  describing what it owns, its module layout, its permitted dependencies and how
+  to test it. No command, option, default, citation or measurement was dropped;
+  the README's stale claim that protocol 29 is current is corrected to 32, which
+  is what `protocol.rs` defines.
+
+- Drop the two dangling `benchmarks/` references from `field/CAD-NOTICE.md`,
+  which described audit images and a whole-file conversion report that are not in
+  this repository. The notice is checksum-pinned in `scripts/release-field.json`,
+  so its recorded SHA-256 is updated with it; `stage-release-field.py
+  --verify-only` passes, and the upstream import URL and archive hash are
+  unchanged.
+
 - Add `--physics-rate-hz` to the app and the headless server, offering the
   measured 1000, 500, 250 and 128 Hz rates (128 Hz is exactly 7,812,500 ns per
   tick) and refusing any other value. The title screen remembers it, the HUD

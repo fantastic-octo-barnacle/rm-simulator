@@ -60,12 +60,19 @@ python3 scripts/check-commit-message.py --range origin/main..HEAD
 
 ## Verify a change
 
+Run the full gate before opening a pull request:
+
 ```sh
 just verify
 ```
 
-The individual commands are available as `just fmt`, `just check`, `just lint`,
-`just test`, `just deny`, `just module-deps`, `just mpl`, and `just hooks`.
+It runs the repository hooks, `cargo fmt --all -- --check`, `cargo check`,
+Clippy with denied warnings, the workspace tests, the crate-boundary and MPL
+notice scripts, the Python regression tests and `cargo deny`. The individual
+steps are also available as `just fmt`, `just check`, `just lint`, `just test`,
+`just deny`, `just module-deps`, `just mpl`, and `just hooks`. See the
+[development reference](docs/development.md) for the full target list and the
+order `just verify` uses.
 
 ## License of contributions
 

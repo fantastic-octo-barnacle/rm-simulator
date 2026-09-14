@@ -2,6 +2,15 @@
 <!-- Copyright (c) 2026 hxyulin <hxyulin@proton.me> -->
 # Reproducible field detail
 
+Reproducible simplification and installation of the field package: the recorded
+standard-detail and coarse builds, their settings, checks and commands, and the
+installer. [Field package](field-package.md) owns composition, discovery,
+collision contracts and terrain; [semantic assets](semantic-assets.md) owns the
+asset contracts, geometry counts and build provenance. The
+[documentation index](README.md) lists every guide.
+
+## Standard-detail build
+
 `scripts/optimize-field.py` builds a new package from an immutable, checksummed
 checkpoint through `rm-map-tools/python/simplify_package.py`. The producer's
 protection-policy support was added in commit `f16ee8f`. It is also integrated

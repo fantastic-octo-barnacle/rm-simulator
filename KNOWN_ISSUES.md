@@ -8,14 +8,22 @@ This list covers the current networking investigation, not every limitation of
 competition-rule enforcement. Fixed hit delivery, auto-aim sampling, lobby
 compatibility and local TCP overhead are recorded in [CHANGELOG.md](CHANGELOG.md).
 
+| Id | Issue | Status |
+|---|---|---|
+| NET-001 | Downstream traffic exceeds the bandwidth target | Open |
+| NET-002 | Shot outcomes remain delayed on a fast local connection | Open; attribution incomplete |
+| NET-003 | Constrained links develop severe latency and incomplete outcomes | Open |
+
 ## NET-001: Downstream traffic exceeds the bandwidth target
 
-**Status: open.** A listen host with one remote client on the same machine
-averaged approximately 103 kbps upstream and 855 kbps downstream during the
-12-second movement/firing trial. These are UDP proxy payload rates, excluding
-IP/UDP headers. Including the proxy's header allowance gives approximately
-115 kbps upstream and 882 kbps downstream. Rates are decimal kilobits per second,
-not kilobytes per second.
+**Status: open.**
+
+A listen host with one remote client on the same machine averaged approximately
+103 kbps upstream and 855 kbps downstream during the 12-second movement/firing
+trial. These are UDP proxy payload rates, excluding IP/UDP headers. Including
+the proxy's header allowance gives approximately 115 kbps upstream and
+882 kbps downstream. Rates are decimal kilobits per second, not kilobytes per
+second.
 
 The desired budget is 100–200 kbps per player. Downstream traffic needs roughly
 a 4–9× reduction to meet that budget in this workload. Earlier PR #2 trials
@@ -52,16 +60,18 @@ loss, reconnect, releases and broader client/platform loads before acceptance.
 
 ## NET-002: Shot outcomes remain delayed on a fast local connection
 
-**Status: open; attribution incomplete.** The single-player channel smoke test
-measured a 0.017 ms p95 command queue wait but approximately 51 ms p95 from client
-submission to the first shot outcome published into its inbox. Removing TCP
-therefore did not remove the remaining delay.
+**Status: open; attribution incomplete.**
 
-In the pre-integration listen-host trial, application RTT was 5.95 ms median and 9.78 ms
-p95, while session-reported shot confirmation was 56.1 ms median and 57.8 ms p95.
-The local inbox trace and session confirmation have different endpoints and must
-not be treated as interchangeable measurements. Neither measures click-to-visible
-hit latency or projectile flight time.
+The single-player channel smoke test measured a 0.017 ms p95 command queue wait
+but approximately 51 ms p95 from client submission to the first shot outcome
+published into its inbox. Removing TCP therefore did not remove the remaining
+delay.
+
+In the pre-integration listen-host trial, application RTT was 5.95 ms median and
+9.78 ms p95, while session-reported shot confirmation was 56.1 ms median and
+57.8 ms p95. The local inbox trace and session confirmation have different
+endpoints and must not be treated as interchangeable measurements. Neither
+measures click-to-visible hit latency or projectile flight time.
 
 Investigate the input lead, intended shot execution time, host application and
 client consumption stages before changing scheduling. Preserve movement/fire
@@ -70,7 +80,9 @@ completed attribution of the full delay.
 
 ## NET-003: Constrained links develop severe latency and incomplete outcomes
 
-**Status: open.** Earlier protocol 27 UDP proxy trials showed:
+**Status: open.**
+
+Earlier protocol 27 UDP proxy trials showed:
 
 | Trial | Application RTT, median / p95 | Shot confirmation, median / p95 | Unresolved shot outcomes |
 |---|---:|---:|---:|
@@ -80,10 +92,10 @@ completed attribution of the full delay.
 
 These are historical impaired-client results, not reruns of `7d07f1c`.
 The impairment profiles live in `scripts/network-scenarios/`; their trial logs
-are retained in Git history. Zero unresolved
-outcomes does not make a one-second confirmation delay playable. Queue-wait drops
-were observed in the constrained trials, but the contribution of each application
-and native transport queue still needs measurement.
+are retained in Git history. Zero unresolved outcomes does not make a
+one-second confirmation delay playable. Queue-wait drops were observed in the
+constrained trials, but the contribution of each application and native
+transport queue still needs measurement.
 
 ### Matched short blackout trial after bandwidth integration
 
