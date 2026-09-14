@@ -317,8 +317,9 @@ def event_distribution(rows, metric):
     The first available history establishes a cursor, excluding setup/warmup.
     Missing histories do not reset it. Gaps report overwritten events rather
     than silently claiming complete coverage; equal-valued events remain distinct.
+    Counter resets establish a new cursor and are returned as failure metadata.
     """
-    cursor, values, missed = None, [], 0
+    cursor, values, missed, resets = None, [], 0, 0
     for row in rows:
         series = ((row['state'].get('network') or {}).get('event_samples') or {}).get(metric)
         if series is None:
@@ -328,7 +329,9 @@ def event_distribution(rows, metric):
             cursor = total
             continue
         if total < cursor:
-            raise ValueError('event sample counter reset during a client session')
+            resets += 1
+            cursor = total
+            continue
         fresh = [(identity, value) for identity, value in series['values'] if identity > cursor]
         for identity, value in fresh:
             missed += max(0, identity - cursor - 1)
@@ -336,7 +339,7 @@ def event_distribution(rows, metric):
             cursor = identity
         missed += max(0, total - cursor)
         cursor = total
-    return distribution(values), missed
+    return distribution(values), missed, resets
 
 
 # `state.network.stats.native`, absent unless the native transport reports.
@@ -379,9 +382,9 @@ def summarize(samples, proxies, duration, gaps=(), schedule_skips=0):
         def network(row):
             return row['state'].get('network') or {}
         metrics = {key: distribution([network(row).get(key) for row in rows]) for key in NETWORK_METRICS}
-        event_losses = {}
+        event_losses, event_resets = {}, {}
         for key in EVENT_METRICS:
-            metrics[key], event_losses[key] = event_distribution(rows, key)
+            metrics[key], event_losses[key], event_resets[key] = event_distribution(rows, key)
         for key in NATIVE_METRICS:
             metrics[key] = distribution([((network(row).get('stats') or {}).get('native') or {}).get(key)
                                          for row in rows])
@@ -398,6 +401,7 @@ def summarize(samples, proxies, duration, gaps=(), schedule_skips=0):
         movement = max((sum((a-b)**2 for a, b in zip(p, positions[0]))**0.5 for p in positions), default=None)
         clients[name] = {'active_samples': len(rows), 'metrics': metrics,
                          'event_samples_missed': event_losses,
+                         'event_history_resets': event_resets,
                          'max_displacement_m': movement,
                          'console_query_ms': distribution([(row['received_s'] - row['elapsed_s']) * 1000
                                                             for row in rows]),
@@ -797,9 +801,11 @@ def run(args, scenario):
                 status = report['status'] = 'failed'
         for name, client in report['clients'].items():
             missed = sum(client['event_samples_missed'].values())
+            resets = sum(client['event_history_resets'].values())
             report['checks'].append({'name': 'event_history_complete', 'client': name,
-                                     'metric': 'event_samples_missed', 'operator': '==', 'threshold': 0,
-                                     'observed': missed, 'status': 'failed' if missed else 'passed',
+                                     'metric': 'event_history_errors', 'operator': '==', 'threshold': 0,
+                                     'observed': missed + resets, 'missed': missed, 'resets': resets,
+                                     'status': 'failed' if missed or resets else 'passed',
                                      'detail': 'event histories must cover the observation window'})
         failures = [row for row in report['checks'] if row['status'] == 'failed']
         regressions = (report['baseline'] or {}).get('regressions', 0)

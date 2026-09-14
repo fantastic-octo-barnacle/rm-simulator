@@ -2,7 +2,7 @@
 <!-- Copyright (c) 2026 hxyulin <hxyulin@proton.me> -->
 # Experiment 0: attribute the bytes before implementing reductions
 
-Baseline attribution for [NET-001](../KNOWN_ISSUES.md) and step 0 of
+Baseline attribution for [NET-001](../../KNOWN_ISSUES.md) and step 0 of
 [bandwidth-experiments.md](../bandwidth-experiments.md). All numbers below come
 from the in-process attribution probe
 `crates/rm-simulator-server/src/bandwidth_probe.rs`, measured on a

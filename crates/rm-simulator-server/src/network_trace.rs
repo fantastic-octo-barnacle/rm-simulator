@@ -143,6 +143,7 @@ pub(crate) struct Observer {
     report: Mutex<Report>,
     sender: Option<mpsc::SyncSender<Row>>,
     health: Arc<Health>,
+    writer: Option<std::thread::JoinHandle<()>>,
 }
 impl Observer {
     pub(crate) fn new(label: &'static str, time: TimeSource) -> Self {
@@ -158,6 +159,7 @@ impl Observer {
                 ..Default::default()
             }),
             sender: None,
+            writer: None,
             health: Arc::default(),
         };
         if let Some(directory) = directory {
@@ -175,7 +177,7 @@ impl Observer {
                 };
                 let (sender, receiver) = mpsc::sync_channel(CAPACITY);
                 let health = observer.health.clone();
-                std::thread::Builder::new()
+                let writer = std::thread::Builder::new()
                     .name("rm-network-trace".into())
                     .spawn(move || {
                         if let Err(error) = write_trace(file, receiver, &health, label, limit) {
@@ -183,12 +185,13 @@ impl Observer {
                                 Some(error.to_string());
                         }
                     })?;
-                Ok((path, sender))
+                Ok((path, sender, writer))
             })();
             match result {
-                Ok((path, sender)) => {
+                Ok((path, sender, writer)) => {
                     observer.report.get_mut().unwrap().path = Some(path);
                     observer.sender = Some(sender);
+                    observer.writer = Some(writer);
                 }
                 Err(error) => {
                     eprintln!("network trace disabled: {error}");
@@ -393,6 +396,15 @@ impl Observer {
         self.record(event);
     }
 }
+impl Drop for Observer {
+    fn drop(&mut self) {
+        drop(self.sender.take());
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
+    }
+}
+
 fn write_trace(
     file: File,
     receiver: mpsc::Receiver<Row>,
@@ -506,6 +518,30 @@ mod tests {
         drop(lock);
         assert_eq!(observer.report().unwrap().contended, 1);
     }
+    #[test]
+    fn observer_shutdown_drains_writer_and_finishes_recording() {
+        let directory = std::env::temp_dir().join(format!(
+            "rm-trace-shutdown-{}-{}",
+            std::process::id(),
+            NEXT_FILE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let observer = Observer::open("test", TimeSource::system(), Some(&directory), FILE_LIMIT);
+        let path = observer.report().unwrap().path.unwrap();
+        for _ in 0..100 {
+            observer.packet("receive", None, b"RMI3data");
+        }
+        drop(observer);
+        let contents = std::fs::read_to_string(path).unwrap();
+        let rows: Vec<serde_json::Value> = contents
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 102);
+        assert_eq!(rows.last().unwrap()["type"], "end");
+        assert_eq!(rows.last().unwrap()["dropped_at_close"], 0);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn writer_caps_file_and_records_truncation_without_backpressure() {
         let path = std::env::temp_dir().join(format!(

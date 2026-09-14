@@ -32,6 +32,22 @@ class TraceTests(unittest.TestCase):
         self.assertEqual(result['local_queue']['p95_ms'], 1)
         self.assertEqual(result['application_bytes'], {'receive.world_fragment': 1000, 'submit_native.inputs': 80})
 
+    def test_missing_required_fields_skip_rows_before_aggregation(self):
+        rows = [[], dict(stage='receive', kind='inputs', bytes=50),
+                dict(stage='enqueue_attempt', kind='shot', elapsed_ns=1),
+                dict(stage='publish', kind='shot_result', elapsed_ns=2),
+                dict(stage='publish', kind='shot_rejected', elapsed_ns=3),
+                dict(stage='receive', kind='inputs', elapsed_ns=4, bytes=10),
+                {'type':'end'}]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'trace.jsonl'
+            path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+            result = trace.summarize(path)
+        self.assertEqual(result['malformed_lines'], 5)
+        self.assertEqual(result['events'], {'receive.inputs':1})
+        self.assertEqual(result['application_bytes'], {'receive.inputs':10})
+        self.assertFalse(result['complete'])
+
     def test_partial_tail_is_reported_without_inventing_outcomes(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'partial.jsonl'

@@ -1229,7 +1229,7 @@ impl ClientLeg {
         let (sender, commands) = mpsc::sync_channel(CLIENT_COMMAND_CAPACITY);
         Ok(Self {
             codec: crate::udp_codec::ClientCodec::new(time.now(), rate_bytes_per_s, 12),
-            inbox: Arc::new(ClientInbox::with_time(time.clone())),
+            inbox: Arc::new(ClientInbox::for_transport("gns", time.clone())),
             sender: Some(sender),
             commands,
             welcome: None,
@@ -1396,6 +1396,13 @@ mod tests {
         ChassisCommand, ChassisConfig, Field, FieldConfig, MatchPhase, RefereeCommand,
         RefereeConfig,
     };
+
+    #[test]
+    fn link_client_reports_gns_transport() {
+        let time = crate::clock::ManualTime::new();
+        let leg = ClientLeg::new("pilot", None, Role::Spectator, time.source(), 65536).unwrap();
+        assert_eq!(leg.inbox.transport, "gns");
+    }
 
     #[test]
     fn checkpoint_arrival_samples_survive_inbox_coalescing() {

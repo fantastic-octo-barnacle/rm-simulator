@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- Fix automation capture after focus loss, GNS link transport labels and completed
+  world queue ages. Drain network trace writers on shutdown and preserve diagnostic
+  reports when event histories reset or trace rows omit required fields.
+
 - Add a reproducible selected-checkpoint deflate sweep and five-seed cadence/
   capacity trial scenarios, including a progressive manual networking profile.
 

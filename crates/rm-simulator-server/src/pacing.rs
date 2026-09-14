@@ -123,7 +123,12 @@ impl Pacer {
                 age(self
                     .world
                     .as_ref()
-                    .or(self.pending_world.as_ref())
+                    .filter(|t| !t.packets.is_empty())
+                    .or_else(|| {
+                        self.pending_world
+                            .as_ref()
+                            .filter(|t| !t.packets.is_empty())
+                    })
                     .map(|t| t.started)),
             ],
             sent_bytes: self.class_sent_bytes,
@@ -356,6 +361,19 @@ pub fn configured_rate(name: &str, default_kib_s: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn completed_world_does_not_mask_pending_queue_age() {
+        let mut p = Pacer::new(1024 * 1024);
+        p.world(Duration::ZERO, vec![vec![2; 10]]);
+        let now = Duration::from_millis(10);
+        assert!(p.next(now).unwrap().is_some());
+        assert_eq!(p.stats(now).queued_bytes[2], 0);
+        assert_eq!(p.stats(now).oldest_age_ms[2], 0.);
+        p.world(Duration::from_millis(5), vec![vec![3; 10]]);
+        assert_eq!(p.stats(now).queued_bytes[2], 10);
+        assert_eq!(p.stats(now).oldest_age_ms[2], 5.);
+    }
+
     #[test]
     fn smaller_owner_packet_can_pass_a_waiting_world_fragment() {
         let mut p = Pacer::new(40 * 1024);

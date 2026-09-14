@@ -77,8 +77,8 @@ Counter-lock contention skips an observation and increases `contended`; frame
 updates never wait for logging. File failures disable disk recording while
 counters continue. Record both loss counters when judging a trace.
 
-The writer flushes every 128 events or after 250 ms without an event. It drains
-asynchronously when the observer closes and writes a terminal status. Abrupt
+The writer flushes every 128 events or after 250 ms without an event. Observer shutdown
+closes the queue and joins the writer after it drains and writes a terminal status. Abrupt
 process termination can leave an incomplete final line or no terminal status.
 The summary tool reports this instead of treating the file as complete. At the
 size cap the writer stops recording new events; console counters still update.

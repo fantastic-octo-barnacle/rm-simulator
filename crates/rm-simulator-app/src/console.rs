@@ -791,6 +791,7 @@ fn parse_key(key: &str) -> Option<KeyCode> {
 fn set_capture(world: &mut World, captured: bool) {
     if captured && let Some(mut ui) = world.get_resource_mut::<crate::hud::HudState>() {
         ui.unfocused = false;
+        ui.consumed = false;
     }
     if let Some(mut inputs) = world.get_resource_mut::<ConsoleInputs>() {
         inputs.captured = captured;
@@ -967,6 +968,9 @@ mod tests {
         app.world_mut()
             .resource_mut::<crate::hud::HudState>()
             .unfocused = true;
+        app.world_mut()
+            .resource_mut::<crate::hud::HudState>()
+            .consumed = true;
         set_capture(app.world_mut(), true);
         assert!(app.world().resource::<Player>().captured);
         assert!(

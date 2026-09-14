@@ -2,7 +2,7 @@
 <!-- Copyright (c) 2026 hxyulin <hxyulin@proton.me> -->
 # Networking priorities and experiments
 
-Status checked 13 September 2026. Live protocol is 27; the runtime overview is
+Status checked 13 September 2026. Live protocol is 29; the runtime overview is
 in the [README](../README.md#server-and-clients). The baseline and experimental proposals
 below were written against `47f3a78`, protocol 17. They are historical where they
 conflict with the implementation status here or in the [implementation record](networking-implementation-plan.md).
