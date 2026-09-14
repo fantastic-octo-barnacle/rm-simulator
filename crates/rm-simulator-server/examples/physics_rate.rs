@@ -707,14 +707,23 @@ fn cpu(root: &PathBuf, args: &[String]) -> anyhow::Result<()> {
     let geometry = field.static_geometry_snapshot();
     let floor = field.floor_height_m();
 
+    let shots_before = field.snapshot().shots_fired;
     let mut batches = Vec::with_capacity(measure_batches as usize);
+    // The active projectile population is the workload a rate is compared on;
+    // without it a cheaper cell could just be one that had fewer balls in it.
+    let mut in_flight = Vec::new();
     let wall = Instant::now();
     for index in 0..measure_batches {
         fire(&mut field, index)?;
         let start = Instant::now();
         field.step(black_box(batch))?;
         batches.push(start.elapsed().as_secs_f64() * 1e3);
+        if index % 16 == 0 {
+            in_flight.push(field.projectile_snapshots().len() as f64);
+        }
     }
+    let shots = field.snapshot().shots_fired - shots_before;
+    let mean_in_flight = in_flight.iter().sum::<f64>() / in_flight.len().max(1) as f64;
     let wall_s = wall.elapsed().as_secs_f64();
     let simulated_s = measure_batches as f64 * batch_ns as f64 * 1e-9;
 
@@ -742,7 +751,8 @@ fn cpu(root: &PathBuf, args: &[String]) -> anyhow::Result<()> {
     let total_ms: f64 = batches.iter().sum();
     let cell = format!("{mode}_{robots}");
     println!(
-        "{},{cell},{rep},{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{}",
+        "{},{cell},{rep},{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
+         {},{shots},{mean_in_flight:.3}",
         tick_ns(),
         robots,
         mode,
@@ -764,20 +774,21 @@ fn cpu(root: &PathBuf, args: &[String]) -> anyhow::Result<()> {
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    anyhow::ensure!(!args.is_empty(), "usage: physics_rate MODE CAD_PATH [..]");
+    if args[0] == "header" {
+        println!(
+            "rate_ns,cell,rep,robots,mode,simulated_s,cpu_ms_per_sim_s,batch_p50_ms,\
+             batch_p95_ms,batch_p99_ms,batch_max_ms,restore_p50_ms,replay_p50_ms,\
+             replay_max_ms,replay_simulated_s,wall_s,batches_over_16ms,shots,mean_in_flight"
+        );
+        return Ok(());
+    }
     anyhow::ensure!(args.len() >= 2, "usage: physics_rate MODE CAD_PATH [..]");
     let root = PathBuf::from(&args[1]);
     match args[0].as_str() {
         "probe" => probe(&root),
         "fixtures" => fixtures(&root),
         "cpu" => cpu(&root, &args[2..]),
-        "header" => {
-            println!(
-                "rate_ns,cell,rep,robots,mode,simulated_s,cpu_ms_per_sim_s,batch_p50_ms,\
-                 batch_p95_ms,batch_p99_ms,batch_max_ms,restore_p50_ms,replay_p50_ms,\
-                 replay_max_ms,replay_simulated_s,wall_s,batches_over_16ms"
-            );
-            Ok(())
-        }
         other => anyhow::bail!("unknown mode `{other}`"),
     }
 }
