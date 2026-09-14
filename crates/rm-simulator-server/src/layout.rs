@@ -520,7 +520,7 @@ pub struct LayoutOptions {
 }
 impl Default for LayoutOptions {
     /// The shipped configuration: no rune, a still outpost, CAD terrain, a
-    /// referee, and the default 1 kHz physics rate.
+    /// referee, the default 1 kHz physics rate and spent-ball retirement.
     fn default() -> Self {
         Self {
             rune: None,
@@ -528,6 +528,7 @@ impl Default for LayoutOptions {
             terrain: true,
             referee: true,
             physics_rate_hz: DEFAULT_RATE_HZ,
+            projectile_policy: Default::default(),
         }
     }
 }

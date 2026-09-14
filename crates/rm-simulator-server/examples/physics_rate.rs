@@ -56,6 +56,7 @@ fn build(loaded: &Loaded, outpost_speed_rad_s: f64, referee: bool) -> anyhow::Re
             referee,
             physics_rate_hz: rm_simulator_world::hz_for_tick_ns(rm_simulator_world::tick_ns())
                 .unwrap_or(1000),
+            projectile_policy: Default::default(),
         },
     );
     let mut field = Field::new(&config)?;
