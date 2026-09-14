@@ -5,13 +5,21 @@
 `rm-simulator-physics` depends only on Rapier and serde. It contains chassis
 suspension and drive, gimbal dynamics, projectile flight, raw armor contacts,
 shared collision geometry and analytic armor motion. It does not depend on
-world, gameplay, server, rendering, a CAD loader or host time.
+world, gameplay, server, rendering, a CAD loader or host time. Its
+[crate README](../crates/rm-simulator-physics/README.md) lists its modules and
+permitted dependencies.
 
 The library retains RoboMaster-specific physical profiles and target labels.
 `Caliber` includes the existing nominal detection/damage lookup helpers for
 source compatibility, but the physical step does not apply HP, buffs, activation,
 detection intervals or match rules. The caller controls chassis disable state.
 This is a reusable RM physical library, not a general physics-engine abstraction.
+
+## Contents
+
+- [Headless use](#headless-use)
+- [Restore and prediction](#restore-and-prediction)
+- [Optional rendering](#optional-rendering)
 
 ## Headless use
 
@@ -102,3 +110,8 @@ CAD package parsing remains in the server crate. Consumers that need package
 loading can implement it outside physics or use that existing adapter. This
 refactor does not introduce another asset format, publish crates or add sibling
 repository dependencies.
+
+Run the crate's own tests with `cargo test -p rm-simulator-physics --locked`;
+[development](development.md) lists the workspace targets. The architecture
+boundaries that keep this crate reusable are stated in
+[simulation architecture](architecture-refactor.md).

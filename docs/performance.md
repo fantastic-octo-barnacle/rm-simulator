@@ -2,6 +2,15 @@
 <!-- Copyright (c) 2026 hxyulin <hxyulin@proton.me> -->
 # Engine performance checks
 
+The runnable CPU probes, their commands, and the environment they target. Each
+probe runs against the live codebase; the numbers it reports depend on compiler,
+hardware and workload. [Performance targets](#performance-targets) states what
+the measurements must establish. [Dated evidence](#dated-evidence) below holds
+measurements for named revisions and hardware; treat those numbers as evidence
+for that revision, not as properties of the current build.
+
+## Engine microbenchmarks
+
 Run the dependency-free examples in release mode:
 
 ```sh
@@ -23,20 +32,6 @@ models the previous transaction cost; it is not a second implementation of
 the rules. See [gameplay](gameplay.md) for the measurements and retained
 transaction boundaries. Results depend on compiler, hardware and workload.
 
-Periodic network snapshots coalesce in each peer's outbox before enqueueing.
-Tests keep the writer idle during 1,000 host publications and verify that only
-the newest periodic state remains. Separate tests retain ordered confirmation
-snapshots and Pongs. This bounds queued state on both transports, but it does
-not reduce latency for bytes already in flight.
-
-Since then the networking passes have measured high RTT, jitter and packet loss
-under controlled impairment and addressed presentation and input responsiveness:
-clients no longer render received snapshots directly. They interpolate remote
-poses through a delayed view buffer and predict their own chassis locally, and
-the gameplay transport is framed UDP. Each TCP snapshot is now an independent
-compact checkpoint; the ordered delta chain that once bound a peer's bytes to
-its previously transmitted frame has been removed.
-
 ## Loaded field and concurrent matches
 
 The server example loads the checksummed collision package and runs independent
@@ -57,12 +52,35 @@ an unpaced CPU probe, not a networking or renderer benchmark, nor a guarantee of
 production server capacity. Include host/transport overhead and operating-system
 headroom before selecting a matches-per-server limit.
 
+## Snapshot coalescing
+
+Periodic network snapshots coalesce in each peer's outbox before enqueueing.
+Tests keep the writer idle during 1,000 host publications and verify that only
+the newest periodic state remains. Separate tests retain ordered confirmation
+snapshots and Pongs. This bounds queued state on both transports, but it does
+not reduce latency for bytes already in flight.
+
+Since then the networking passes have measured high RTT, jitter and packet loss
+under controlled impairment and addressed presentation and input responsiveness:
+clients no longer render received snapshots directly. They interpolate remote
+poses through a delayed view buffer and predict their own chassis locally, and
+the gameplay transport is framed UDP. Each TCP snapshot is now an independent
+compact checkpoint; the ordered delta chain that once bound a peer's bytes to
+its previously transmitted frame has been removed.
+
+## Performance targets
+
 The initial targets are a 3070 Ti at 1080p/60 Hz, under 4 GB steady application
 RAM and under 8 GB loading peak, with VRAM measured separately. Geometry targets
 are under 100k placed collision triangles and under 500k placed visual triangles
 at standard detail. Triangle budgets do not replace frame-time or driving tests.
 Use the 5950X server and the 12900K laptop to establish their own CPU and frame-time
 baselines. The development Mac's results cannot establish those machines' capacity.
+
+## Dated evidence
+
+Measurements for a named revision and machine. They are regression references,
+not current guarantees; re-measure on the target hardware before relying on them.
 
 ### Controlled package comparison (2026-09-12)
 
@@ -92,7 +110,7 @@ Manifest SHA-256 identifiers for reproduction:
 - Previous: `c4faa6e59809169c4431f2ef5f1f05e296599bf7be8825122ca57e2047363be2`
 - Standard: `78860dc0bb74f671a827436751ca322ee22593902c7f0e1f34d34bf273e1425b`
 
-## Architecture refactor baseline (2026-09-12)
+### Architecture refactor baseline (2026-09-12)
 
 Captured before changing physics or renderer implementation, at revision
 `4d6214beab1fea1bc8c7c6948a4352c14d0c123f`. Apple M3 Pro, 18 GiB RAM,
@@ -101,8 +119,8 @@ Three sequential runs used the same checksummed `local-assets/field` package;
 compilation completed before measurements. These are local comparisons, not
 capacity figures for the target Windows/Linux machines.
 
-[Commands, binary/asset hashes and machine metadata](performance/architecture-2026-09-12/baseline.json)
-and the adjacent text files retain each CPU run. Percentiles are reported by
+Commands, binary/asset hashes and machine metadata for the refactor baseline were
+retained with the runs. Percentiles are reported by
 the existing probes; no independent samples were combined into a new percentile.
 
 | Loaded match measurement | Run 1 | Run 2 | Run 3 |
@@ -123,18 +141,18 @@ physics work. Replay medians in that run were 0.25, 0.54, 0.87 and 1.92 ms for
 The original CAD renderer was captured separately on Metal, CPU-only, offscreen,
 High at 1920×1080, with 10 seconds warmup and 20 seconds sampling. Its CPU frame
 interval median was 2.844 ms, p95 3.520 ms and p99 4.690 ms across 6,903 samples.
-[Renderer report](performance/architecture-2026-09-12/render-baseline.json)
-records the resolved settings and asset hashes. Raw frames and the inspected
-screenshot are retained locally at `/tmp/rm-architecture-baseline/render`.
+The renderer report recorded the resolved settings and asset hashes. Raw frames
+and the inspected screenshot are retained locally at
+`/tmp/rm-architecture-baseline/render`.
 This scene has no chassis or projectiles and cannot measure the ECS changes.
 GPU timings are unavailable in this Mac capture.
 
-### Refactor comparison
+#### Refactor comparison
 
 After the graphics build finished, the retained original binaries and the final
 candidate were run in alternating groups, three times each, with no concurrent
 builds or rendering. Each cell below is the range of the three reported values,
-not a pooled percentile. [Comparison metadata and commands](performance/architecture-2026-09-12/comparison.json)
+not a pooled percentile. The comparison metadata and commands
 record binary hashes, a Rust-source fingerprint and power state. The same asset
 package and release build settings were used.
 
@@ -158,8 +176,7 @@ check for this architectural change, not its claimed benefit.
 
 The first candidate unnecessarily resolved mechanism state in worlds without
 moving scenery. Making that conditional removed most of the extra referee-only
-work. [Initial comparison](performance/architecture-2026-09-12/initial-comparison.json)
-retains those measurements separately from the final candidate.
+work. The initial comparison was retained separately from the final candidate.
 
 The chassis ECS change was checked with headless component tests and inspected
 hit/defeated robot screenshots at `/tmp/rm-architecture-robots-hit.png` and

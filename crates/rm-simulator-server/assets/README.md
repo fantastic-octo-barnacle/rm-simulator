@@ -33,14 +33,14 @@ out of sample.
 byte. Retrain it whenever the checkpoint schema changes: a dictionary tuned to
 an older schema is at best dead weight and can make small frames larger. Update
 this record and the measurement in
-[`../../../docs/bandwidth-results/exp-8-zstd-dictionary.md`](../../../docs/bandwidth-results/exp-8-zstd-dictionary.md)
+[`../../../docs/bandwidth-experiments.md`](../../../docs/bandwidth-experiments.md)
 whenever it is regenerated. Bump `protocol::PROTOCOL_VERSION` when replacing
 the dictionary so incompatible peers are rejected during the handshake.
 
-The [binary protocol experiment](../../../docs/bandwidth-results/binary-protocol.md)
-uses `train_binary_dictionaries` to generate separate dictionaries for each
-experimental layout and precision policy. The results retain all candidates;
-protocol 32 copies the selected fine dictionary here as described below. The
+The binary protocol experiment, recorded in Git history, used
+`train_binary_dictionaries` to generate separate dictionaries for each
+experimental layout and precision policy. Protocol 32 copies the selected fine
+dictionary here as described below. The
 JSON dictionary above remains a separate asset.
 When changing encoded payloads or numeric precision, train on the new bytes and
 evaluate on separate workloads; reusing this JSON dictionary alone is not an
@@ -49,8 +49,8 @@ adequate compression comparison.
 ## `binary-fixed-fine.zstd`
 
 The protocol 32 periodic-checkpoint dictionary, embedded separately from the
-JSON dictionary. It is the measured `fixed-fine.zstd` artifact from the
-[binary experiment](../../../docs/bandwidth-results/binary-protocol.md).
+JSON dictionary. It is the `fixed-fine` artifact selected by the binary
+experiment recorded in Git history.
 
 | Field | Value |
 |---|---|
@@ -65,6 +65,6 @@ JSON dictionary. It is the measured `fixed-fine.zstd` artifact from the
 The live encoder calls the same bitpack and quantization implementation as the
 trainer and comparison example. The application frame format is unchanged from
 the measured artifact, so its dictionary was copied byte-for-byte. Tests check
-the hash and equality with that artifact. Regenerate with the commands in the
-experiment report after any encoding or precision change, copy the new fine
-dictionary here, update this record and bump `PROTOCOL_VERSION` again.
+the hash of the embedded bytes. Regenerate with the binary experiment's
+commands after any encoding or precision change, replace this file, update this
+record and bump `PROTOCOL_VERSION` again.

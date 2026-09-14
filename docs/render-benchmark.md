@@ -6,7 +6,15 @@
 lighting and shared graphics presets. It loads checksummed visual GLBs and
 freezes mechanisms at their exported poses. It has a fixed camera and optional
 stadium, with no physics, collision loading, robots, projectiles, networking or
-gameplay UI. The renderer's normal GPU light clustering remains enabled.
+gameplay UI. The renderer's normal GPU light clustering remains enabled. It never
+depends on physics, world, server or gameplay; see
+[`crates/rm-simulator-bench`](../crates/rm-simulator-bench/README.md) and
+[simulation architecture](architecture-refactor.md) for the crate split.
+
+This guide is the canonical reference for the benchmark: commands, case input,
+sweep files and report interpretation. It is not a full-game frame-rate claim;
+[performance](performance.md) covers CPU probes, and
+[reproducible field detail](field-detail.md) covers the package under test.
 
 ## Build and run
 
@@ -20,8 +28,26 @@ On Linux or Windows, use native Vulkan or DX12 for GPU timestamp measurements:
 
 ```sh
 target/release/rm-simulator-bench --cad-assets local-assets/field-coarse \
-  --case benchmarks/render-case.json --backend vulkan \
-  --detail raw --screenshot --output /tmp/rm-render-high
+  --backend vulkan --detail raw --screenshot --output /tmp/rm-render-high
+```
+
+Omitting `--case` uses the built-in High 1080p defaults. For another case, write a
+JSON file and pass it as `--case /tmp/render-case.json`:
+
+```json
+{
+  "name": "high-1080p",
+  "resolution": [1920, 1080],
+  "graphics": {"preset": "High", "overrides": {"vsync": false}},
+  "camera_position_flu_m": [10, 0, 0.7],
+  "camera_target_flu_m": [0, 0, 0.7],
+  "vertical_fov_deg": 60,
+  "geometry": "normal",
+  "stadium": true,
+  "warmup_seconds": 10,
+  "sample_seconds": 20,
+  "timeout_seconds": 120
+}
 ```
 
 On Windows, the executable has an `.exe` suffix. Adjust output paths as needed.
@@ -32,7 +58,7 @@ Mac runs support CPU-only measurements:
 
 ```sh
 target/release/rm-simulator-bench --cad-assets local-assets/field-coarse \
-  --case benchmarks/render-case.json --backend metal --cpu-only \
+  --backend metal --cpu-only \
   --detail raw --screenshot --output /tmp/rm-render-metal
 ```
 
@@ -47,10 +73,21 @@ avoid silently rendering at Retina resolution. VSync defaults off; an explicit
 image without presentation. Compare offscreen and windowed results separately.
 `--screenshot` saves `scene.png` after sampling and readback drain.
 
+### Geometry modes
+
+`normal` uses authored geometry. `boxes` replaces detailed untextured CAD meshes
+with their local bounding boxes. `sparse` retains every hundredth triangle of
+those meshes. Both retain entities, materials, transforms, textured artwork and
+meshes of 12 or fewer triangles. They also change coverage, overdraw and shadows,
+so their speed difference is not a pure measure of triangle processing cost.
+They never modify asset files.
+
 ## Settings sweeps
 
+Write a sweep file and pass it to the driver:
+
 ```sh
-python3 scripts/benchmark-render.py benchmarks/render-1080p.json \
+python3 scripts/benchmark-render.py /tmp/render-1080p.json \
   --binary target/release/rm-simulator-bench \
   --cad-assets local-assets/field-coarse --backend vulkan \
   --detail raw --output /tmp/rm-render-sweep
@@ -86,19 +123,44 @@ Sweep files contain a `base` case, dotted-field `sweep` axes, optional explicit
 Other axes include resolution, FLU camera position/target, vertical FOV, stadium,
 geometry, and shared graphics overrides for shadows, shadow distance/cascades,
 MSAA, bloom intensity, exposure, depth prepass and occlusion culling. The report
-includes resolved settings. Unsupported MSAA, shadow size or occlusion culling
-fails instead of silently choosing a fallback. Occlusion requires depth prepass.
+includes resolved settings. An override value outside the supported set is
+clamped to the preset fallback — an unsupported MSAA count becomes 4× — whereas a
+setting the adapter cannot provide (an unsupported sample count, a shadow map
+over the device limit, or unavailable occlusion culling) fails the run.
+Occlusion requires depth prepass.
 Projectile detail and generated-light emission have no workload to affect in
 this frozen CAD scene. Unknown configuration fields are rejected.
 
-`normal` uses authored geometry. `boxes` replaces detailed untextured CAD meshes
-with their local bounding boxes. `sparse` retains every hundredth triangle of
-those meshes. Both retain entities, materials, transforms, textured artwork and
-meshes of 12 or fewer triangles. They also change coverage, overdraw and shadows,
-so their speed difference is not a pure measure of triangle processing cost.
-They never modify asset files.
+### Effect sweep
+
+A useful effect sweep changes one option at a time from the original Ultra
+settings at 1080p and 4K, twice in a seeded shuffled order. It covers shadow
+resolution, cascade count and distance, shadows off, MSAA, bloom, depth prepass,
+occlusion culling, sparse geometry and the stadium. It uses the same fixed
+camera throughout. Sparse geometry changes surface coverage as well as triangle
+count, and disabling the stadium changes lighting geometry and shadows; neither
+is a pure geometry throughput test.
+
+```sh
+python3 scripts/benchmark-render.py /tmp/render-effects.json \
+  --binary target/release/rm-simulator-bench \
+  --cad-assets local-assets/field-coarse --backend vulkan \
+  --headless --detail passes --output /tmp/rm-render-effects
+```
+
+Use offscreen rendering consistently when the requested resolution exceeds the
+desktop. Record power, temperatures and clocks alongside the sweep. Laptop
+thermal limits can dominate variation; confirm promising changes with repeated
+baseline/candidate runs before using them to change a preset. The static scene
+cannot measure projectile detail, and appearance-only controls such as exposure
+and emission strength are not performance switches.
+
+No sweep result is committed. Treat a single sweep as a hypothesis rather than a
+preset decision, and keep the raw reports with the change that used them.
 
 ## Output and interpretation
+
+### Detail levels
 
 | Detail | Output |
 |---|---|
@@ -115,6 +177,8 @@ capture into comparisons. `actual_resolution` records the camera's physical
 target size. After pipeline warmup, a window constrained to a different size fails with instructions
 to use `--headless`; case dimensions alone are not proof of render resolution.
 Native Vulkan captures have been exercised on an RTX 3070 Ti Laptop GPU.
+
+### What the numbers measure
 
 GPU timestamps bracket render commands in one queue submission. They exclude
 CPU work, presentation and the final query resolve/copy. Stage intervals divide
@@ -134,31 +198,3 @@ Use the stronger test machine to compare relative changes at a fixed camera,
 resolution, backend and build. Those gains may differ on the Mac because the
 bottleneck can change. Results do not establish the Mac's 120 FPS/60 FPS targets,
 and this rendering-only workload does not establish full-game FPS on either box.
-
-
-## Effect sweep
-
-`benchmarks/render-effects.json` changes one option at a time from the original
-Ultra settings at 1080p and 4K, twice in a seeded shuffled order. It covers shadow
-resolution, cascade count and distance, shadows off, MSAA, bloom, depth prepass,
-occlusion culling, sparse geometry and the stadium. It uses the same fixed
-camera throughout. Sparse geometry changes surface coverage as well as triangle
-count, and disabling the stadium changes lighting geometry and shadows; neither
-is a pure geometry throughput test.
-
-```sh
-python3 scripts/benchmark-render.py benchmarks/render-effects.json \
-  --binary target/release/rm-simulator-bench \
-  --cad-assets local-assets/field-coarse --backend vulkan \
-  --headless --detail passes --output /tmp/rm-render-effects
-```
-
-Use offscreen rendering consistently when the requested resolution exceeds the
-desktop. Record power, temperatures and clocks alongside the sweep. Laptop
-thermal limits can dominate variation; confirm promising changes with repeated
-baseline/candidate runs before using them to change a preset. The static scene
-cannot measure projectile detail, and appearance-only controls such as exposure
-and emission strength are not performance switches.
-
-[Measured effects and preset decisions](render-effects-2026-09-12.md) include the
-NVIDIA results, thermal limitations and the separate preset confirmation sweep.

@@ -6,6 +6,8 @@ Ordinary `cargo build` and `just run` do not link or initialize Steam. The app's
 `steam` feature adds client initialization and a callback pump on the main thread.
 It does not add Steam matchmaking, authentication, achievements, cloud storage or
 Steam Input; the existing multiplayer protocol and controls remain in charge.
+The standalone release packages are built in [CI and releases](releases.md);
+the [documentation index](README.md) lists every guide.
 
 The app initializes Steam before starting Bevy's worker threads. The upstream
 `Client::init_app` sets process environment variables, so it must stay in this

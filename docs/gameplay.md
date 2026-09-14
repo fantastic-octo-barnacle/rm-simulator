@@ -15,14 +15,29 @@ The demo completes a BO3 match, including setup, initialization, countdown,
 base destruction, result confirmation and the next round. Tests cover timed
 purchases, income, respawns, rebuilding, heat, eligibility and tick partitioning.
 
-## Current integration
+Read this guide before changing either gameplay integration.
+
+## Contents
+
+- [Live integration and ownership](#live-integration-and-ownership)
+- [API and clock](#api-and-clock)
+- [Rule coverage and unsupported elements](#rule-coverage-and-unsupported-elements)
+- [Implemented consequences](#implemented-consequences)
+- [Result comparison](#result-comparison)
+- [Ambiguities and application choices](#ambiguities-and-application-choices)
+
+## Live integration and ownership
 
 The `live::Resources` component is connected to the world referee and therefore
-to both the app and server. The referee owns the phase and round clock; the
-component tracks per-chassis allowances and successful shot counts for 17 mm
-and 42 mm, free-camera shot counts and each team's gold. It has no independent
-clock or physics authority. World code owns robot, base and outpost damage and rune activation.
-`rm-simulator-physics` owns dynamics, raw contacts and prescribed armor motion. The larger `Game` engine described below remains standalone.
+to both the app and server.
+
+| Owner | Responsibility |
+|---|---|
+| World referee | Phase and round clock |
+| `live::Resources` | Per-chassis allowances and successful shot counts for 17 mm and 42 mm, free-camera shot counts and each team's gold; no independent clock or physics authority |
+| World code | Robot, base and outpost damage and rune activation |
+| `rm-simulator-physics` | Dynamics, raw contacts and prescribed armor motion |
+| Standalone `Game` | The larger engine described below; remains standalone |
 
 `RefereeSnapshot.gameplay` exposes the live state through TCP and `GET /api/state`.
 The HTTP page's ammo/economy and equipment forms send ordinary referee commands
@@ -54,6 +69,8 @@ income boundaries when the referee next ticks. Ending freezes resource tracking.
 The HUD displays the resource snapshots. Form inputs are not overwritten by
 polling; use their Load current buttons to replace draft values with live state.
 Configuration is in memory and does not survive host restart.
+
+### Outside the live integration
 
 The following remain outside live integration: automatic
 respawn, heat and power enforcement, XP, performance tables, zone detection,
@@ -149,6 +166,9 @@ engineer assemblies, sentry poses, hero deployment, drone counters, module
 faults, power telemetry, inspections, timeouts, penalties and appeals can be
 recorded even when there is no simulated equipment or sensor for them.
 
+Mechanics outside the live integration are named under
+[Outside the live integration](#outside-the-live-integration).
+
 ## Implemented consequences
 
 - Income follows Table 5-5 at elapsed 1, 61, 121, 181, 241, 301 and 361 seconds.
@@ -186,6 +206,8 @@ recorded even when there is no simulated equipment or sensor for them.
   not alter physical motor limits. Buffer power and instant-respawn power boosts
   remain unsupported.
 
+## Result comparison
+
 The section 5.8 result comparison excludes virtual shields from base HP,
 counts effective attack damage including shield loss and penalties, and
 excludes collision/disconnection damage from the attack total. Confirming an
@@ -201,7 +223,7 @@ ambiguous result requires `Adjudicate`; the engine never guesses a winner.
   The engine follows the figure for the permanent heat lock.
 - Assembly income settles on round-aligned ten-second boundaries. The manual
   specifies the interval but not its phase relative to each assembly completion.
-- Respawn progress accrues continuously on the 1 ms clock. The remaining-time
+- Respawn progress accrues continuously on the world clock. The remaining-time
   input to its formula is rounded to seconds as section 5.2.2 specifies;
   fractional timer units are retained. Low maximum HP configurations respawn
   with at least one HP so a positive recovery cannot leave them defeated.

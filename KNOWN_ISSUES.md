@@ -8,14 +8,22 @@ This list covers the current networking investigation, not every limitation of
 competition-rule enforcement. Fixed hit delivery, auto-aim sampling, lobby
 compatibility and local TCP overhead are recorded in [CHANGELOG.md](CHANGELOG.md).
 
+| Id | Issue | Status |
+|---|---|---|
+| NET-001 | Downstream traffic exceeds the bandwidth target | Open |
+| NET-002 | Shot outcomes remain delayed on a fast local connection | Open; attribution incomplete |
+| NET-003 | Constrained links develop severe latency and incomplete outcomes | Open |
+
 ## NET-001: Downstream traffic exceeds the bandwidth target
 
-**Status: open.** A listen host with one remote client on the same machine
-averaged approximately 103 kbps upstream and 855 kbps downstream during the
-12-second movement/firing trial. These are UDP proxy payload rates, excluding
-IP/UDP headers. Including the proxy's header allowance gives approximately
-115 kbps upstream and 882 kbps downstream. Rates are decimal kilobits per second,
-not kilobytes per second.
+**Status: open.**
+
+A listen host with one remote client on the same machine averaged approximately
+103 kbps upstream and 855 kbps downstream during the 12-second movement/firing
+trial. These are UDP proxy payload rates, excluding IP/UDP headers. Including
+the proxy's header allowance gives approximately 115 kbps upstream and
+882 kbps downstream. Rates are decimal kilobits per second, not kilobytes per
+second.
 
 The desired budget is 100–200 kbps per player. Downstream traffic needs roughly
 a 4–9× reduction to meet that budget in this workload. Earlier PR #2 trials
@@ -32,8 +40,7 @@ The isolated experiment 1 real-UDP pair measured 707.3 → 612.6 kbps downstream
 (−13.4%); the candidate was 631.4 kbps including the proxy header allowance.
 Experiment 7 measured 76.4 → 59.6 kbps upstream under firing in the in-process
 probe. These are different trials, not a measured combined total or a protocol 29
-on-wire result. See the [experiment record](docs/bandwidth-experiments.md) and
-[original UDP trial](docs/bandwidth-results/harness-trial-exp1.md).
+on-wire result. See the [experiment record](docs/bandwidth-experiments.md).
 
 The subsequent five-seed, two-client clean matrix measured the current
 owner-configuration-reference build at 1,255.0 kbps downstream per client,
@@ -43,7 +50,7 @@ IPv4/UDP allowance per packet. They are a sustained two-client workload, not a
 rerun of the historical one-client trial above. The combined experimental
 reduction is 47.3%, but still exceeds 200 kbps by more than threefold. Remote
 presentation age also increases. Neither cadence nor deflate change is enabled
-in production; see the [cadence/deflate follow-up](docs/bandwidth-results/cadence-deflate-followup.md).
+in production; see the [experiment record](docs/bandwidth-experiments.md).
 
 Capacity trials reject acceptance: the combined candidate's 200 kbps trials
 had 4.1–4.9 s shot-confirmation p95 and long complete-context stalls. The 100 kbps
@@ -53,16 +60,18 @@ loss, reconnect, releases and broader client/platform loads before acceptance.
 
 ## NET-002: Shot outcomes remain delayed on a fast local connection
 
-**Status: open; attribution incomplete.** The single-player channel smoke test
-measured a 0.017 ms p95 command queue wait but approximately 51 ms p95 from client
-submission to the first shot outcome published into its inbox. Removing TCP
-therefore did not remove the remaining delay.
+**Status: open; attribution incomplete.**
 
-In the pre-integration listen-host trial, application RTT was 5.95 ms median and 9.78 ms
-p95, while session-reported shot confirmation was 56.1 ms median and 57.8 ms p95.
-The local inbox trace and session confirmation have different endpoints and must
-not be treated as interchangeable measurements. Neither measures click-to-visible
-hit latency or projectile flight time.
+The single-player channel smoke test measured a 0.017 ms p95 command queue wait
+but approximately 51 ms p95 from client submission to the first shot outcome
+published into its inbox. Removing TCP therefore did not remove the remaining
+delay.
+
+In the pre-integration listen-host trial, application RTT was 5.95 ms median and
+9.78 ms p95, while session-reported shot confirmation was 56.1 ms median and
+57.8 ms p95. The local inbox trace and session confirmation have different
+endpoints and must not be treated as interchangeable measurements. Neither
+measures click-to-visible hit latency or projectile flight time.
 
 Investigate the input lead, intended shot execution time, host application and
 client consumption stages before changing scheduling. Preserve movement/fire
@@ -71,7 +80,9 @@ completed attribution of the full delay.
 
 ## NET-003: Constrained links develop severe latency and incomplete outcomes
 
-**Status: open.** Earlier protocol 27 UDP proxy trials showed:
+**Status: open.**
+
+Earlier protocol 27 UDP proxy trials showed:
 
 | Trial | Application RTT, median / p95 | Shot confirmation, median / p95 | Unresolved shot outcomes |
 |---|---:|---:|---:|
@@ -80,11 +91,11 @@ completed attribution of the full delay.
 | Severe impairment with blackout | 1,732 / 2,590 ms | 1,174 / 3,398 ms | 14 |
 
 These are historical impaired-client results, not reruns of `7d07f1c`.
-The profiles and limitations are recorded in the
-[network stress investigation](docs/network-stress-2026-09-13.md). Zero unresolved
-outcomes does not make a one-second confirmation delay playable. Queue-wait drops
-were observed in the constrained trials, but the contribution of each application
-and native transport queue still needs measurement.
+The impairment profiles live in `scripts/network-scenarios/`; their trial logs
+are retained in Git history. Zero unresolved outcomes does not make a
+one-second confirmation delay playable. Queue-wait drops were observed in the
+constrained trials, but the contribution of each application and native
+transport queue still needs measurement.
 
 ### Matched short blackout trial after bandwidth integration
 
@@ -113,8 +124,8 @@ outcome does not by itself establish that an authoritative hit was lost.
 
 This is **not a blocker to continuing the remaining bandwidth trials**. Keep
 NET-003 open and preserve the failed gate; reproducing it on the baseline does
-not turn either trial into a pass or establish impaired-link acceptance. Short targeted robot-armor and impaired setup/rejoin probes are recorded in the
-[integration follow-up](docs/bandwidth-results/integration-followup.md).
+not turn either trial into a pass or establish impaired-link acceptance. Short
+targeted robot-armor and impaired setup/rejoin probes are retained in Git history.
 Packet-specific setup/ACK loss over GNS and broader recovery validation remain
 outstanding; random setup loss is not proof of dropping a particular ACK.
 
@@ -143,5 +154,5 @@ verify recovery as well as behavior during impairment.
   work have been evaluated. It is not an approved fix for these issues yet.
 
 See [network tracing](docs/network-tracing.md) for capture and summary commands
-and the [network harness guide](docs/network-harness-and-stats.md) for repeatable
+and `scripts/network-scenarios/` for repeatable
 trials. Keep raw traces, logs and generated measurement dumps outside Git.

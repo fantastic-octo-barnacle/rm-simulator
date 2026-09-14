@@ -574,7 +574,7 @@ impl Session {
     /// the values derived from it every frame (the body-frame wish and the
     /// follow yaw rate), wait for the 16 ms refresh grid, and the frame sent at
     /// the boundary carries the newest aim. Frame rate is not input rate; see
-    /// the "Input" row of docs/multiplayer-networking.md.
+    /// the input-cadence notes in the README's server and clients section.
     pub fn drive(&mut self, chassis: u32, command: ChassisCommand, transition: bool) {
         self.sampled_drive = Some((chassis, command));
         if transition || self.input_refresh_due() {

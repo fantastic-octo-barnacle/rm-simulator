@@ -1,34 +1,39 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 <!-- Copyright (c) 2026 hxyulin <hxyulin@proton.me> -->
-# Bandwidth experiments for review
+# Bandwidth experiments
+
+The surviving experiment summary: the isolated trials behind the current
+delivery contracts, their measured savings, and the outstanding bandwidth
+target. Every rate, hash and revision id here is evidence for the named
+revision, not a property of the current build.
 
 Investigation and isolated experiments dated 13 September 2026, based on
 `7d07f1c`. The proposals below describe the original baseline; the results retain
 their measured experimental revisions.
 
-## Integrated state (protocol 29)
+## Integration status
 
-The current branch integrates the canonical experiment 0 attribution probe,
-experiment 1 owner configuration references (`8eb429d`) and experiment 7 input
-batch compaction (`826b790`). Protocol 29 distinguishes the combined RMO4/RMI3
-contract from both incompatible experiment-only protocol 28 variants. Host and
-client must use matching builds.
+Protocol 29 integrates the canonical experiment 0 attribution probe, experiment 1
+owner configuration references (`8eb429d`) and experiment 7 input batch compaction
+(`826b790`). Protocol 29 distinguishes the combined RMO4/RMI3 contract from both
+incompatible experiment-only protocol 28 variants. Host and client must use
+matching builds.
 
 Cadence, baseline rotation, checkpoint representation, outcome recovery, numeric
 precision and pacing defaults are unchanged. Experiments 2–6 are retained as
-investigation records, not enabled production changes. The subsequent [cadence/deflate follow-up](bandwidth-results/cadence-deflate-followup.md)
-measures 64 ms world checkpoints with 32 ms owner updates and a separate
-selected-stream deflate 1/4 sweep. Both remain experimental, with production
-defaults unchanged and constrained-link acceptance failed. A later [ZSTD
-dictionary experiment](bandwidth-results/exp-8-zstd-dictionary.md) adds a
-selectable wire codec (`RM_NET_CODEC`), leaves the DEFLATE wire and the
-production default untouched, and measures a 30–58% cut of the selected stream.
+investigation records, not enabled production changes. The subsequent cadence and
+deflate follow-up measures 64 ms world checkpoints with 32 ms owner updates and a
+separate selected-stream deflate 1/4 sweep. Both remain experimental, with
+production defaults unchanged and constrained-link acceptance failed. A later
+ZSTD dictionary experiment adds a selectable wire codec (`RM_NET_CODEC`), leaves
+the DEFLATE wire and the production default untouched, and measures a 30–58% cut
+of the selected stream.
 
-The subsequent [binary and fixed-point experiment](bandwidth-results/binary-protocol.md)
-compares lossless binary checkpoints, packed baseline deltas and several
-motion precision assumptions against both compression baselines. It is a
-standalone prototype with round-trip and physics replay measurements; it does
-not change the live wire or prediction precision.
+The subsequent binary and fixed-point experiment compares lossless binary
+checkpoints, packed baseline deltas and several motion precision assumptions
+against both compression baselines. It is a standalone prototype with round-trip
+and physics replay measurements; it does not change the live wire or prediction
+precision.
 
 The isolated measurements below are not measurements of the combined build.
 Experiment 1's short unimpaired UDP pair corroborates its bandwidth saving, but
@@ -37,9 +42,9 @@ has only in-process bandwidth evidence. NET-001 remains open; see
 [known issues](../KNOWN_ISSUES.md). The canonical probe still needs populated
 hit and shot-result workloads before drawing recovery-history conclusions.
 
-See the [integration follow-up](bandwidth-results/integration-followup.md) for
-corrected event measurements, the RTT repeat, targeted live trials and the
-subsequent wire-tag tracing fix. Historical per-class trace counts before that
+The integration follow-up corrected event measurements, repeated the RTT trial
+and ran targeted live trials; a subsequent wire-tag tracing fix followed.
+Historical per-class trace counts before that
 fix misclassified RMO4/RMI3 traffic as control; total byte counts are unaffected.
 
 ## Problem and budget
@@ -61,7 +66,7 @@ At the current 31.25 Hz publication rate, 200 kbps allows only 800 bytes per
 publication for *all* downstream traffic, including overhead. There is no
 evidence yet that any single idea below achieves that target.
 
-## Current path and likely costs
+## Current path and costs
 
 Paths below are relative to the repository root. Symbol names are navigation
 anchors so the handoff remains usable after line numbers move.
@@ -71,20 +76,21 @@ anchors so the handoff remains usable after line numbers move.
 | `crates/rm-simulator-server/src/host.rs`, `BROADCAST_PERIOD`, `publish_snapshot` | One worker owns the simulation and roster. Remote snapshots publish every 32 ms. Per-peer outboxes replace unsent periodic snapshots, preserving reliable messages and confirmation order. |
 | `net.rs`; `host.rs`, `Outbound`; `gns_transport.rs` | Local play uses typed channels; TCP carries independent JSON-line snapshots. GNS drives the per-peer UDP codec. Reducing local TCP overhead has already happened and does not solve remote bandwidth. |
 | `udp_codec.rs`, `PeerCodec::send` | A periodic pilot snapshot produces both an owner anchor and a world checkpoint. Native pending bytes above 64 KiB skip world production but still produce the anchor. Nonperiodic confirmations take the full independent path. |
-| `owner_stream.rs`, `OwnerAnchor::encode` | RMO3 is already binary except for a deflated JSON chassis configuration repeated in every anchor. It includes 29 f64 values and five f64 values per wheel. With four wheels, the layout is about 438 bytes before compressed configuration: about 109.5 kbps at 31.25 Hz before native/network overhead, by source arithmetic, not measurement. |
+| `owner_stream.rs`, `OwnerAnchor::encode` | The current `RMO4` anchor is binary and names its chassis configuration by an acknowledged 8-byte `ConfigRevision` instead of repeating it; the earlier `RMO3` layout repeated a deflated JSON configuration in every anchor and is the pre-experiment baseline. The anchor includes 29 f64 values and five f64 values per wheel. With four wheels, the `RMO3` layout is about 438 bytes before compressed configuration: about 109.5 kbps at 31.25 Hz before native/network overhead, by source arithmetic, not measurement. |
 | `snapshot_codec.rs`, `PlayerSnapshot` | Compact checkpoints already remove/reconstruct rune target poses, outpost armor poses and wheel contacts; projectile position/velocity use f32 and spin is omitted. Other restoration values retain f64. Failed-contact diagnostics are filtered. Do not propose these existing reductions as new work. |
-| `udp_snapshot.rs`, `Encoder::snapshot` | Deflated JSON patches reference an acknowledged, pinned baseline, never the last transmitted revision. Each candidate is compared with an independent compressed alternative. Rotation becomes eligible after 32 encoded frames; proposal/retirement acknowledgements constrain actual rotation. At most two receiver baselines stay pinned. |
+| `udp_snapshot.rs`, `Encoder::snapshot` | Acknowledged-baseline patches reference a pinned baseline, never the last transmitted revision. Each candidate is compared with an independent compressed alternative. Rotation becomes eligible after 32 encoded frames; proposal/retirement acknowledgements constrain actual rotation. At most two receiver baselines stay pinned. Since protocol 32 the production default encodes those checkpoints as bitpacked fine fixed point with the embedded ZSTD dictionary; `RM_NET_SNAPSHOT=json` selects the deflated-JSON path for comparison. |
 | `snapshot_codec.rs`, `difference` | Arrays get element patches only when their lengths match. Spawn/despawn and changing history lengths can replace whole arrays. Equal-length insertion/removal can also shift identities and amplify patches. |
 | `simulation.rs`, `Simulation::state`; `host.rs`, `observe_simulation` | Every publication includes up to 32 recent shot results per shooter. Registered hits also have a reliable event path while snapshot history supplies recovery. Repetition is a candidate cost, not proof recovery data can safely be deleted. |
 | `udp_codec.rs`, `select_inputs`, `input_batch`, `ClientCodec::submit` | Input is already packed and deflated: 80 bytes/frame before compression. Batches retain four newest samples plus selected movement transitions within the 250 ms useful window, up to 12 frames. Aim/fire has its own unreliable retry path; other control is reliable. |
 | `pacing.rs`, `Pacer` | Bounded control, replaceable owner and world transfers share byte pacing with round-robin service. A started world transfer can finish while a newer pending one is coalesced. Pacing alone cannot make an oversized offered stream fit. |
 | `udp_codec.rs`, `packets`, `Frames` | World messages use 1000-byte chunks plus 21-byte application fragment headers. Incomplete unreliable frames expire after 250 ms. Losing one fragment can waste the rest of that checkpoint, so report fragments and usable checkpoints as well as byte savings. |
-| `crates/rm-simulator-app/src/session.rs` | Owner anchors aid correction, but full snapshots supply coherent world context. The anchor replay path checks context freshness against 300 ms. Lower checkpoint rates affect both prediction and remote presentation. |
+| `crates/rm-simulator-app/src/session.rs` | Owner anchors aid correction, but full snapshots supply coherent world context. Aim assist requires a full target checkpoint within the last 300 ms and never fires on stale observation; owner anchors cannot extend that freshness. Lower checkpoint rates affect both prediction and remote presentation. |
 
-## Experiment order
+## Experiment plan
 
 Run each candidate alone against the same baseline before combining winners.
 Prefer lossless format changes first; precision changes need a separate review.
+The executed outcomes for all eight are in [Results](#results-executed-13-september-2026).
 
 ### 0. Attribute the bytes before implementing reductions
 
@@ -101,7 +107,8 @@ shot-result/hit histories, baseline proposals and reliable confirmations.
 Raw JSON section sizes identify candidates but do not add up to compressed
 contributions; use controlled ablation in an offline probe to estimate those.
 
-`examples/network_bandwidth.rs` is a useful codec microbenchmark, but its loop
+[`examples/network_bandwidth.rs`](../crates/rm-simulator-server/examples/network_bandwidth.rs)
+is a useful codec microbenchmark, but its loop
 steps 16 ms, assumes immediate baseline feedback, and omits live owner anchors,
 control, pacing and native overhead. Its separate printed compressed JSON rate
 is not the complete live player path. Extend a probe to drive the production
@@ -209,7 +216,8 @@ dirty diff, binary hashes, protocol version, CAD manifest hashes, settings,
 platform, seeds and workload. Change protocol compatibility when changing wire
 contracts. Keep raw captures and generated reports outside Git.
 
-Use [the harness guide](network-harness-and-stats.md) and existing scenario JSON
+Use the existing scenario JSON under `scripts/network-scenarios/` and the console
+tracing described in [network tracing](network-tracing.md)
 as starting points. The smoke scenarios are functionality checks, with loose
 gap/underrun gates and some missing metrics skipped; passing them does not prove
 playability or meeting the bandwidth budget. Author stricter experiment scenarios.
@@ -266,10 +274,9 @@ UDP issue; TCP snapshots must remain independent of previous transmitted frames.
 ## Results (executed 13 September 2026)
 
 Every experiment in the order above was run in an isolated worktree on its own
-branch (`perf/bw-exp0` … `perf/bw-exp7`), each with a per-experiment results
-file under [`bandwidth-results/`](bandwidth-results/). The execution log,
-the measurement instrument and the harness hazards found while running are in
-[the plan and log](bandwidth-results/PLAN.md). Headline outcomes:
+branch (`perf/bw-exp0` … `perf/bw-exp7`). The execution log, the measurement
+instrument and the harness hazards found while running are retained in Git
+history. Headline outcomes:
 
 | # | Experiment | Outcome |
 |---|---|---|
@@ -281,9 +288,11 @@ the measurement instrument and the harness hazards found while running are in
 | 5 | Separate cadence from encoding | **Largest measured lever.** 31.25/15.625 Hz gives −20.5…−36.8%; 15.625/15.625 gives ≈ −49%. Decoupling to 62.5/15.625 is a *loss* until the anchor shrinks. At 15.625 Hz the complete-context gap is 64 ms nominal and three consecutive lost checkpoints (256 ms) still fit the 300 ms limit; the fourth exceeds it. |
 | 6 | Reduce repeated outcome recovery | **Leave it in place.** The share is zero on the canonical workloads (they record no shot results and land no hits). In a populated scenario the two collections cost 1015 B/frame ≈ 20% and identity-keyed splices save 6.6%, which does not move NET-001 while owner anchors and `state.chassis` dominate. |
 | 7 | Compact upstream repetition | **Win.** A versioned RMI3 batch (shared header, exact changed-value masks, LEB128 relative fields, exact fallback) cuts upstream 22–27%: 36.5 → 27.0 kbps idle, 73.4 → 56.6 driving, 76.4 → 59.6 firing, losslessly. After compaction the offered upstream fits the existing 10 KiB/s `limited` budget, so **no pacing change is justified**. |
-| 8 | ZSTD with a trained dictionary | **Win, opt-in.** A selectable wire codec (`RM_NET_CODEC`) leaves the DEFLATE wire unchanged. Plain ZSTD cuts the selected stream by up to 38%; a 32 KiB trained dictionary cuts the selected acknowledged-delta stream 30–58% and independent envelopes 58–82% against `deflate-1`, halves fragments on `drive` and cuts them 26% on `fire`, and lowers CPU in both directions. Out of sample: a leave-one-out dictionary is only 8–22% better. See [exp-8](bandwidth-results/exp-8-zstd-dictionary.md). |
+| 8 | ZSTD with a trained dictionary | **Win, opt-in.** A selectable wire codec (`RM_NET_CODEC`) leaves the DEFLATE wire unchanged. Plain ZSTD cuts the selected stream by up to 38%; a 32 KiB trained dictionary cuts the selected acknowledged-delta stream 30–58% and independent envelopes 58–82% against `deflate-1`, halves fragments on `drive` and cuts them 26% on `fire`, and lowers CPU in both directions. Out of sample: a leave-one-out dictionary is only 8–22% better. |
 
-What this says about the 100–200 kbps target: no single experiment reaches it.
+### What the results say about the target
+
+No single experiment reaches the 100–200 kbps target.
 The owner stream alone is 111 kbps after experiment 1, and the world stream is
 still 156–743 kbps. The measured levers compose — experiment 1 (anchor) plus
 experiment 5 (cadence) would put the owner near 55 kbps at 15.625 Hz on top of a
@@ -309,8 +318,8 @@ dictionary-trained ZSTD is the largest single codec win measured on the
 be validated under loss. It remains an opt-in development codec; DEFLATE is
 still the production default.
 
-Two coordination hazards are worth carrying forward: a shared
+### Coordination hazards
+
+Two hazards are worth carrying forward: a shared
 `CARGO_TARGET_DIR` lets a concurrent `cargo test` silently run another
 worktree's artifact, and `git stash` is repository-global across worktrees.
-Both are documented with their workarounds in
-[the plan and log](bandwidth-results/PLAN.md).

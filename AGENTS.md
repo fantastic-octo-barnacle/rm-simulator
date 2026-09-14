@@ -2,12 +2,34 @@
 <!-- Copyright (c) 2026 hxyulin <hxyulin@proton.me> -->
 # rm-simulator
 
-A first-person RoboMaster field simulator written in Rust with Bevy. It loads
-the RMUC 2026 field from the extracted competition CAD, runs the rune, outpost
-and projectile rules on an explicit 1 ms clock, referees a match on top of
-them, and lets you drive an omni chassis over the terrain (or fly a free
-camera) and shoot at armor. Workspace crates keep gameplay rules, physics, rendering, the
-headless server, the interactive application and the rendering benchmark apart.
+A first-person RoboMaster field simulator in Rust with Bevy. It loads the
+RMUC 2026 field from the extracted competition CAD, runs the rune, outpost and
+projectile rules on an explicit 1 ms clock, referees a match on top of them, and
+lets you drive an omni chassis over the terrain (or fly a free camera) and shoot
+at armor. Workspace crates keep gameplay rules, physics, rendering, the headless
+server, the interactive application and the rendering benchmark apart.
+
+## Documentation map
+
+Read the shortest document that answers the question before opening a PDF or a
+source file.
+
+| Question | Read |
+|---|---|
+| What the simulator is, install, controls, options | `README.md` |
+| Complete CLI reference, bindings, HUD, presets | `docs/app-options.md` |
+| Field package layout, discovery, composition, collision | `docs/field-package.md` |
+| Build, test, release and commit workflow | `docs/development.md`, `CONTRIBUTING.md` |
+| Rulebook clauses the referee implements | `docs/referee-rules.md` |
+| Standalone gameplay engine and its live integration | `docs/gameplay.md` |
+| Crate ownership, ticks, restore, ECS | `docs/architecture-refactor.md` |
+| Physics reuse without a match or server | `docs/physics-reuse.md` |
+| Open issues and measurement gaps | `KNOWN_ISSUES.md` |
+| Licensing and third-party provenance | `NOTICE.md` |
+| Every guide, indexed | `docs/README.md` |
+
+The `README.md` is user-facing; this file is the engineering contract. Where the
+two disagree, this file wins.
 
 ## Context
 
@@ -33,19 +55,6 @@ headless server, the interactive application and the rendering benchmark apart.
   cream, with flush cream markings; the renderer's scenery override
   recolours that cream only (`is_unpainted`), never white or painted
   materials. A re-export of V2.0.0 cannot add colour the STEP lacks.
-- **Field assets use Git LFS.** The exported runtime package is versioned in
-  `field/` through Git LFS, with its upstream ownership notice retained. It is
-  selected by `--cad-assets` when supplied; otherwise the loader prefers
-  `field/` beside an installed `bin/` directory, then the build checkout's
-  `local-assets/field`, then the checkout's LFS `field/`, then
-  `~/dev/RM/assets/rm2026-field`. The earlier
-  V2.0.0 package at `~/dev/RM/assets/rm2026-extracted` still loads. Files are verified against the
-  SHA-256 in `manifest.json` and `equipment/manifest.json`. The manifest's
-  `floor_top_source_z_m` is the slab top in the arena frame; when absent the
-  V2.0.0 pad height applies. Keep original STEP files and intermediate exports
-  outside Git; only the approved runtime package belongs in LFS. Record package
-  updates in `scripts/release-field.json` and verify with `inspect_assets`.
-  Never bake geometry into code beyond the fitted physics and world constants.
 - **Chassis per player, a referee, two teams.** Every pilot gets its own
   four-wheel chassis with a stabilised gun pivot (omni Infantry or mecanum
   Hero preset, documented in `crates/rm-simulator-physics/src/chassis.rs`), added to the field when the player
@@ -76,6 +85,32 @@ headless server, the interactive application and the rendering benchmark apart.
   arms being lit or how long a struck module flashes; the three 2 Hz blinks and
   the 50 ms grey flash are app settings, not rule constants.
 
+## Assets
+
+Four asset locations exist and are deliberately separate. Never merge them; the
+loader and the licensing rules depend on the split.
+
+| Path | Tracked | Role |
+|---|---|---|
+| `assets/` | yes | Build input embedded with `include_bytes!`: armor-atlas artwork masks, outpost/title art and their sources. Small and CAD-free. |
+| `crates/rm-simulator-server/assets/` | yes | Build input embedded with `include_bytes!`: the JSON and binary protocol 32 checkpoint ZSTD dictionaries. |
+| `local-assets/` | no | Gitignored development scratch: extracted `field` package, dated `field.before-*` backups, coarse/preview exports, harness reports. Never source; not referenced from committed code. |
+| `~/dev/RM/assets/` | outside the repo | Home-directory field install and the legacy V2.0.0 extraction the loader falls back to. Not this repository's `assets/`. |
+
+The exported runtime field package is versioned in `field/` through Git LFS with
+its upstream ownership notice retained. It is selected by `--cad-assets` when
+supplied; otherwise the loader prefers `field/` beside an installed `bin/`
+directory, then the build checkout's `local-assets/field`, then the checkout's
+LFS `field/`, then `~/dev/RM/assets/rm2026-field`. The earlier V2.0.0 package at
+`~/dev/RM/assets/rm2026-extracted` still loads. Files are verified against the
+SHA-256 in `manifest.json` and `equipment/manifest.json`. The manifest's
+`floor_top_source_z_m` is the slab top in the arena frame; when absent the
+V2.0.0 pad height applies. Keep original STEP files and intermediate exports
+outside Git; only the approved runtime package belongs in LFS. Record package
+updates in `scripts/release-field.json` and verify with `inspect_assets`.
+Never bake geometry into code beyond the fitted physics and world constants.
+See `docs/field-package.md` for composition, collision contracts and deployment.
+
 ## Layout
 
 | Path | Contents |
@@ -87,14 +122,16 @@ headless server, the interactive application and the rendering benchmark apart.
 | `crates/rm-simulator-server` | Bevy-free glue and the `rm-simulator-server` binary. `cad_assets.rs` (manifest parsing, checksums, CAD frame to FLU poses), `collision_mesh.rs` (visual GLBs to named FLU triangle parts, ground lookup), `compression.rs` (selectable wire codec: DEFLATE or ZSTD with an embedded trained checkpoint dictionary, self-identifying frames), `math.rs` (wxyz quaternion and column-major matrix helpers, the glTF root pose convention), `layout.rs` (rune hubs, outpost origins, terrain into the field, team spawn slots and the `ChassisSpawner`, `FieldConfig` from options), `simulation.rs` (`Simulation`: paused flag, bounded real-time advance, command application, chassis spawning per player), `protocol.rs` (JSON-lines `ClientMessage`/`ServerMessage`, roles), `host.rs` (single-owner simulation worker, roster and command authority), `net.rs` (TCP sockets, in-process owner channels, peer delivery and `Client`), `network_trace.rs` (bounded metadata tracing and local counters), `udp_codec.rs` (the per-peer UDP codec with no socket in it: fragment framing, reassembly, input batches, delta coding and pacing, all on an explicit `now`), `gns_transport.rs` (the GNS sockets that drive that codec), `scripted_link.rs` (a deterministic datagram link with scripted loss, reordering, duplication, delay and blackouts, for tests), `http.rs` and `panel.html` (minimal HTTP/1.1 server and the referee page), `main.rs` (headless binary). Depends on the world crate; the only place besides the app that reads host time. |
 | `crates/rm-simulator-app` | The `rm-simulator` binary. `main.rs` (app wiring), `args.rs` (clap arguments), `loading.rs` (the match lifecycle: a `JoinRequest` prepares a session on a worker behind a splash, `Ready` unlocks gameplay, a `LeaveRequest` or any failure tears the match down to the title screen), `title.rs` (the title screen and the remembered fields; every choice becomes the arguments a command line would have given), `session.rs` (`Session` over a `Client` for both embedded and remote hosts, prediction state and match keys), `controls.rs` (gimbal camera, drive and fly, gun, mouse capture), `scene.rs` (CAD instances, overlay spawning, world-to-scene adaptation and flashes), `hud.rs` (overlay text), `debug.rs` (collision wireframe view), `screenshot.rs` (`--screenshot`), `frames.rs` (FLU-to-Bevy conversions). |
 | `crates/rm-simulator-bench` | Standalone fixed-camera visual CAD benchmark. Shares renderer and graphics presets; never depends on physics, world, server or gameplay. GPU timestamp readbacks, CPU frame distributions, settings cases and optional raw output. See `docs/render-benchmark.md`. |
-| `assets/` | Armor artwork masks embedded with `include_bytes!`. |
 | `scripts/check-module-dependencies.py` | Asserts the crate boundaries above. |
 | `scripts/check-mpl-compliance.py` | Asserts every resolved MPL-2.0 dependency is allowlisted in `deny.toml`, named at its locked version in `NOTICE.md`, and unmodified. |
 | `LICENSE-MIT`, `LICENSE-APACHE`, `LICENSES/MPL-2.0.txt` | The workspace's dual license and the vendored MPL-2.0 text. |
 | `README.md`, `CHANGELOG.md`, `NOTICE.md` | User docs, user-visible changes, licensing and provenance of reused code. |
 | `docs/referee-rules.md` | Digest of the rulebook clauses the referee implements (clock, rune opportunities, buffs, outposts), with section and table numbers; read it before the PDF and update it when a rule changes. |
 
-## Design rules
+## Architecture rules
+
+These define the shape of the system. Changing one is an architectural change,
+not a refactor.
 
 - **Crate boundaries.** Physical dynamics and prescribed motion in physics,
   live rules in world, drawing in render, Bevy-free glue
@@ -121,6 +158,21 @@ headless server, the interactive application and the rendering benchmark apart.
   socket loops stay thin and the same codec runs under a scripted link in tests.
   Frame-facing debug requests must remain nonblocking and keep at most one
   dynamic geometry capture pending.
+- **One world.** A client never builds a reduced physics world of its own.
+  `Field::restore` rebuilds a whole `Field` from a `FieldSnapshot` plus the
+  shared `StaticGeometry` and floor height, and prediction replays it through
+  the ordinary `Field::step`, `command_chassis` and `fire` paths. Snapshots
+  therefore carry the rules' hidden state (`FieldSnapshot::restore`); a decoder
+  that drops it gives up restoring, not drawing. What a restore cannot carry is
+  solver state: contact manifolds and warm starts are rebuilt. Rebuild only when
+  the checkpoint changes, never once per frame.
+- **Renderer is passive.** It applies caller-owned `SceneState` and never
+  advances rules or reads the physics/world crates. Chassis ingestion resolves
+  caller state into pose and light components before applying changes. Keep
+  material swaps and transform writes conditional on changed values.
+
+## Simulation rules
+
 - **Coordinates.** The world uses metres in forward/left/up (FLU) with wxyz
   quaternions (`Pose`). Bevy is right/up/back. Convert only at the renderer
   boundary with `apply_pose`, `flu_position`, `flu_vector` and
@@ -181,18 +233,9 @@ headless server, the interactive application and the rendering benchmark apart.
   package carries those two V2.0.0 solids grafted onto its flat deck (the
   manifest's `grafted` entry), so both maps have it. The passages under the
   base highland decks have 0.65 m of clearance in both.
-- **One world.** A client never builds a reduced physics world of its own.
-  `Field::restore` rebuilds a whole `Field` from a `FieldSnapshot` plus the
-  shared `StaticGeometry` and floor height, and prediction replays it through
-  the ordinary `Field::step`, `command_chassis` and `fire` paths. Snapshots
-  therefore carry the rules' hidden state (`FieldSnapshot::restore`); a decoder
-  that drops it gives up restoring, not drawing. What a restore cannot carry is
-  solver state: contact manifolds and warm starts are rebuilt. Rebuild only when
-  the checkpoint changes, never once per frame.
-- **Renderer is passive.** It applies caller-owned `SceneState` and never
-  advances rules or reads the physics/world crates. Chassis ingestion resolves
-  caller state into pose and light components before applying changes. Keep
-  material swaps and transform writes conditional on changed values.
+
+## Code rules
+
 - **Units and naming.** Standard Rust naming with explicit physical units on
   public numeric fields and constants (`_m`, `_rad`, `_ns`, `_rad_s`,
   `_m_s`). Rulebook constants get a doc comment with the source.
@@ -220,12 +263,11 @@ headless server, the interactive application and the rendering benchmark apart.
 - Follow the commit and PR convention in `CONTRIBUTING.md`: `type(scope): summary`,
   at most 72 characters, optional short body. Squash by default; rebase only
   independently passing commits. Keep main linear.
-
-- `just run <args>` runs the app; `just server <args>` runs the
-  headless server; `just world-test` runs the fast rule tests while
-  iterating; `just verify` runs formatting, check, clippy with
-  warnings denied, all tests, the crate-boundary script, the MPL notice check
-  and `cargo deny`. Run `just verify` before opening a PR.
+- Run `just verify` before opening a PR. It runs the hooks, formatting, check,
+  clippy with warnings denied, all tests, the crate-boundary script, the MPL
+  notice check and `cargo deny`. `just run <args>` runs the app; `just server
+  <args>` the headless server; `just world-test` the fast rule tests while
+  iterating. See `docs/development.md` for the full target list.
 - `--screenshot PATH` renders the loaded scene to a PNG and exits; use it to
   check visuals without a display session. `--start-paused` and `F7` step the
   world by 16 ms for inspection.
