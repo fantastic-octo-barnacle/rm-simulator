@@ -57,3 +57,10 @@ htmlcov/
 # Runtime logs and crash dumps. Recorded benchmark .txt/.json files stay tracked.
 *.log
 *.dmp
+
+# Experiment build/harness scratch (bandwidth investigation, not source)
+/worktrees/
+/target-baseline/
+
+# Nix development environment cache.
+.direnv/

@@ -185,7 +185,23 @@ Run `bin/rm-simulator` or `bin/rm-simulator.exe`. See [CI and releases](docs/rel
 for lightweight PR checks, manual full validation, branch protection setup,
 and the stable/alpha/beta/RC release workflow with dry runs.
 
-Install the Rust toolchain from `rust-toolchain.toml`. GameNetworkingSockets
+With Nix on Apple Silicon macOS or Linux, use the pinned project environment:
+
+```sh
+direnv allow  # once, after reviewing .envrc and flake.nix
+# Or enter explicitly without direnv:
+nix develop
+just server
+```
+
+The shell supplies CMake, Clang/libclang, pkg-config, Protobuf 21 and OpenSSL.
+Rust remains managed by rustup and `rust-toolchain.toml`. Nix builds use
+`target/nix/`, keeping objects linked against Homebrew out of this build.
+Commit `flake.nix`, `flake.lock` and `.envrc`; `.direnv/` stays local. Update
+native dependencies with `nix flake update`, then rebuild and test before
+committing the new lockfile. No global Homebrew dependencies are needed in this shell.
+
+Without Nix, install the Rust toolchain from `rust-toolchain.toml`. GameNetworkingSockets
 also needs CMake, Clang/libclang, pkg-config, Protobuf and OpenSSL to build.
 On Ubuntu, install `cmake libclang-dev pkg-config protobuf-compiler libprotobuf-dev libssl-dev`.
 On macOS:
