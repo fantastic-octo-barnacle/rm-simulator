@@ -752,9 +752,16 @@ network_bandwidth -- --deflate-sweep` to compare deflate 1/4 on identical select
 checkpoints at 64 ms intervals. Compare the selectable compression codecs
 (DEFLATE, ZSTD, ZSTD with the embedded checkpoint dictionary) with
 `cargo run --release --locked -p rm-simulator-server --example
-compression_comparison`. Set `RM_NET_CODEC=zstd` or `RM_NET_CODEC=zstd-dict`
-for a host/client pair running this build; unset means DEFLATE.
-`RM_NET_DEFLATE_LEVEL` and `RM_NET_ZSTD_LEVEL` override compression effort.
+compression_comparison`. Protocol 32 defaults periodic UDP world checkpoints to
+bitpacked fine fixed point with a separately trained, embedded ZSTD dictionary.
+Both peers must run this build. Owner anchors and full confirmations retain
+their existing precision. See the [live binary test guide](docs/bandwidth-results/binary-protocol-live.md).
+
+Set `RM_NET_SNAPSHOT=json` on the host to compare the previous checkpoint format.
+`RM_NET_CODEC=zstd` or `RM_NET_CODEC=zstd-dict` selects compression for that JSON
+path and other compressed message kinds; unset means DEFLATE for those messages.
+`RM_NET_DEFLATE_LEVEL` and `RM_NET_ZSTD_LEVEL` override their compression effort.
+Binary checkpoints always use their fine fixed-point dictionary at ZSTD level 3.
 See the
 [cadence and compression measurements](docs/bandwidth-results/cadence-deflate-followup.md)
 for live trials and a progressive degraded-network play command.

@@ -235,6 +235,7 @@ impl Compressor {
 pub struct Decompressor {
     zstd: Option<zstd::bulk::Decompressor<'static>>,
     zstd_dictionary: Option<zstd::bulk::Decompressor<'static>>,
+    binary_dictionary: Option<zstd::bulk::Decompressor<'static>>,
 }
 
 impl Default for Decompressor {
@@ -250,6 +251,10 @@ impl Decompressor {
         Self {
             zstd: zstd::bulk::Decompressor::new().ok(),
             zstd_dictionary: zstd::bulk::Decompressor::with_dictionary(DICTIONARY).ok(),
+            binary_dictionary: zstd::bulk::Decompressor::with_dictionary(
+                crate::binary_snapshot::dictionary(),
+            )
+            .ok(),
         }
     }
 
@@ -257,6 +262,13 @@ impl Decompressor {
     /// decoders stop at the limit instead of allocating, so the bound protects
     /// the process from a hostile peer as well as from a decoding bug.
     pub fn decompress(&mut self, bytes: &[u8], limit: usize) -> io::Result<Vec<u8>> {
+        if let Some(body) = bytes.strip_prefix(crate::binary_snapshot::MAGIC) {
+            return self
+                .binary_dictionary
+                .as_mut()
+                .ok_or_else(|| io::Error::other("binary dictionary decompressor unavailable"))?
+                .decompress(body, limit);
+        }
         if let Some(body) = bytes.strip_prefix(ZSTD_MAGIC) {
             let context = self
                 .zstd

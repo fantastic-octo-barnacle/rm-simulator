@@ -24,7 +24,9 @@ use std::io::{self, BufRead, Read, Write};
 /// Version 30 carries projectile first-contact and dwell times for spent-ball
 /// retirement. Version 31 names the shared physics tick in Hello and Welcome
 /// so a host refuses a client that predicts at another rate.
-pub const PROTOCOL_VERSION: u32 = 31;
+/// Version 32 defaults periodic UDP checkpoints to packed fine fixed point
+/// with its own embedded trained dictionary. Full confirmations stay exact.
+pub const PROTOCOL_VERSION: u32 = 32;
 
 /// The refusal a host sends a client whose physics rate differs from its own.
 /// Both are stated in Hz where the rate is one that is offered, and otherwise

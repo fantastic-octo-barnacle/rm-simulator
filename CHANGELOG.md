@@ -4,6 +4,24 @@
 
 ## Unreleased
 
+- Reject binary checkpoints that exceed the decoder’s traversal or frame-size
+  limits before transmission.
+
+- Default periodic UDP world checkpoints to bitpacked fine fixed point and the
+  newly trained binary ZSTD dictionary (protocol 32). Retain acknowledged
+  baseline recovery, exact confirmations, owner anchors and input commands.
+  `RM_NET_SNAPSHOT=json` selects the previous checkpoint path for comparison.
+  Both peers must update; see `docs/bandwidth-results/binary-protocol-live.md`
+  for an interactive driving test and the precision assumptions.
+
+- Add a standalone `binary_protocol_comparison` experiment comparing current
+  compressed JSON checkpoints with lossless binary deltas, bitpacking and
+  fixed-point motion fields. It checks decoding and short physics replays,
+  including finer projectile precision and a chassis-only variant, and trains
+  separate binary dictionaries on separate training workloads; see
+  `docs/bandwidth-results/binary-protocol.md`. The experiment is standalone;
+  Protocol 32 checkpoint behavior is described above.
+
 - Add a selectable wire compression codec: DEFLATE stays the production default,
   and `RM_NET_CODEC=zstd` or `zstd-dict` selects ZSTD, the latter with a trained
   checkpoint dictionary embedded in the binary. Frames are self-identifying

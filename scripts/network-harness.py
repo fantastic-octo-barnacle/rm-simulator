@@ -569,6 +569,7 @@ def run(args, scenario):
                     'platform': platform.platform(), 'machine': platform.machine(),
                     'environment': {key: os.environ[key] for key in
                                     ('WGPU_SETTINGS_PRIO', 'WGPU_BACKEND', 'WGPU_POWER_PREF', 'RUST_LOG',
+                                     'RM_NET_SNAPSHOT', 'RM_NET_CODEC', 'RM_NET_DEFLATE_LEVEL', 'RM_NET_ZSTD_LEVEL',
                                      'RM_NET_PROFILE', 'RM_NET_UP_KIB_S', 'RM_NET_DOWN_KIB_S', 'RM_NET_FULL_CHECKPOINTS', 'RM_NET_FIXED_INPUT_LEAD', 'RM_NET_INPUT_HISTORY')
                                     if key in os.environ},
                     'python': sys.version, 'protocol_source': (ROOT / 'crates/rm-simulator-server/src/protocol.rs').read_text().split('pub const PROTOCOL_VERSION: u32 = ')[-1].split(';')[0],
