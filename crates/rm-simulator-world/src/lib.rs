@@ -1363,10 +1363,13 @@ mod tests {
                 .fire(muzzle, Shot::at_limit(Caliber::Mm17), None)
                 .unwrap();
         }
-        // Split by uneven tick counts; only the total is a fixed world time.
+        // Split by uneven tick counts derived from the total, so the parts
+        // still sum to it at the slowest offered rate.
         let total = ticks(1_500_000_000);
         whole.step(total).unwrap();
-        for part in [1, 3, 97, total - 101] {
+        let parts = [1, total / 7, total / 3];
+        let rest = total - parts.iter().sum::<u64>();
+        for part in parts.into_iter().chain([rest]) {
             split.step(part).unwrap();
         }
         assert_eq!(whole.tick(), split.tick());

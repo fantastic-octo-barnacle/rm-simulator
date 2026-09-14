@@ -15,19 +15,22 @@ use std::collections::{BTreeMap, VecDeque};
 /// Catch-up cap so a stalled host does not spiral the world clock.
 pub const MAX_ADVANCE_NS: u64 = 250_000_000;
 /// World time one manual step covers while paused, in nanoseconds. The step is
-/// a duration, not a tick count, so it is the same 16 ms at every physics rate.
+/// a duration, not a tick count, so it covers at least 16 ms at every physics
+/// rate; a rate whose ticks do not divide it rounds up to the next boundary.
 pub const STEP_NS: u64 = 16_000_000;
 
-/// Ticks in one manual step while paused: [`STEP_NS`] at the current rate, at
-/// least one.
+/// Ticks in one manual step while paused: the first tick boundary at or after
+/// [`STEP_NS`] at the current rate, so a step is never shorter than 16 ms.
 ///
 /// ```
 /// use rm_simulator_server::simulation::{STEP_NS, step_ticks};
 ///
-/// assert_eq!(step_ticks() * rm_simulator_world::tick_ns(), STEP_NS);
+/// let tick_ns = rm_simulator_world::tick_ns();
+/// assert!(step_ticks() * tick_ns >= STEP_NS);
+/// assert!((step_ticks() - 1) * tick_ns < STEP_NS);
 /// ```
 pub fn step_ticks() -> u64 {
-    (STEP_NS / tick_ns()).max(1)
+    STEP_NS.div_ceil(tick_ns()).max(1)
 }
 
 /// What clients see: the field plus the host's pacing state.

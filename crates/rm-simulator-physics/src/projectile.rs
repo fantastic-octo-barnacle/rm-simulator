@@ -1540,6 +1540,11 @@ mod tests {
             Err("target face count changed")
         );
     }
+    /// Ticks in `n` milliseconds of world time at the configured rate, so the
+    /// tests below state their durations rather than 1 kHz tick counts.
+    fn ms(n: u64) -> u64 {
+        n * 1_000_000 / tick_ns()
+    }
     /// Step `ticks` from `start`; returns the contacts and the tick of the first one.
     fn run(
         ballistics: &mut WorldPhysics,
@@ -1599,13 +1604,18 @@ mod tests {
                 None,
             )
             .unwrap();
-        let (contacts, tick) = run(&mut ballistics, &faces, 0, 200);
+        let (contacts, tick) = run(&mut ballistics, &faces, 0, ms(200));
         assert_eq!(contacts.len(), 1, "{contacts:?}");
         let contact = &contacts[0];
         assert_eq!(contact.projectile, id);
         assert_eq!(contact.target, target);
-        // 1.5 m at 25 m/s with drag takes a little over 60 ms.
-        assert!((58..75).contains(&tick), "{tick}");
+        // 1.5 m at 25 m/s with drag takes a little over 60 ms; the contact
+        // tick ends within one tick of that at any offered rate.
+        let contact_ns = tick * tick_ns();
+        assert!(
+            (58_000_000..75_000_000 + tick_ns()).contains(&contact_ns),
+            "{contact_ns} ns"
+        );
         assert!(
             contact.normal_speed_m_s > 23. && contact.normal_speed_m_s < 25.,
             "{contact:?}"
@@ -1620,7 +1630,7 @@ mod tests {
         );
         assert!(scoring_offset(target, contact.local_m).is_some());
         // The ball bounces away and is not reported twice.
-        let (later, _) = run(&mut ballistics, &faces, 200, 100);
+        let (later, _) = run(&mut ballistics, &faces, ms(200), ms(100));
         assert!(later.is_empty());
         let snapshot = ballistics.snapshot();
         assert_eq!(snapshot.len(), 1);
@@ -1643,7 +1653,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        let (contacts, _) = run(&mut ballistics, &faces, 0, 300);
+        let (contacts, _) = run(&mut ballistics, &faces, 0, ms(300));
         assert_eq!(contacts.len(), 1, "{contacts:?}");
         assert!(contacts[0].local_m[0] < -0.015, "{contacts:?}");
         assert!(contacts[0].normal_speed_m_s < 0.);
@@ -1664,11 +1674,12 @@ mod tests {
             .unwrap();
         let mut contacts = Vec::new();
         let mut frames = TargetFrames::new(vec![start]);
-        for tick in 0..400 {
+        let tick_s = tick_ns() as f64 * 1e-9;
+        for tick in 0..400_000_000 / tick_ns() {
             // The plate advances toward the shooter at 5 m/s.
             let at = |t: u64| {
                 let mut f = start;
-                f.pose.translation_m[0] -= 5. * t as f64 * 1e-3;
+                f.pose.translation_m[0] -= 5. * t as f64 * tick_s;
                 f
             };
             frames.begin(|faces| faces[0] = at(tick)).unwrap();
@@ -1693,12 +1704,12 @@ mod tests {
             )
             .unwrap();
         assert!(!ballistics.is_idle());
-        run(&mut ballistics, &[], 0, 2_000);
+        run(&mut ballistics, &[], 0, ms(2_000));
         let snapshot = ballistics.snapshot();
         assert_eq!(snapshot.len(), 1);
         assert!(snapshot[0].position_m[2] > 0.02 && snapshot[0].position_m[2] < 0.03);
         assert!(snapshot[0].position_m[0] > 0.5);
-        run(&mut ballistics, &[], 2_000, 2_100);
+        run(&mut ballistics, &[], ms(2_000), ms(2_100));
         assert!(ballistics.is_idle());
         assert_eq!(ballistics.launched(), 1);
     }
@@ -1757,7 +1768,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        run(&mut ballistics, &[], 0, 1_500);
+        run(&mut ballistics, &[], 0, ms(1_500));
         let snapshot = ballistics.snapshot();
         assert!(snapshot[0].position_m[2] > 0.5, "{:?}", snapshot[0]);
     }

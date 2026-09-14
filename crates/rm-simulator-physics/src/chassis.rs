@@ -1002,6 +1002,7 @@ mod tests {
         assert_eq!(physics.chassis_snapshots()[0].held_aim_rad, [0.; 2]);
         let frames = TargetFrames::new(Vec::new());
         let mut previous_rate = [0.; 2];
+        let tick_s = tick_ns() as f64 * 1e-9;
         for tick in 0..200 {
             physics.step(tick * tick_ns(), &frames).unwrap();
             let motor = physics.chassis_snapshots()[0].gimbal_velocity_rad_s;
@@ -1009,7 +1010,7 @@ mod tests {
                 assert!(motor[axis].abs() <= config.dynamics.gimbal_max_speed_rad_s + 1e-10);
                 assert!(
                     (motor[axis] - previous_rate[axis]).abs()
-                        <= config.dynamics.gimbal_max_acceleration_rad_s2 * 0.001 + 1e-10
+                        <= config.dynamics.gimbal_max_acceleration_rad_s2 * tick_s + 1e-10
                 );
             }
             previous_rate = motor;

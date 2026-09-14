@@ -645,11 +645,8 @@ pub struct FireTiming {
 ///         ..
 ///     }
 /// ));
-/// // An omitted physics rate means the reader's own.
-/// assert!(matches!(
-///     old,
-///     ClientMessage::Hello { tick_ns, .. } if tick_ns == rm_simulator_world::tick_ns()
-/// ));
+/// // An omitted physics rate decodes as zero, which every host refuses.
+/// assert!(matches!(old, ClientMessage::Hello { tick_ns: 0, .. }));
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 // Keep small fixed-size control records inline in bounded transport queues.
@@ -689,8 +686,10 @@ pub enum ClientMessage {
         role: Role,
         /// Tick length in nanoseconds this client predicts at, from its own
         /// `--physics-rate-hz`. The whole match must share one rate, so a host
-        /// refuses a client whose value differs from its own.
-        #[serde(default = "rm_simulator_world::tick_ns")]
+        /// refuses a client whose value differs from its own. An omitted field
+        /// decodes as zero, which no host runs at, so it is refused by the
+        /// same check rather than silently taking the host's rate.
+        #[serde(default)]
         tick_ns: u64,
     },
     /// One action on the field, addressed to a chassis or to the match.
@@ -1046,12 +1045,13 @@ mod tests {
                 ..
             }
         ));
-        // An omitted rate means the reader's own, so an old client is refused
-        // by the rate check rather than by a decode failure.
-        assert!(matches!(
-            hello,
-            ClientMessage::Hello { tick_ns, .. } if tick_ns == rm_simulator_world::tick_ns()
-        ));
+        // An omitted rate decodes as zero rather than the reader's own rate,
+        // so a peer that never states its rate is refused by the rate check
+        // whatever rate the host runs at, instead of by a decode failure.
+        assert!(matches!(hello, ClientMessage::Hello { tick_ns: 0, .. }));
+        for host_tick_ns in [1_000_000, 7_812_500] {
+            assert!(rate_mismatch(host_tick_ns, 0).contains("0 ns per tick"));
+        }
         let command: Command = serde_json::from_str(
             r#"{"Chassis":{"chassis":1,"command":{"forward_m_s":1.0,"left_m_s":0.0,"yaw_rate_rad_s":0.0}}}"#,
         )

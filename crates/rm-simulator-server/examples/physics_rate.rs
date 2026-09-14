@@ -668,8 +668,16 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 }
 
 fn cpu(root: &Path, args: &[String]) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        args.len() == 5,
+        "usage: physics_rate cpu CAD_PATH ROBOTS idle|drive|fire WARMUP_S MEASURE_S REP"
+    );
     let robots: usize = args[0].parse()?;
     let mode = args[1].clone();
+    anyhow::ensure!(
+        matches!(mode.as_str(), "idle" | "drive" | "fire"),
+        "unknown cpu mode `{mode}`; expected idle, drive or fire"
+    );
     let warmup_s: f64 = args[2].parse()?;
     let measure_s: f64 = args[3].parse()?;
     let rep: u32 = args[4].parse()?;

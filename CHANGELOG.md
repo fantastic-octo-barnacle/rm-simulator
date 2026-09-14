@@ -8,7 +8,8 @@
   measured 1000, 500, 250 and 128 Hz rates (128 Hz is exactly 7,812,500 ns per
   tick) and refusing any other value. The title screen remembers it, the HUD
   shows the active rate, and a host refuses a client that predicts at another
-  rate.
+  rate or states none. The paused `F7` step covers the first tick boundary at
+  or after 16 ms, so it is never shorter than 16 ms at a reduced rate.
 
 - Skip malformed optional network trace metrics before aggregation so diagnostic
   summaries still report valid rows and flag incomplete traces.
