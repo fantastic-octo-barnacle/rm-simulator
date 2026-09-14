@@ -1,0 +1,66 @@
+{
+  "status": "frozen before replication",
+  "scope": "Fixed T3 policy replicated on two new development seeds; no retuning",
+  "variants": [
+    "drr-128-211",
+    "completion-128-211"
+  ],
+  "players": [
+    2,
+    12
+  ],
+  "profiles": [
+    "clean",
+    "rtt",
+    "limited"
+  ],
+  "seed_use": "Development seeds only; T4 seeds 1001\u20131010 remain untouched",
+  "cadence_ms": {
+    "chassis": 32,
+    "projectiles": 64,
+    "checkpoint": 128
+  },
+  "weights": [
+    2,
+    1,
+    1,
+    1
+  ],
+  "compression": {
+    "mode": "ZstdDictionary",
+    "level": 3,
+    "prepared_dictionary_by_copy": true
+  },
+  "warmup_ms": 10016,
+  "measured_ms": 60000,
+  "workers": 3,
+  "change": "Only checkpoint child-queue ordering; outer byte DRR weights and all wire formats, repair policy, queue bounds and controls unchanged",
+  "focus_selection": "Keep one focus while it has eligible active transfers and its 1s lease has not expired. For a new focus prefer a validated received repair request; otherwise oldest started transfer then oldest queued transfer. On expiry prefer another queued checkpoint if available.",
+  "transfer_order": "Within focus finish selected transfer before others; otherwise started transfer then smallest remaining dependency. Association is enqueue-origin checkpoint, not perfect knowledge of shared revision dependencies.",
+  "fairness": "At most4092 priority bytes before one original round-robin checkpoint fragment; account payload and header, conservatively allow 4 B shared header when selecting; outer DRR still bounds group service. No service credit or bytes borrowed from another group beyond ordinary idle borrowing.",
+  "correctness": "Exact checkpoint reconstruction, monotonic promotion, confirmation before Pong, bounded payload/partial memory; all 13 controls complete; positive measured checkpoint progress",
+  "primary_hypothesis": "p95 checkpoint age lower than unchanged 2:1:1 in both limited-link counts, without regression in guarded metrics in any of 6 cells",
+  "guarded_metrics": [
+    "chassis_age_p95_ms",
+    "projectile_age_p95_ms",
+    "body_error_p95_m",
+    "aim_error_p95_rad",
+    "projectile_error_p95_m",
+    "missing_robot_fraction",
+    "missing_projectile_fraction",
+    "stale_projectile_fraction",
+    "pong_p95_ms"
+  ],
+  "analysis": "Report paired differences and original strict primary criterion separately per seed; no pooled frames, epsilon, composite score or statistical winner",
+  "baseline_check": "Within each seed/block compare identical captured-stream and impairment hashes; historical seed101 results remain separate",
+  "stop": "Stop after 24 runs; no retuning, T4, integration, rate, weight or compression changes",
+  "seed_ids": [
+    102,
+    103
+  ],
+  "seed_namespaces": {
+    "workload": "0x10000000 + seed_id",
+    "impairment": "0x20000000 + seed_id",
+    "order": "0x40000000 + seed_id + players * 17 + profile_id"
+  }
+}

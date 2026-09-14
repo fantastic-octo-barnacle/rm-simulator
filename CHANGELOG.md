@@ -27,7 +27,9 @@
   separate post-Zstd-rebase T1 results. Live networking remains on the existing
   whole-snapshot codec.
   Add offline T2 logical-group byte-weighted DRR and a reproducible 96-run
-  checkpoint-period/priority screen with parallel injected-clock replays.
+  checkpoint-period/priority screen with parallel injected-clock replays. Add a
+  focused completion-order ablation within the same fixed checkpoint byte share,
+  with a fixed-policy replication on two additional development seeds.
 
 - Add `--physics-rate-hz` to the app and the headless server, offering the
   measured 1000, 500, 250 and 128 Hz rates (128 Hz is exactly 7,812,500 ns per

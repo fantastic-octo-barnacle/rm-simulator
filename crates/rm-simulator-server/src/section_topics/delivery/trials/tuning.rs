@@ -10,6 +10,8 @@ mod link;
 mod run;
 #[path = "tuning/t2.rs"]
 mod t2;
+#[path = "tuning/t3.rs"]
+mod t3;
 
 pub(in super::super) type Trace = Rc<RefCell<Recorder>>;
 

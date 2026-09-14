@@ -138,6 +138,7 @@ fn recover(out: &mut [Option<u64>; 3], end: u64, now: u64, checkpoint: u64, view
 #[derive(Clone, Copy)]
 pub(super) struct Experiment {
     pub cadence: Cadence,
+    pub completion_priority: bool,
     pub weights: Option<[u8; 4]>,
     pub whole: bool,
     pub sections: bool,
@@ -207,6 +208,10 @@ pub(super) fn trial_configured(
         || Sender::new(rate),
         |weights| Sender::with_weights(rate, weights).unwrap(),
     );
+    if experiment.is_some_and(|e| e.completion_priority) {
+        sender =
+            Sender::with_completion_priority(rate, experiment.unwrap().weights.unwrap()).unwrap();
+    }
     let mut receiver = Receiver::new(10 * 1024);
     if enabled {
         sender.queue.trace = Some(trace.clone());
@@ -409,7 +414,7 @@ pub(super) fn trial_configured(
         assert_eq!(trace.borrow().datagram_bytes, sender.stats().sent_bytes);
         assert_eq!(trace.borrow().datagrams, sender.stats().sent_packets);
     }
-    serde_json::json!({
+    let mut result = serde_json::json!({
         "checkpoint_simulation_state_age_ms":{"whole":distribution(&state_ages[0]),"sections":distribution(&state_ages[1])},
         "upstream_lifetime_bytes_datagrams":receiver.feedback_counts(),
         "diagnostics": diagnostics,
@@ -432,7 +437,11 @@ pub(super) fn trial_configured(
         "p95_available_chassis_age_delta_ms": sections_json["available_chassis_age_ms"]["p95"].as_f64().unwrap() - whole_json["available_chassis_age_ms"]["p95"].as_f64().unwrap(),
         "sender_lifetime": sender.stats(),
         "scope": "T1 time-bin impairments and injected confirmation/Pong controls; one observing peer; no native wire/retransmission bytes, player input, owner anchors, render or prediction timings; held poses only"
-    })
+    });
+    if let Some(policy) = &sender.queue.completion {
+        result["completion_priority"] = policy.json();
+    }
+    result
 }
 
 #[test]

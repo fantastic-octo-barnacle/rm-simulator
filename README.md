@@ -783,6 +783,10 @@ diagnostics. Its reproducible runner and records live in
 The T2 screen adds logical-group byte weights through `Sender::with_weights`;
 its [runner and frozen plan](docs/experiments/results/02-section-topics/t2) compare
 96 cases with independent worker processes on an injected clock.
+The focused [T3 ablation](docs/experiments/results/02-section-topics/t3) tests
+`Sender::with_completion_priority` at fixed rates and weights. Its
+[two-seed replication](docs/experiments/02-section-topics-tuning.md#t3-replication-on-development-seeds-102-and-103)
+repeats the checkpoint-age benefit while retaining the failed no-regression result.
 
 `GET /api/fire-records` on the host HTTP endpoint returns the latest 256 accepted
 pilot shots, oldest first. Records include client-relative input time, estimated

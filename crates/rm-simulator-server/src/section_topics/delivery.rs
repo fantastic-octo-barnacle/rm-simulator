@@ -42,6 +42,7 @@ use std::{
     time::Duration,
 };
 
+mod completion;
 pub mod presentation;
 mod scheduling;
 
@@ -107,6 +108,7 @@ impl Budget {
     }
 }
 struct Transfer {
+    checkpoint: Option<u64>,
     id: u64,
     bytes: Vec<u8>,
     offset: usize,
@@ -134,6 +136,7 @@ impl Slot {
     }
 }
 struct Queue {
+    completion: Option<completion::Completion>,
     drr: Option<scheduling::Drr>,
     #[cfg(test)]
     trace: Option<trials::tuning::Trace>,
@@ -148,6 +151,7 @@ impl Queue {
     fn new(rate: u32) -> Self {
         Self {
             drr: None,
+            completion: None,
             #[cfg(test)]
             trace: None,
             slots: std::array::from_fn(|_| Slot::default()),
@@ -163,6 +167,14 @@ impl Queue {
             + self.control.iter().map(|t| t.bytes.len()).sum::<usize>()
     }
     fn offer(&mut self, class: usize, bytes: Vec<u8>) -> io::Result<()> {
+        self.offer_checkpoint(class, bytes, None)
+    }
+    fn offer_checkpoint(
+        &mut self,
+        class: usize,
+        bytes: Vec<u8>,
+        checkpoint: Option<u64>,
+    ) -> io::Result<()> {
         #[cfg(test)]
         if let Some(trace) = &self.trace {
             trace.borrow_mut().offer(class, bytes.len());
@@ -208,6 +220,7 @@ impl Queue {
                 .enqueue(class, self.next_id, bytes.len(), replaced.map(|t| t.id));
         }
         let transfer = Transfer {
+            checkpoint,
             id: self.next_id,
             bytes,
             offset: 0,
@@ -410,6 +423,9 @@ impl Sender {
             self.history = std::array::from_fn(|_| Cache::default());
             self.manifests.clear();
             self.queue.slots = std::array::from_fn(|_| Slot::default());
+            if self.queue.completion.is_some() {
+                self.queue.completion = Some(completion::Completion::default());
+            }
             self.last_repair = None;
             self.repair = None;
         }
@@ -458,7 +474,14 @@ impl Sender {
                     1 + topic as usize + if repair { TOPICS } else { 0 }
                 })
         };
-        self.queue.offer(class, frame.bytes)
+        let checkpoint = if class == CONTROL_CLASS {
+            None
+        } else if repair {
+            self.repair.as_ref().map(|r| r.manifest.checkpoint)
+        } else {
+            Some(self.encoder.checkpoint)
+        };
+        self.queue.offer_checkpoint(class, frame.bytes, checkpoint)
     }
     fn manifest(&mut self, manifest: &Manifest) -> io::Result<()> {
         self.enqueue(
@@ -505,6 +528,16 @@ impl Sender {
         self.completed = self
             .completed
             .max(feedback.completed.min(self.encoder.checkpoint));
+        if let Some(policy) = &mut self.queue.completion {
+            let requested = feedback.need.as_ref().map(|(id, _)| *id).filter(|id| {
+                self.manifests.contains_key(id)
+                    || self
+                        .repair
+                        .as_ref()
+                        .is_some_and(|r| r.manifest.checkpoint == *id)
+            });
+            policy.feedback(self.completed, requested);
+        }
         if self
             .repair
             .as_ref()

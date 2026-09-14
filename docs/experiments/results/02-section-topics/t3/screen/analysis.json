@@ -1,0 +1,294 @@
+{
+  "scope": "One ablation on reused development seed; no independent validation",
+  "baseline_exact_matches": [
+    "2-clean-rr-128.json.gz",
+    "2-clean-drr-128-211.json.gz",
+    "2-rtt-drr-128-211.json.gz",
+    "2-rtt-rr-128.json.gz",
+    "2-limited-drr-128-211.json.gz",
+    "2-limited-rr-128.json.gz",
+    "12-clean-drr-128-211.json.gz",
+    "12-clean-rr-128.json.gz",
+    "12-rtt-rr-128.json.gz",
+    "12-rtt-drr-128-211.json.gz",
+    "12-limited-rr-128.json.gz",
+    "12-limited-drr-128-211.json.gz"
+  ],
+  "primary_hypothesis_supported": false,
+  "checkpoint_improves_both_limited_counts": true,
+  "guarded_regressions": [
+    {
+      "players": 2,
+      "profile": "limited",
+      "metric": "projectile_error_p95_m",
+      "delta": 0.042665538666149416
+    },
+    {
+      "players": 2,
+      "profile": "limited",
+      "metric": "missing_projectile_fraction",
+      "delta": 0.00020835243230629685
+    },
+    {
+      "players": 2,
+      "profile": "limited",
+      "metric": "stale_projectile_fraction",
+      "delta": 0.0002843411285430031
+    },
+    {
+      "players": 12,
+      "profile": "limited",
+      "metric": "projectile_age_p95_ms",
+      "delta": 16.0
+    },
+    {
+      "players": 12,
+      "profile": "limited",
+      "metric": "body_error_p95_m",
+      "delta": 2.5882585556136206e-05
+    },
+    {
+      "players": 12,
+      "profile": "limited",
+      "metric": "projectile_error_p95_m",
+      "delta": 0.039314312454028943
+    },
+    {
+      "players": 12,
+      "profile": "limited",
+      "metric": "missing_projectile_fraction",
+      "delta": 1.6669792252718696e-05
+    }
+  ],
+  "progress_or_control_failures": [],
+  "paired_differences": [
+    {
+      "players": 2,
+      "profile": "clean",
+      "control": "rr-128",
+      "candidate_minus_control": {
+        "checkpoint_age_p95_ms": 0.0,
+        "chassis_age_p95_ms": 0.0,
+        "projectile_age_p95_ms": 0.0,
+        "body_error_p95_m": 0.0,
+        "aim_error_p95_rad": 0.0,
+        "projectile_error_p95_m": 0.0,
+        "missing_robot_fraction": 0.0,
+        "missing_projectile_fraction": 0.0,
+        "stale_projectile_fraction": 0.0,
+        "pong_p95_ms": 0.0,
+        "downstream_bytes": -164,
+        "upstream_bytes": 0
+      }
+    },
+    {
+      "players": 2,
+      "profile": "clean",
+      "control": "drr-128-211",
+      "candidate_minus_control": {
+        "checkpoint_age_p95_ms": 0.0,
+        "chassis_age_p95_ms": 0.0,
+        "projectile_age_p95_ms": 0.0,
+        "body_error_p95_m": 0.0,
+        "aim_error_p95_rad": 0.0,
+        "projectile_error_p95_m": 0.0,
+        "missing_robot_fraction": 0.0,
+        "missing_projectile_fraction": 0.0,
+        "stale_projectile_fraction": 0.0,
+        "pong_p95_ms": 0.0,
+        "downstream_bytes": 12,
+        "upstream_bytes": 0
+      }
+    },
+    {
+      "players": 2,
+      "profile": "rtt",
+      "control": "rr-128",
+      "candidate_minus_control": {
+        "checkpoint_age_p95_ms": 0.0,
+        "chassis_age_p95_ms": 0.0,
+        "projectile_age_p95_ms": 0.0,
+        "body_error_p95_m": 0.0,
+        "aim_error_p95_rad": 0.0,
+        "projectile_error_p95_m": 0.0,
+        "missing_robot_fraction": 0.0,
+        "missing_projectile_fraction": 0.0,
+        "stale_projectile_fraction": 0.0,
+        "pong_p95_ms": 0.0,
+        "downstream_bytes": -164,
+        "upstream_bytes": 0
+      }
+    },
+    {
+      "players": 2,
+      "profile": "rtt",
+      "control": "drr-128-211",
+      "candidate_minus_control": {
+        "checkpoint_age_p95_ms": 0.0,
+        "chassis_age_p95_ms": 0.0,
+        "projectile_age_p95_ms": 0.0,
+        "body_error_p95_m": 0.0,
+        "aim_error_p95_rad": 0.0,
+        "projectile_error_p95_m": 0.0,
+        "missing_robot_fraction": 0.0,
+        "missing_projectile_fraction": 0.0,
+        "stale_projectile_fraction": 0.0,
+        "pong_p95_ms": 0.0,
+        "downstream_bytes": -1296,
+        "upstream_bytes": 0
+      }
+    },
+    {
+      "players": 2,
+      "profile": "limited",
+      "control": "rr-128",
+      "candidate_minus_control": {
+        "checkpoint_age_p95_ms": -134.0,
+        "chassis_age_p95_ms": -22.0,
+        "projectile_age_p95_ms": -160.0,
+        "body_error_p95_m": -0.015801868014053755,
+        "aim_error_p95_rad": -0.004282097914743099,
+        "projectile_error_p95_m": -2.027400898342634,
+        "missing_robot_fraction": 0.0,
+        "missing_projectile_fraction": -0.02916100642558901,
+        "stale_projectile_fraction": -0.02909004174217636,
+        "pong_p95_ms": -204.0,
+        "downstream_bytes": 855,
+        "upstream_bytes": -33413
+      }
+    },
+    {
+      "players": 2,
+      "profile": "limited",
+      "control": "drr-128-211",
+      "candidate_minus_control": {
+        "checkpoint_age_p95_ms": -210.0,
+        "chassis_age_p95_ms": 0.0,
+        "projectile_age_p95_ms": -16.0,
+        "body_error_p95_m": -2.123444769686067e-06,
+        "aim_error_p95_rad": -0.001736016313422184,
+        "projectile_error_p95_m": 0.042665538666149416,
+        "missing_robot_fraction": 0.0,
+        "missing_projectile_fraction": 0.00020835243230629685,
+        "stale_projectile_fraction": 0.0002843411285430031,
+        "pong_p95_ms": -32.0,
+        "downstream_bytes": 835,
+        "upstream_bytes": -3532
+      }
+    },
+    {
+      "players": 12,
+      "profile": "clean",
+      "control": "rr-128",
+      "candidate_minus_control": {
+        "checkpoint_age_p95_ms": 0.0,
+        "chassis_age_p95_ms": 0.0,
+        "projectile_age_p95_ms": 0.0,
+        "body_error_p95_m": 0.0,
+        "aim_error_p95_rad": 0.0,
+        "projectile_error_p95_m": 0.0,
+        "missing_robot_fraction": 0.0,
+        "missing_projectile_fraction": 0.0,
+        "stale_projectile_fraction": 0.0,
+        "pong_p95_ms": 0.0,
+        "downstream_bytes": -3328,
+        "upstream_bytes": 0
+      }
+    },
+    {
+      "players": 12,
+      "profile": "clean",
+      "control": "drr-128-211",
+      "candidate_minus_control": {
+        "checkpoint_age_p95_ms": 0.0,
+        "chassis_age_p95_ms": 0.0,
+        "projectile_age_p95_ms": 0.0,
+        "body_error_p95_m": 0.0,
+        "aim_error_p95_rad": 0.0,
+        "projectile_error_p95_m": 0.0,
+        "missing_robot_fraction": 0.0,
+        "missing_projectile_fraction": 0.0,
+        "stale_projectile_fraction": 0.0,
+        "pong_p95_ms": 0.0,
+        "downstream_bytes": -1444,
+        "upstream_bytes": 0
+      }
+    },
+    {
+      "players": 12,
+      "profile": "rtt",
+      "control": "rr-128",
+      "candidate_minus_control": {
+        "checkpoint_age_p95_ms": 0.0,
+        "chassis_age_p95_ms": 0.0,
+        "projectile_age_p95_ms": 0.0,
+        "body_error_p95_m": 0.0,
+        "aim_error_p95_rad": 0.0,
+        "projectile_error_p95_m": 0.0,
+        "missing_robot_fraction": 0.0,
+        "missing_projectile_fraction": 0.0,
+        "stale_projectile_fraction": 0.0,
+        "pong_p95_ms": 0.0,
+        "downstream_bytes": -3292,
+        "upstream_bytes": 0
+      }
+    },
+    {
+      "players": 12,
+      "profile": "rtt",
+      "control": "drr-128-211",
+      "candidate_minus_control": {
+        "checkpoint_age_p95_ms": 0.0,
+        "chassis_age_p95_ms": 0.0,
+        "projectile_age_p95_ms": 0.0,
+        "body_error_p95_m": 0.0,
+        "aim_error_p95_rad": 0.0,
+        "projectile_error_p95_m": 0.0,
+        "missing_robot_fraction": 0.0,
+        "missing_projectile_fraction": 0.0,
+        "stale_projectile_fraction": 0.0,
+        "pong_p95_ms": 0.0,
+        "downstream_bytes": -2692,
+        "upstream_bytes": 0
+      }
+    },
+    {
+      "players": 12,
+      "profile": "limited",
+      "control": "rr-128",
+      "candidate_minus_control": {
+        "checkpoint_age_p95_ms": 88.0,
+        "chassis_age_p95_ms": -92.0,
+        "projectile_age_p95_ms": -272.0,
+        "body_error_p95_m": -0.09415794140257672,
+        "aim_error_p95_rad": -0.017037962201740975,
+        "projectile_error_p95_m": -3.7852868984457633,
+        "missing_robot_fraction": 0.0,
+        "missing_projectile_fraction": -0.057994207247192175,
+        "stale_projectile_fraction": -0.0583214044063851,
+        "pong_p95_ms": -780.0,
+        "downstream_bytes": -684,
+        "upstream_bytes": -34635
+      }
+    },
+    {
+      "players": 12,
+      "profile": "limited",
+      "control": "drr-128-211",
+      "candidate_minus_control": {
+        "checkpoint_age_p95_ms": -402.0,
+        "chassis_age_p95_ms": 0.0,
+        "projectile_age_p95_ms": 16.0,
+        "body_error_p95_m": 2.5882585556136206e-05,
+        "aim_error_p95_rad": -0.00446642390104568,
+        "projectile_error_p95_m": 0.039314312454028943,
+        "missing_robot_fraction": 0.0,
+        "missing_projectile_fraction": 1.6669792252718696e-05,
+        "stale_projectile_fraction": -0.00020020953245424022,
+        "pong_p95_ms": -70.0,
+        "downstream_bytes": -748,
+        "upstream_bytes": -15671
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+
+running 1 test
+RM_SECTION_T3_ARTIFACT 12-clean-completion-128-211.json.gz
+RM_SECTION_T3_ARTIFACT 12-clean-drr-128-211.json.gz
+RM_SECTION_T3_ARTIFACT 12-clean-rr-128.json.gz
+test section_topics::delivery::trials::tuning::t3::t3_block ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 244 filtered out; finished in 18.68s

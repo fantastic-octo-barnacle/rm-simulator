@@ -1,0 +1,456 @@
+{
+  "base_revision": "a3a0d33bfe35e2258c1fb93169826a572d27b87f",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "machine": "arm64",
+  "binary_sha256": "09c448d2fb2add165176dc44ca177c5759c97adafb420070dd58369ddce28b54",
+  "source_sha256": {
+    "crates/rm-simulator-app/build.rs": "054b6d7cc9051f0bec07f2ee468d81fc4130e10a4efdeb28260727dcd285b3b1",
+    "crates/rm-simulator-app/examples/physical_scene.rs": "e54cb17a0b95650b52898bfbe63b08d4eae464c73fa22a656f73b5967ba81d92",
+    "crates/rm-simulator-app/src/args.rs": "144f53aeb4dcdbe32a83a9532c6c039aa83fd2ddbb3135a794a4a6476986de03",
+    "crates/rm-simulator-app/src/auto_aim.rs": "cbbdd27c544e2d1b568adf22e881a44dcf3672b89f4429b5ca6ab1c5fade8df4",
+    "crates/rm-simulator-app/src/bindings.rs": "78c7b1fff2d9296046b40b3f19f477495ac8784ffbac2a353c8846ad58af0e87",
+    "crates/rm-simulator-app/src/console.rs": "61cb41aee39dc52fdfbb740c23fa939c4093e7515a7a42a49137c49c96b92cec",
+    "crates/rm-simulator-app/src/controls.rs": "86381028646464ce3fa00d60a2c90d42bc80d91250740b4e8dc3b1026e47ee19",
+    "crates/rm-simulator-app/src/debug.rs": "bb0690b5c43e517c8f3af7750518f9b991260c74eb3b6ff26a99a351035808da",
+    "crates/rm-simulator-app/src/debug_panel.rs": "aaf97a70083314a83b870b7431a72a05c5d8d2efe4f17125e99cf858e511ab1f",
+    "crates/rm-simulator-app/src/frames.rs": "8829bac422179e182422956239313e10ebd61e3c9ce0802117070bf201227cfc",
+    "crates/rm-simulator-app/src/graphics.rs": "22dac8985f242e35dc9145820f7c691b74566dfa95d903b894f0ceab5bf79c0d",
+    "crates/rm-simulator-app/src/hit_feedback.rs": "cd6741d03980bce902d3dd9ed081f904f2a10c1cb7ab14262caff5082eb0c1b1",
+    "crates/rm-simulator-app/src/hud/controls_menu.rs": "66261728612b73cffa31e43bc2a07f99d65a8b32f33bc215c2b675c118d078b6",
+    "crates/rm-simulator-app/src/hud/menus.rs": "6a1d56b4540fb783e7d40838ebd32883d1fc593aeed0f5edbcbaf8492c101443",
+    "crates/rm-simulator-app/src/hud/team_status.rs": "aef142620b0e08949cbe3e17ae6cf857ad38032655edac5df4d3abb411118267",
+    "crates/rm-simulator-app/src/hud.rs": "0719fd2260b145f8f64614c22c2fba15e36db3a034a9fc74bf5b268c834da715",
+    "crates/rm-simulator-app/src/interpolation.rs": "672bff33cd3e13ea732c0ba1dcee23f2f4dc9177249813d2f31d2ac6eefe41a9",
+    "crates/rm-simulator-app/src/loading.rs": "6ebf5dd1190c136d5d5f2026ce6c065cdd426f073ca4f901219e9ad04f3e0138",
+    "crates/rm-simulator-app/src/main.rs": "8c9d6b10cca715daaa58a77b86f8c0634071b5b160d0f7e8fda04d5b0564facc",
+    "crates/rm-simulator-app/src/minimap.rs": "84d30852878531880b842c6fc4a05c3700ed73bebff5613005e5ba7f5b5ced48",
+    "crates/rm-simulator-app/src/net_harness.rs": "4606bb85fde54962eac98baf89546ab9ff86a519a47b4a9611fff4491bd452dc",
+    "crates/rm-simulator-app/src/network_hud.rs": "fc9a4e5f2446b3267c45d5114c883fafcb00252828d96980b909d94ba672ada3",
+    "crates/rm-simulator-app/src/prediction.rs": "2fe90d097f19047e10186acf764524c8c805bbd215c0417813205292d20e280f",
+    "crates/rm-simulator-app/src/preferences.rs": "31ee72004c86a5b99bd72c19785fb2917762224f7877f9fc1a72a95925ad981a",
+    "crates/rm-simulator-app/src/presentation.rs": "cc335283e62d170d2422e0cc212b605d41a88ddb6ebc7b81dd9c8753c2fe997b",
+    "crates/rm-simulator-app/src/projectile_prediction.rs": "54f0a246b846aa728fb89915cb8b0b6776d775fbf886364180c5bcafbdf5e69a",
+    "crates/rm-simulator-app/src/scene.rs": "991eedb91e313c0ffdcace4a5e40239813b1f0ca34345ae5e16ad26719d2306a",
+    "crates/rm-simulator-app/src/screenshot.rs": "b3ad672cba63b2ebb22b5ea3d5a2867ef4d678aa982110f78af884ff5eeaee7b",
+    "crates/rm-simulator-app/src/session.rs": "da2ec9a84231123fec4a3f737c2d2479d8bf5e933cb805c4645f0d52eb3965c2",
+    "crates/rm-simulator-app/src/session_shots.rs": "db321e65fe52654b2cdda35746a4601e21cfbb528a74b309e6d76c85f8218b24",
+    "crates/rm-simulator-app/src/steam_support.rs": "b499f3448fe675dcd7c293e31b3c271aaf12b64c7da0d3af9d4efda076f69385",
+    "crates/rm-simulator-app/src/title.rs": "ff9552c7505d56679764c754425aabe74461c5345df87ac8f7e0c92c82085050",
+    "crates/rm-simulator-bench/src/assets.rs": "e77d0915091792af149e5eead9299fb128ed8235b17382aa9c9507ae970a2fe0",
+    "crates/rm-simulator-bench/src/config.rs": "698b066adeed71d27b2643c7ad2b719f749397729b7e485af1fd514943c28164",
+    "crates/rm-simulator-bench/src/gpu.rs": "4c0eeb589082037f2d2888b757373c64a7978af762b589ff2608f5a0d1245867",
+    "crates/rm-simulator-bench/src/main.rs": "f47a4d08229f8844b36388ec008633e8f5f3571e37755a4e90d77951612834d9",
+    "crates/rm-simulator-bench/src/report.rs": "df61ff074dfe1a9744647a2ef950b8368b6dd85f907bdd122e053d75f39e75f0",
+    "crates/rm-simulator-bench/src/scene.rs": "702b96255366bae6c0ca6d7872ede28b65e026d92ac5355c7bff8d33a815c2df",
+    "crates/rm-simulator-gameplay/examples/benchmark.rs": "6b528608e528e0e3e7272948c0b684dc45d3b440aee7bcb030bb081691c7283f",
+    "crates/rm-simulator-gameplay/examples/match.rs": "08d7411fd9249d771c219912b3d70d5149448e1b9244dea9c73ba71563572747",
+    "crates/rm-simulator-gameplay/src/coverage.rs": "a40dce456695cbba07708501a2a43ba353d071585a58b89d1844e4115fc74b34",
+    "crates/rm-simulator-gameplay/src/engine/tests.rs": "bb5daddf551bdcbd3a8a97fad9517d9d92ec628570fda896d88ba2819008bf6e",
+    "crates/rm-simulator-gameplay/src/engine.rs": "9cfcd087b43075ad6b6767bde62a750132582d1c9ff738fb0ea90915dfeef11d",
+    "crates/rm-simulator-gameplay/src/lib.rs": "b86ade234c4c7ed3468bb10c8ebc23366d304b513bd92584d595d3d28e49fcd4",
+    "crates/rm-simulator-gameplay/src/live.rs": "1ec8ca8da0a613eaba19bb297f1a300fd932598c1e83ac48eeb7c33b76e1005a",
+    "crates/rm-simulator-gameplay/src/policy.rs": "a779077ab7623a2927a1b54ee618a9e530c80ce57ad09f08b65a402425b3ea0f",
+    "crates/rm-simulator-gameplay/src/state.rs": "e5b6858410193049126297d7d438dccb955f347bb730b30e8790ca2f01175dd1",
+    "crates/rm-simulator-physics/examples/moving_armor.rs": "5c86d3fcf385ae3028ed1fb94e2006d084c81c3113d869955bf4f041bd4873a6",
+    "crates/rm-simulator-physics/src/chassis.rs": "f3d5b4e9a35f7534a69f65f9db5035515cb7dd7072ee29cf51ec34c56b649eb1",
+    "crates/rm-simulator-physics/src/geometry.rs": "d2485868de54de2da9038bc87808464f27dc46d0176f3eac43cb62cd00618421",
+    "crates/rm-simulator-physics/src/lib.rs": "d2a1bd279e5922ecdac57a65762da060b1b70e96045baf7272c45a46102c604f",
+    "crates/rm-simulator-physics/src/motion.rs": "d17970c3ee1b86142f0515db68ba870acc2d49aee7d2736381816c16e39ec2ab",
+    "crates/rm-simulator-physics/src/projectile.rs": "bd3e6bfdb85c085977eb312e736924e50e7780a8c9087e09821bc0dcd9be63e6",
+    "crates/rm-simulator-physics/tests/projectile_retirement.rs": "a439eca6fd42e95a49bf1cc0c35d4bfca52d3330552713472ddc07e269daf169",
+    "crates/rm-simulator-render/examples/robots.rs": "bb1536d20ce905aeae8abfa6dbecc4622ae3adb7a563f3c1c727fad70a528ac9",
+    "crates/rm-simulator-render/src/armor.rs": "fe1b85d0ab953a03758e1c40980316039427f714d8b074c64311c48243b6400f",
+    "crates/rm-simulator-render/src/cad.rs": "0bf19de780284d000e155403fbe78a7141deab6f35aebbc05946811321077dcc",
+    "crates/rm-simulator-render/src/chassis.rs": "17365bfd1e0742e0a59ed1805dde7905316170a499219f9a454d21c0af4c4c9c",
+    "crates/rm-simulator-render/src/equipment.rs": "b7feeb23aeaf511e2bb835621187bb299eae974897d21ba58c75e8ded56b05bf",
+    "crates/rm-simulator-render/src/graphics_settings.rs": "848f09fc6dfb8b8eeadd74d76210508705a301ccdadfeb1eb951b31311dfefef",
+    "crates/rm-simulator-render/src/lib.rs": "0f4f0ee5911d99093fda9dab489b9d9947469687b24fc8ce42eb3ae8b3317c1f",
+    "crates/rm-simulator-render/src/lighting.rs": "308e9ff62953eb3dcec26b6a947392428d97e72462706676021bd1696ee6eca2",
+    "crates/rm-simulator-render/src/outpost.rs": "21a48b15cb1179fc109a368425d8ec1ced498f7ec17f9bcb920e7caac463a4e7",
+    "crates/rm-simulator-render/src/projectile.rs": "90a9ce01bbdee5bd2a8b4fbf50316223b1a8ffebe9c6c87e62c62e8fa22747f5",
+    "crates/rm-simulator-render/src/quality.rs": "15fa8af0692c4f8cb8724b7299583a09ae8fcaf65b67844e4a486c1c3edcb74c",
+    "crates/rm-simulator-render/src/rune.rs": "d93827a6f88f5d4ad5b6cff2f0c113a8bf2d9f80b3c032e90b2e67192d9261f5",
+    "crates/rm-simulator-render/src/sync.rs": "703193c84f042e1375b134efd9767239c22a84d2a30e7e84a56710c693415d24",
+    "crates/rm-simulator-server/examples/base_targets.rs": "63099ccd6e8115b90a4663d78455140f8522231c7b1ff053d3c75160377cb9a0",
+    "crates/rm-simulator-server/examples/compare_ground.rs": "f21584af10649faae048c30d9724459f2605350727462549207b58f3f532165e",
+    "crates/rm-simulator-server/examples/compression_comparison.rs": "ed5bfc076a653bf8f810866394899b972a10575586242ddc100271ccaf2d1e76",
+    "crates/rm-simulator-server/examples/inspect_assets.rs": "de017c56fd372bdaacb4e760b5c753f51efc8b627958d6d45f7c25b7d22428b0",
+    "crates/rm-simulator-server/examples/match_cost.rs": "4648f7cd3cd07f31e76bb225ccc90c82c57dd067bc1fd64fda5d5c9216217f45",
+    "crates/rm-simulator-server/examples/network_bandwidth.rs": "d073e005006442ed708df5cb9657d35a6e185db906aed654b5688766afcf752e",
+    "crates/rm-simulator-server/examples/physics_rate.rs": "0ae0b7190e2406334c69fe25004cb68f79decd2477ab4ddfaac8e1980caef684",
+    "crates/rm-simulator-server/examples/prediction_replay.rs": "6b81b9046797a18217648c7ebe3a6e014a0e18539167def7880b3d751b8034fa",
+    "crates/rm-simulator-server/examples/projectile_retirement.rs": "e2ae0982108e47719a54c00bddebbaedd95c3bfae3a596b4d4885d1b426a05f4",
+    "crates/rm-simulator-server/examples/section_topics.rs": "599c25ef71634d981c19ca537624366d82bb515ac6c210f9152b36254bfaae6c",
+    "crates/rm-simulator-server/examples/train_checkpoint_dictionary.rs": "d1ef24ec154e7e9e4322e631a52de7265f5ff097225d32949b6e1f3ff7629a7e",
+    "crates/rm-simulator-server/src/bandwidth_probe.rs": "c1c682160448208bed4b1804727c7b7bcc790ff107482aac393c567aec2b2481",
+    "crates/rm-simulator-server/src/base_layout.rs": "9bae0020cbb39e528171710b75b0fecfd8166ee04b072d252a81d1e61b30da17",
+    "crates/rm-simulator-server/src/cad_assets.rs": "5b09f9badd27321a51786e22b367b1c17ce9c099a30c56c289cf52cd13a190dc",
+    "crates/rm-simulator-server/src/clock.rs": "e1583635a177436dac1d76cba373e8ac8001f1607c89f677ec021ef445354b13",
+    "crates/rm-simulator-server/src/collision_mesh.rs": "0c471e7ba066c38fb126c9e7735ad20065a9fab04038d08215f95694697ea4ca",
+    "crates/rm-simulator-server/src/compression.rs": "85a17f753e8324ad314c04d756840c413ad2e35d9aed5fb9ae9dfc7169bec89e",
+    "crates/rm-simulator-server/src/gns_transport.rs": "b1b0a04ea51c96994b105701662fb4a34b45807b89c94fb0e52b4b85c89524e4",
+    "crates/rm-simulator-server/src/host.rs": "c09f892224edd4b405cc61eb7e901a3bdfc5efa02a0bf47bfbc555e1a3ee515a",
+    "crates/rm-simulator-server/src/host_delivery.rs": "122c821605dd7efb843e6691007cc2f186614e111714e33605e29f519659b451",
+    "crates/rm-simulator-server/src/http.rs": "2591de9ebc52a8f2ea513afa3866eec8a1dcde89b65fc1381f4061c73209e3d4",
+    "crates/rm-simulator-server/src/input_stream.rs": "868bb38f1ade4a0281045c88d2051d2b54b834ab5e5145246b255d5907d2e1a3",
+    "crates/rm-simulator-server/src/layout.rs": "944d9fcae6475b784fb7c05ab6736095bce6850628b64853f92cad330a8ec348",
+    "crates/rm-simulator-server/src/lib.rs": "8274dd2f7d54b8b7320765fa51523a30a7388bab33ef77118226c797e5b69060",
+    "crates/rm-simulator-server/src/lifecycle.rs": "5033d0ae7edc36997d946ed55f8d59d2a09619e8f0658fddba7280821cba70da",
+    "crates/rm-simulator-server/src/lobby.rs": "2dd39c4a8aa34defe0120a4e016f7624af2bd7e3b5e664e5dd3ce584426832e4",
+    "crates/rm-simulator-server/src/main.rs": "13be59901f317d310283c622866d0ef7a674187a6d1d3d84b05dadd07e7a4eeb",
+    "crates/rm-simulator-server/src/math.rs": "4c9f94611476edc3cff9ed5051f191c8b9bd9208ae85bf99093073d8dea33aea",
+    "crates/rm-simulator-server/src/net.rs": "36f563e95e4f776deea9dba524a6accfb52875f40c4e4453ba7713018770bf03",
+    "crates/rm-simulator-server/src/network_stats.rs": "3b5d7714a193a720373a9d1822f17a8f9a051e0af1171dc98369259b05fa2d9a",
+    "crates/rm-simulator-server/src/network_trace.rs": "61b257a5abe58efd0ae7aeb5d2639b8e5f1fb1fb7b54172d73fcf14b3cd05a9d",
+    "crates/rm-simulator-server/src/outbox.rs": "3776f177e1f429551a9e9179be2031f2d075c65bd45024bda748f5fa34b1ce85",
+    "crates/rm-simulator-server/src/owner_stream.rs": "f519eee05777f912b04c336597f18bb41ffe89e9ac2beace39fbd12add3c7424",
+    "crates/rm-simulator-server/src/pacing.rs": "ecff5df8e574d177831f4746eb53578b278903bae946b4f41323e871d1d4e084",
+    "crates/rm-simulator-server/src/prediction.rs": "57e380d1d691af6add0210acb38fe5e736e1066ca083c9730c53d72d3a40c582",
+    "crates/rm-simulator-server/src/presentation_clock.rs": "dd02240b2968d979be45e1245fe8b40a698e4d56cd21ea079025ff0555486bf3",
+    "crates/rm-simulator-server/src/protocol.rs": "e4b0a48db263b8552b6b938c292ff5f1b9601a5dd0cd86647d3ad03697b799a3",
+    "crates/rm-simulator-server/src/scripted_link.rs": "40d9e27a17f327840a2a42b3f030a913e6bdc1b112b6102e046260dc9f32008d",
+    "crates/rm-simulator-server/src/section_topics/delivery/completion.rs": "6d09909b352d6c77858865fd317bd663fd6a0d3710071bfe45b7e8c54f264d8c",
+    "crates/rm-simulator-server/src/section_topics/delivery/presentation.rs": "19d55de715fdb686771b010508ee15b1937f9eb958a50485ccae509ad65c33f6",
+    "crates/rm-simulator-server/src/section_topics/delivery/scheduling.rs": "0179bd52039c8cb4efd5d46a61eec826b44d6e9009ad6c3014241508ee7fba99",
+    "crates/rm-simulator-server/src/section_topics/delivery/trials/stage3.rs": "b140b434b13012898dd2a1784ce1172486ed3c7402b4eb2ca3895120bcc62862",
+    "crates/rm-simulator-server/src/section_topics/delivery/trials/tuning/link.rs": "d6a60a4b8972cd0e065943c694bcd0a750e749fb4188a5e8683ac1ed7742b633",
+    "crates/rm-simulator-server/src/section_topics/delivery/trials/tuning/run.rs": "b8982a4d6441b240a7d374a351139895e492e47410f69df4a3799dbd5ea09b6f",
+    "crates/rm-simulator-server/src/section_topics/delivery/trials/tuning/t2.rs": "94fbbf3fedb7f8c3b6c96298d470bdc08d742db58db94e434a4ed8628a4b2022",
+    "crates/rm-simulator-server/src/section_topics/delivery/trials/tuning/t3.rs": "e5f13ee8ae07b0a8816cdc393d08ce8261d700fd1f0ab03f1b079df65f8e6fad",
+    "crates/rm-simulator-server/src/section_topics/delivery/trials/tuning.rs": "7ee8ecaa50a042a8e4c4902e64bcab8419fd72f1bfe61ec2ebb46d712d554306",
+    "crates/rm-simulator-server/src/section_topics/delivery/trials.rs": "ceb38d541aaa3c448268fc08fee4f45e419ad5327629981aa83dc98e066b435e",
+    "crates/rm-simulator-server/src/section_topics/delivery.rs": "015d5e877df28c5fbae695a44027528c01d540d2e19bdb73a7f4a83ecccb7531",
+    "crates/rm-simulator-server/src/section_topics.rs": "1d18ef6f146896030f9bca9a4b06968ef6f64205392151f02c57e94a853f9e0c",
+    "crates/rm-simulator-server/src/semantics.rs": "ef995c5d5d754701e8da17883cb2c45943aeb1a899105a7ac81eb243128671c9",
+    "crates/rm-simulator-server/src/simulation.rs": "fab61550fe8345124cb2caaceef6de8877e81e31af145bcc0533929c64611a89",
+    "crates/rm-simulator-server/src/snapshot_codec.rs": "a31759b050fa6217999b5ac4e032c88f0d0985d6e05536fd1fe6ac6bc186f77c",
+    "crates/rm-simulator-server/src/udp_codec.rs": "9ec473ba81fbda17b58bf186eea491305b8ff628c630f90c96f5310d8d0938f4",
+    "crates/rm-simulator-server/src/udp_snapshot.rs": "b75347a35615a97bfc0037a92cc3687cee419dbefa93e8e53a08e3b50e989117",
+    "crates/rm-simulator-server/src/view.rs": "8c5ffb93f77a3e9ed0f544fdb288ed6b556fe8ff7f4707ef1753596ca92485ba",
+    "crates/rm-simulator-world/examples/step_cost.rs": "c0d69bccec47b950caddfcda27cbd3cfd596fdc5e9ca21ac942f28a492347648",
+    "crates/rm-simulator-world/src/base.rs": "aaf733f7b409fabed745e3e0a629659291ed9098a25e476d8c24d4455f84048d",
+    "crates/rm-simulator-world/src/chassis.rs": "61fdb6f4045789ee32cf2c3b4902daa898d75f462ca850d987f549a933483b4f",
+    "crates/rm-simulator-world/src/lib.rs": "132d7ecd577e090200365a820b327066322a3ed9f48aeec2f64b0724e675a407",
+    "crates/rm-simulator-world/src/outpost.rs": "54b701ddf3b45934d08cf7805d0d92c047e15ff16f84aaad0ea63910a310adb9",
+    "crates/rm-simulator-world/src/projectile.rs": "116b1f9157dd1c1da23d902410493c0f3aca0636144a43ba16e9f41d7562ca7a",
+    "crates/rm-simulator-world/src/referee.rs": "aec8dd44ef17b61c85223f9c8772842adb8febf8a94e2817c08debf5983b1cbc",
+    "crates/rm-simulator-world/src/rune.rs": "743e60c22ec8c2f020c6c7e1983f9cb561fc3dac0153e04ca22c71070295bb31",
+    "crates/rm-simulator-world/src/scoring.rs": "34b3bdc7c5b27d90ab1e8e6300c983bd95d5812c6d860fcdbc0e808575955e24",
+    "crates/rm-simulator-world/tests/retirement_replay.rs": "c2c02bf2f9d16c4e1ab40202ddaa8607bcb1251c0a23589367a477c9875e4fad",
+    "crates/rm-simulator-app/Cargo.toml": "cb70475f1d19e11f80f51bb52c9cc7cacd30cbf6804df4616d1d0c77186e0934",
+    "crates/rm-simulator-bench/Cargo.toml": "6c40204ef41016ac732a026c901a5f31178023b5dd9630da309000ce8678424e",
+    "crates/rm-simulator-gameplay/Cargo.toml": "eca50268f95b375fd01e4f705e8b5557a27fc28e2b4c66509320b65d6ac69933",
+    "crates/rm-simulator-physics/Cargo.toml": "c27e82ba2b1a4f31c6881ff15a24f3b42f9259a1bf3342db5b6c9271e98b6364",
+    "crates/rm-simulator-render/Cargo.toml": "4a050a05d0d9d465223e35004c384cbe35b0801e928220022bc6824dddf52c0b",
+    "crates/rm-simulator-server/Cargo.toml": "6758649a234c9308b352d6b9b34ea7588c825364ed1aed452490c14cfc230b76",
+    "crates/rm-simulator-world/Cargo.toml": "0fb7e3bb336fab0dac3515f761f28644d7773d9b89bbefd382d5c13f6ff86ffa",
+    "Cargo.toml": "828a08ad3e5115384d17a4e06fa7470669ecce1e633529c5e172109d10a416fb",
+    "Cargo.lock": "b0e0b18bf0211baa42b6b493c6192166095d32105aa77ef483e723fcfa519b87",
+    "crates/rm-simulator-server/assets/checkpoint-dictionary.zstd": "c87e1ef9ab1ce438c13b2498a3abe0cddf392dd764933ebd0d063549645b7ebe",
+    "docs/experiments/results/02-section-topics/t3-replication/plan.json": "b352010c44f59a943667772c1030b0e61f862d975fe5886d001db20eab8a8136",
+    "docs/experiments/results/02-section-topics/t3-replication/run.py": "15312e87abc0bcd298ee2258c9c66aeb0abddb7fac4aaf5dc2565f8aab64f24c",
+    "docs/experiments/results/02-section-topics/t3-replication/summarize.py": "a14029eb5630a0c11639aa3e8e313b161a41f5818d3489809c13cf3e08e538eb"
+  },
+  "plan": {
+    "status": "frozen before replication",
+    "scope": "Fixed T3 policy replicated on two new development seeds; no retuning",
+    "variants": [
+      "drr-128-211",
+      "completion-128-211"
+    ],
+    "players": [
+      2,
+      12
+    ],
+    "profiles": [
+      "clean",
+      "rtt",
+      "limited"
+    ],
+    "seed_use": "Development seeds only; T4 seeds 1001\u20131010 remain untouched",
+    "cadence_ms": {
+      "chassis": 32,
+      "projectiles": 64,
+      "checkpoint": 128
+    },
+    "weights": [
+      2,
+      1,
+      1,
+      1
+    ],
+    "compression": {
+      "mode": "ZstdDictionary",
+      "level": 3,
+      "prepared_dictionary_by_copy": true
+    },
+    "warmup_ms": 10016,
+    "measured_ms": 60000,
+    "workers": 3,
+    "change": "Only checkpoint child-queue ordering; outer byte DRR weights and all wire formats, repair policy, queue bounds and controls unchanged",
+    "focus_selection": "Keep one focus while it has eligible active transfers and its 1s lease has not expired. For a new focus prefer a validated received repair request; otherwise oldest started transfer then oldest queued transfer. On expiry prefer another queued checkpoint if available.",
+    "transfer_order": "Within focus finish selected transfer before others; otherwise started transfer then smallest remaining dependency. Association is enqueue-origin checkpoint, not perfect knowledge of shared revision dependencies.",
+    "fairness": "At most4092 priority bytes before one original round-robin checkpoint fragment; account payload and header, conservatively allow 4 B shared header when selecting; outer DRR still bounds group service. No service credit or bytes borrowed from another group beyond ordinary idle borrowing.",
+    "correctness": "Exact checkpoint reconstruction, monotonic promotion, confirmation before Pong, bounded payload/partial memory; all 13 controls complete; positive measured checkpoint progress",
+    "primary_hypothesis": "p95 checkpoint age lower than unchanged 2:1:1 in both limited-link counts, without regression in guarded metrics in any of 6 cells",
+    "guarded_metrics": [
+      "chassis_age_p95_ms",
+      "projectile_age_p95_ms",
+      "body_error_p95_m",
+      "aim_error_p95_rad",
+      "projectile_error_p95_m",
+      "missing_robot_fraction",
+      "missing_projectile_fraction",
+      "stale_projectile_fraction",
+      "pong_p95_ms"
+    ],
+    "analysis": "Report paired differences and original strict primary criterion separately per seed; no pooled frames, epsilon, composite score or statistical winner",
+    "baseline_check": "Within each seed/block compare identical captured-stream and impairment hashes; historical seed101 results remain separate",
+    "stop": "Stop after 24 runs; no retuning, T4, integration, rate, weight or compression changes",
+    "seed_ids": [
+      102,
+      103
+    ],
+    "seed_namespaces": {
+      "workload": "0x10000000 + seed_id",
+      "impairment": "0x20000000 + seed_id",
+      "order": "0x40000000 + seed_id + players * 17 + profile_id"
+    }
+  },
+  "workers": 3,
+  "variants": [
+    "drr-128-211",
+    "completion-128-211"
+  ],
+  "blocks": [
+    [
+      102,
+      2,
+      "clean"
+    ],
+    [
+      102,
+      2,
+      "rtt"
+    ],
+    [
+      102,
+      2,
+      "limited"
+    ],
+    [
+      102,
+      12,
+      "clean"
+    ],
+    [
+      102,
+      12,
+      "rtt"
+    ],
+    [
+      102,
+      12,
+      "limited"
+    ],
+    [
+      103,
+      2,
+      "clean"
+    ],
+    [
+      103,
+      2,
+      "rtt"
+    ],
+    [
+      103,
+      2,
+      "limited"
+    ],
+    [
+      103,
+      12,
+      "clean"
+    ],
+    [
+      103,
+      12,
+      "rtt"
+    ],
+    [
+      103,
+      12,
+      "limited"
+    ]
+  ],
+  "command": [
+    "/Users/hxyulin/dev/RM/rm-simulator/target/nix/debug/deps/rm_simulator_server-6eec994f7dad17df",
+    "--ignored",
+    "--exact",
+    "section_topics::delivery::trials::tuning::t3::t3_block",
+    "--nocapture"
+  ],
+  "complete": true,
+  "case_sha256": {
+    "102-2-clean-drr-128-211.json.gz": "e4f64ef3d2daf005cb2ac84bfcf78a07276935580ce0320f75b40e341d00862d",
+    "102-2-clean-completion-128-211.json.gz": "dcb0a8ba8d74a2bd869b8a484c42a1f3c09f0bc24151cbfad35e66d915ea6501",
+    "102-2-rtt-drr-128-211.json.gz": "84c34a4fcd7423410bb8939b9d79c759b44313a3d6dacbfb37e4155c422f83a1",
+    "102-2-rtt-completion-128-211.json.gz": "41b58ab2686bbd4f8b9c860a219c460059d71f6e93e5844871cf0fe30e04fb1f",
+    "102-2-limited-completion-128-211.json.gz": "8ca7d013d49288db192435f58369a65c09a885d27c9a1f38e8aa2f62b48c45d4",
+    "102-2-limited-drr-128-211.json.gz": "992f6a734cb9fc561a4d33e2476e82df93744355e7a38bf943e339ad18e1e9f7",
+    "102-12-clean-completion-128-211.json.gz": "6866a6ab149883cff5b884c832a5a6ebe0cf342d4b0d6ec963966bc0ad73c54e",
+    "102-12-clean-drr-128-211.json.gz": "a7addfdb88806fc6236a5ee463294e0d014f1e1f98c88c5b70e00ef6cdceb4d6",
+    "102-12-rtt-completion-128-211.json.gz": "3dccf87fb0fd179dda3e881c1dfd324637637ff0ab65a401653950df24485ad2",
+    "102-12-rtt-drr-128-211.json.gz": "dc3b05246a14b5cdec36a89a100527a3c78f0b507b2a8943b369d0619dc0b1ff",
+    "102-12-limited-drr-128-211.json.gz": "1e028fe96efc950b18e9a7f25dde65fdc3338711ec5ceac2e61efcb1dd701833",
+    "102-12-limited-completion-128-211.json.gz": "bad6b687578c30bf6e333da4a9d6c4887afe8b5c0477616be9873147cb22f931",
+    "103-2-clean-drr-128-211.json.gz": "6acfed0e85ae805282b6ee7521df09006c0237c4474d4ee0a57494d06d1993ca",
+    "103-2-clean-completion-128-211.json.gz": "e4f9e2abb851efe43aaf93be591b9953356522d53814c0e84ebf0e6db60de645",
+    "103-2-rtt-completion-128-211.json.gz": "aedd4d787c537cce8f9b961163c7b406a7f278a88faa8c1d62994e7e837cf4f2",
+    "103-2-rtt-drr-128-211.json.gz": "c504095ba8f3b023bc1c86091210baf015aa4b6c5d438c94664a7c7d3a1b8d51",
+    "103-2-limited-drr-128-211.json.gz": "f4ad45d0a6af80e9c9ad6f28c396d1c0309b5fd28d4ad23b923dc0e7d9c0c0ea",
+    "103-2-limited-completion-128-211.json.gz": "1833cc30bf9cf05f3054ef8ef26ef5fb80ac4072a4f8527ab815766697127c34",
+    "103-12-clean-completion-128-211.json.gz": "c0a488820b3541a99a5adeab0d47c74d8b68f5fdd3d029334e1e052786673e53",
+    "103-12-clean-drr-128-211.json.gz": "9545ff18e4f90cbddaf7f32bb99e346ed1790abf65f6450c6416cfaa80810977",
+    "103-12-rtt-drr-128-211.json.gz": "899010045d773132525af66b10e98bbde403f699280a3d5dead514a94f35bb83",
+    "103-12-rtt-completion-128-211.json.gz": "7b38509940d42dc688b8a2314708a1b2c29e8def59a2bae9cbc7b00e3965b0c9",
+    "103-12-limited-completion-128-211.json.gz": "259dc571407a4a1a59a21673bb40dd3182cce574cbcb87ceaeae7b1f56f4a7db",
+    "103-12-limited-drr-128-211.json.gz": "3be5cd97165a8ca87bf70ce8d9b87470417793f86ce912cd1bc245353274a958"
+  },
+  "block_results": [
+    {
+      "seed_id": 102,
+      "players": 2,
+      "profile": "clean",
+      "wall_seconds": 8.67151449999983,
+      "complete": true,
+      "case_sha256": {
+        "102-2-clean-drr-128-211.json.gz": "e4f64ef3d2daf005cb2ac84bfcf78a07276935580ce0320f75b40e341d00862d",
+        "102-2-clean-completion-128-211.json.gz": "dcb0a8ba8d74a2bd869b8a484c42a1f3c09f0bc24151cbfad35e66d915ea6501"
+      }
+    },
+    {
+      "seed_id": 102,
+      "players": 2,
+      "profile": "rtt",
+      "wall_seconds": 8.687900582999646,
+      "complete": true,
+      "case_sha256": {
+        "102-2-rtt-drr-128-211.json.gz": "84c34a4fcd7423410bb8939b9d79c759b44313a3d6dacbfb37e4155c422f83a1",
+        "102-2-rtt-completion-128-211.json.gz": "41b58ab2686bbd4f8b9c860a219c460059d71f6e93e5844871cf0fe30e04fb1f"
+      }
+    },
+    {
+      "seed_id": 102,
+      "players": 2,
+      "profile": "limited",
+      "wall_seconds": 7.67563012500068,
+      "complete": true,
+      "case_sha256": {
+        "102-2-limited-completion-128-211.json.gz": "8ca7d013d49288db192435f58369a65c09a885d27c9a1f38e8aa2f62b48c45d4",
+        "102-2-limited-drr-128-211.json.gz": "992f6a734cb9fc561a4d33e2476e82df93744355e7a38bf943e339ad18e1e9f7"
+      }
+    },
+    {
+      "seed_id": 102,
+      "players": 12,
+      "profile": "clean",
+      "wall_seconds": 16.009483959000136,
+      "complete": true,
+      "case_sha256": {
+        "102-12-clean-completion-128-211.json.gz": "6866a6ab149883cff5b884c832a5a6ebe0cf342d4b0d6ec963966bc0ad73c54e",
+        "102-12-clean-drr-128-211.json.gz": "a7addfdb88806fc6236a5ee463294e0d014f1e1f98c88c5b70e00ef6cdceb4d6"
+      }
+    },
+    {
+      "seed_id": 102,
+      "players": 12,
+      "profile": "rtt",
+      "wall_seconds": 15.883783875000518,
+      "complete": true,
+      "case_sha256": {
+        "102-12-rtt-completion-128-211.json.gz": "3dccf87fb0fd179dda3e881c1dfd324637637ff0ab65a401653950df24485ad2",
+        "102-12-rtt-drr-128-211.json.gz": "dc3b05246a14b5cdec36a89a100527a3c78f0b507b2a8943b369d0619dc0b1ff"
+      }
+    },
+    {
+      "seed_id": 102,
+      "players": 12,
+      "profile": "limited",
+      "wall_seconds": 11.96055083399915,
+      "complete": true,
+      "case_sha256": {
+        "102-12-limited-drr-128-211.json.gz": "1e028fe96efc950b18e9a7f25dde65fdc3338711ec5ceac2e61efcb1dd701833",
+        "102-12-limited-completion-128-211.json.gz": "bad6b687578c30bf6e333da4a9d6c4887afe8b5c0477616be9873147cb22f931"
+      }
+    },
+    {
+      "seed_id": 103,
+      "players": 2,
+      "profile": "clean",
+      "wall_seconds": 8.831526832998861,
+      "complete": true,
+      "case_sha256": {
+        "103-2-clean-drr-128-211.json.gz": "6acfed0e85ae805282b6ee7521df09006c0237c4474d4ee0a57494d06d1993ca",
+        "103-2-clean-completion-128-211.json.gz": "e4f9e2abb851efe43aaf93be591b9953356522d53814c0e84ebf0e6db60de645"
+      }
+    },
+    {
+      "seed_id": 103,
+      "players": 2,
+      "profile": "rtt",
+      "wall_seconds": 9.017771167000319,
+      "complete": true,
+      "case_sha256": {
+        "103-2-rtt-completion-128-211.json.gz": "aedd4d787c537cce8f9b961163c7b406a7f278a88faa8c1d62994e7e837cf4f2",
+        "103-2-rtt-drr-128-211.json.gz": "c504095ba8f3b023bc1c86091210baf015aa4b6c5d438c94664a7c7d3a1b8d51"
+      }
+    },
+    {
+      "seed_id": 103,
+      "players": 2,
+      "profile": "limited",
+      "wall_seconds": 8.01940708300026,
+      "complete": true,
+      "case_sha256": {
+        "103-2-limited-drr-128-211.json.gz": "f4ad45d0a6af80e9c9ad6f28c396d1c0309b5fd28d4ad23b923dc0e7d9c0c0ea",
+        "103-2-limited-completion-128-211.json.gz": "1833cc30bf9cf05f3054ef8ef26ef5fb80ac4072a4f8527ab815766697127c34"
+      }
+    },
+    {
+      "seed_id": 103,
+      "players": 12,
+      "profile": "clean",
+      "wall_seconds": 16.05209562500022,
+      "complete": true,
+      "case_sha256": {
+        "103-12-clean-completion-128-211.json.gz": "c0a488820b3541a99a5adeab0d47c74d8b68f5fdd3d029334e1e052786673e53",
+        "103-12-clean-drr-128-211.json.gz": "9545ff18e4f90cbddaf7f32bb99e346ed1790abf65f6450c6416cfaa80810977"
+      }
+    },
+    {
+      "seed_id": 103,
+      "players": 12,
+      "profile": "rtt",
+      "wall_seconds": 15.844640624998647,
+      "complete": true,
+      "case_sha256": {
+        "103-12-rtt-drr-128-211.json.gz": "899010045d773132525af66b10e98bbde403f699280a3d5dead514a94f35bb83",
+        "103-12-rtt-completion-128-211.json.gz": "7b38509940d42dc688b8a2314708a1b2c29e8def59a2bae9cbc7b00e3965b0c9"
+      }
+    },
+    {
+      "seed_id": 103,
+      "players": 12,
+      "profile": "limited",
+      "wall_seconds": 11.823976583998956,
+      "complete": true,
+      "case_sha256": {
+        "103-12-limited-completion-128-211.json.gz": "259dc571407a4a1a59a21673bb40dd3182cce574cbcb87ceaeae7b1f56f4a7db",
+        "103-12-limited-drr-128-211.json.gz": "3be5cd97165a8ca87bf70ce8d9b87470417793f86ce912cd1bc245353274a958"
+      }
+    }
+  ],
+  "wall_seconds": 48.4223455829997
+}

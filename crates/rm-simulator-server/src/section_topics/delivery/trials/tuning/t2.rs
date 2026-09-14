@@ -17,6 +17,7 @@ fn variants() -> Vec<(String, Experiment)> {
             checkpoint_ms: 128,
         },
         weights: None,
+        completion_priority: false,
         whole: false,
         sections: true,
         impairment_seed: IMPAIRMENT_SEED,
@@ -50,16 +51,27 @@ fn variants() -> Vec<(String, Experiment)> {
     }
     variants
 }
-fn measured(
+pub(super) fn measured(
     sources: &[SimulationState],
     profile: &str,
     experiment: Experiment,
     warmup: u64,
     enabled: bool,
 ) -> serde_json::Value {
+    measured_seed(sources, profile, experiment, warmup, enabled, SEED)
+}
+
+pub(super) fn measured_seed(
+    sources: &[SimulationState],
+    profile: &str,
+    experiment: Experiment,
+    warmup: u64,
+    enabled: bool,
+    seed: u64,
+) -> serde_json::Value {
     let mut row = trial_configured(
         sources,
-        WORKLOAD_SEED,
+        0x1000_0000 + seed,
         profile,
         warmup,
         enabled,
@@ -80,21 +92,25 @@ fn measured(
     } else {
         "section_controls"
     };
-    serde_json::json!({
+    let mut result = serde_json::json!({
         "metrics": row[path].take(), "errors": row[errors].take(), "controls": row[controls].take(),
         "diagnostics": row["diagnostics"].take(), "sender_lifetime": row["sender_lifetime"].take(),
         "coverage_denominators": row["coverage_denominators"].take(),
         "wire_sha256": row["wire_sha256"], "message_sha256": row["message_sha256"],
         "captured_stream_sha256": row["captured_stream_sha256"], "impairment_sha256": row["impairment_sha256"],
         "compression": row["compression"], "prepared_dictionary_by_copy": true, "cadence": row["cadence"], "weights": experiment.weights,
-        "profile": profile, "players": row["players"], "seed_id": SEED,
-        "workload_seed": WORKLOAD_SEED, "impairment_seed": IMPAIRMENT_SEED,
+        "profile": profile, "players": row["players"], "seed_id": seed,
+        "workload_seed": 0x1000_0000_u64 + seed, "impairment_seed": experiment.impairment_seed,
         "warmup_ms": row["warmup_ms"], "measured_ms": row["measured_ms"],
         "downstream_budget_bytes_s": row["downstream_budget_bytes_s"], "upstream_budget_bytes_s": row["upstream_budget_bytes_s"],
         "upstream_lifetime_bytes_datagrams": row["upstream_lifetime_bytes_datagrams"],
         "shots_launched_measured": row["shots_launched_measured"],
         "scope": "T2 single-seed screen; independent codec process context per replay; injected clock; no CPU/native-wire/prediction/render claims"
-    })
+    });
+    if experiment.completion_priority {
+        result["completion_priority"] = row["completion_priority"].take();
+    }
+    result
 }
 #[test]
 fn weighted_delivery_preserves_exact_state_and_observer_parity() {

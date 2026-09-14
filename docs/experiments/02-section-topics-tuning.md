@@ -2,7 +2,9 @@
 <!-- Copyright (c) 2026 hxyulin <hxyulin@proton.me> -->
 # Section topics: controlled rate and scheduling experiments
 
-Status: T1 instrumentation complete; T2 screening complete; T3–T4 remain designs. T1
+Status: T1 instrumentation, T2 screening, the focused T3 ablation and its
+two-seed development replication are complete;
+T4 validation has not run. T1
 results and measurement definitions appear below. This extends
 [Stage 3](02-section-topics.md#stage-3-independent-presentation-and-checkpoint-cadences).
 Stop after each stage below and report its results before continuing.
@@ -687,3 +689,219 @@ event. Regenerate the plot with
 the [plot metadata](results/02-section-topics/t2/screen/plot-metadata.json) records
 its renderer version, script and data hashes. No full workspace `just verify`
 or PR was performed, and the live networking default is unchanged.
+
+## T3 focused completion-order ablation
+
+T2 was committed as `a3a0d33` before this change. The user authorized one focused
+ablation and an 18-run comparison, not a wider T3 parameter search. All variants
+retain dictionary Zstd 3, copied prepared dictionaries, 32/64/128 ms
+chassis/projectile/checkpoint cadence, and the existing repair, pacing, queue,
+partial-lifetime and baseline limits. Compare original rotation, unchanged
+2:1:1 logical-group DRR, and 2:1:1 DRR with completion preference. The three
+policies run across 2 / 12 robots and clean / RTT-loss / constrained links.
+Seed ID 101 and its T2 workload/impairment namespaces are reused development
+blocks. This supplies no independent validation or new seed replication.
+
+`Sender::with_completion_priority` changes only the ordering of checkpoint child
+queues. Each queued unreliable checkpoint transfer has a local enqueue-origin
+checkpoint tag; the tag is not transmitted. A focus stays selected while it has
+eligible front transfers, for at most one injected second. A new focus prefers
+a valid retained repair request received through the existing feedback path;
+otherwise it chooses the oldest started transfer, then the oldest queued one.
+After timeout, another queued checkpoint gets an opportunity if one exists.
+Within the focus, finish the selected transfer, then choose a started transfer or
+the smallest remaining dependency. An acknowledged completed checkpoint is not
+eligible for preferential service, and an epoch change resets the focus.
+
+Preference is bounded to 4092 application bytes (four maximum-fragment quanta)
+before an ordinary checkpoint round-robin fragment. The next fragment's cost is
+checked conservatively with its possible shared datagram header, so the burst
+cannot exceed the cap. The outer DRR weights remain 2:1:1:1, including controls;
+no priority burst bypasses that group accounting. Controls keep their original
+FIFO, and pending/replacement/repair behavior is unchanged. These bounds preserve
+service opportunities, not a wall-time delivery guarantee under loss/overload.
+
+This is a scheduling hint, not complete receiver knowledge: a shared revision may
+serve several checkpoints even though its queued transfer has only an origin tag.
+The sender cannot know whether a transmitted dependency arrived until feedback
+returns. The ablation deliberately leaves receiver pinning and partial expiry
+unchanged to isolate whether ordering alone improves complete delivery.
+
+The [frozen plan](results/02-section-topics/t3/plan.json) requires lower p95
+checkpoint age in both constrained cells versus unchanged 2:1:1, with no worsening
+of the prespecified chassis/projectile age, held-pose errors, coverage or Pong
+metrics in any of the six cells. Byte differences are reported separately;
+original adoption gates remain unchanged. There are no fitted scores, confidence
+intervals, post-hoc tolerances, parameter changes or extra seed runs. Both unchanged
+controls must reproduce all twelve corresponding T2 raw cases exactly, excluding
+only the scope label and execution ordinal. The primary hypothesis may fail even
+if part of the tradeoff improves.
+
+Reproduce from a validated prebuilt feature test executable:
+
+```sh
+python3 docs/experiments/results/02-section-topics/t3/run.py PATH_TO_TEST_BINARY NEW_OUTPUT_DIRECTORY --workers 3
+python3 docs/experiments/results/02-section-topics/t3/summarize.py NEW_OUTPUT_DIRECTORY
+```
+
+The runner and analysis record the same source/build/dictionary/plan hashes and
+complete raw per-transfer evidence as T2, in a new output directory. No compilation
+runs during the parallel measurement. New unit tests check retention of a started
+transfer, the burst's round-robin opportunity, focus timeout/completion release,
+received repair preference, FIFO controls and exact-state/instrumentation parity.
+
+### T3 results and stop decision
+
+All 18 runs completed in **29.1 seconds wall time with three workers**. The twelve
+unchanged-control cases exactly reproduce T2 after excluding only scope and order
+labels. Exact checkpoint reconstruction, monotonic promotion, memory/byte bounds
+and confirmation-before-Pong checks pass. All 13 control pairs per case finish,
+and every case promotes new checkpoints during measurement.
+
+| Robots | Constrained-link policy | p95 checkpoint age (ms) | p95 chassis age (ms) | p95 Pong delay (ms) | Measured complete checkpoints |
+|---|---|---:|---:|---:|---:|
+| 2 | Original rotation | 798 | 184 | 1306 | 203 |
+| 2 | Unchanged DRR 2:1:1 | 874 | 162 | 1134 | 181 |
+| 2 | DRR 2:1:1 + completion preference | 664 | 162 | 1102 | 260 |
+| 12 | Original rotation | 1732 | 474 | 3608 | 78 |
+| 12 | Unchanged DRR 2:1:1 | 2222 | 382 | 2898 | 61 |
+| 12 | DRR 2:1:1 + completion preference | 1820 | 382 | 2828 | 88 |
+
+![T3 completion-order tradeoffs](results/02-section-topics/t3/screen/completion-tradeoffs.png)
+
+Relative to unchanged DRR, constrained p95 checkpoint age improves by 210 ms
+(24.0%) with 2 robots and 402 ms (18.1%) with 12. Chassis p95 remains unchanged,
+and p95 Pong improves by 32 / 70 ms. More exact checkpoints complete under the
+same budget. Against original rotation, the 2-robot case improves checkpoint,
+chassis and control delay; the 12-robot case still has 88 ms worse checkpoint age,
+while preserving its chassis/control advantages.
+
+The **strict primary hypothesis fails**, because small prespecified guard metrics
+regress against unchanged DRR. The constrained 2-robot projectile p95 error rises
+from 6.242 to 6.285 m (+4.27 cm), missing-truth coverage worsens by 0.0208 percentage
+points, and stale-projectile fraction rises by 0.0284 percentage points. With
+12 robots, projectile p95 error rises from 7.254 to 7.293 m (+3.93 cm), projectile
+p95 age increases 432 → 448 ms, missing coverage worsens by 0.00167 percentage
+points, and body p95 error increases by about 0.026 mm. These are descriptive
+one-seed differences; their small size does not justify inventing a tolerance
+after observing them, nor does the tiny body difference establish a practically
+important regression. All clean/RTT-loss guard metrics remain unchanged.
+
+Traffic is essentially unchanged: clean downstream changes by +12 / −1444 bytes
+over 60 s for 2 / 12 robots versus unchanged DRR. The constrained links still
+saturate their budgets. Repair's lifetime share falls from 19.2% to 3.0% with
+2 robots and 21.9% to 10.2% with 12. However, total discarded received partial
+payload rises from 32,558 to 50,636 bytes and 76,364 to 260,435 bytes, respectively.
+Completion ordering changes packet timing against the fixed loss bins and how
+quickly subsequent captures enter service; reduced repair traffic is not proof
+that every form of waste decreased. Lifetime preference/rotation service is
+1,285,308 / 327,968 bytes (2 robots) and 1,080,375 / 257,483 bytes (12 robots).
+No focus timeout occurs in these six screen cells; its release behavior is
+covered by the targeted unit test, not demonstrated by these workloads.
+
+This is a promising completion improvement, **not a passing no-regression result
+or production adoption**. The clean-link bandwidth/age tradeoff remains, so the
+original 50% saving and no age/correction regression gate is still unmet. Stop
+this ablation here. At this stop, fresh-seed replication had not run. The
+subsequently authorized replication appears below; the original failure remains
+unchanged. No tolerances, T4 evaluation or live integration were added.
+
+Validation: 240 library tests, one binary test and 39 doctests passed (280 total),
+plus clippy with warnings denied, formatting, crate boundaries, Python syntax,
+all artifact/baseline validators and changed-file hooks. The [metadata](results/02-section-topics/t3/screen/metadata.json)
+records the frozen source/build/plan, the [analysis](results/02-section-topics/t3/screen/analysis.json)
+retains every guarded regression and both paired comparisons, and the
+[all-cell table](results/02-section-topics/t3/screen/summary.md) and
+[compact records](results/02-section-topics/t3/screen/runs.jsonl.gz) summarize the
+18 hashed raw case files. Regenerate the plot with
+`uv run --with matplotlib==3.11.2 python docs/experiments/results/02-section-topics/t3/plot.py OUTPUT_DIRECTORY`.
+No full workspace `just verify`, PR or push was performed for this stage.
+
+## T3 replication on development seeds 102 and 103
+
+The fixed completion policy was compared against unchanged DRR 2:1:1 on each
+of seeds 102 and 103, with 2 / 12 robots and clean / RTT-loss / constrained links:
+24 runs, three workers, **48.4 seconds wall time**. Each run retains 10.016 s of
+warmup and 60 s of measured injected time. The [plan](results/02-section-topics/t3-replication/plan.json)
+was frozen before measurement, including the original strict acceptance rule.
+Only the test harness was parameterized: seed IDs now determine both the actual
+capture/impairment streams and their recorded metadata. Cadences, compression,
+weights, completion ordering, repair behavior and queue bounds remain fixed.
+
+All values below compare unchanged DRR → completion priority on constrained links.
+Projectile error is the held-pose proxy, not application prediction error.
+
+| Seed | Robots | p95 checkpoint age ms | Reduction | p95 projectile error change | p95 Pong change ms |
+|---|---:|---:|---:|---:|---:|
+| 102 | 2 | 908 → 634 | 30.2% | +1.10 cm | +2 |
+| 102 | 12 | 2714 → 1626 | 40.1% | +4.37 cm | −122 |
+| 103 | 2 | 876 → 670 | 23.5% | +2.10 cm | +4 |
+| 103 | 12 | 2472 → 1622 | 34.4% | −10.78 cm | −114 |
+
+![T3 replication tradeoffs](results/02-section-topics/t3-replication/screen/replication-tradeoffs.png)
+
+Checkpoint improvement repeats in all four cells. Measured checkpoint promotions
+increase 181 → 274 and 59 → 93 on seed 102, and 179 → 263 and 62 → 90 on seed 103.
+Together with the earlier seed 101, this supports a repeatable development-workload
+benefit, but three selected development seeds do not establish a holdout result.
+
+**Both new seeds fail the unchanged strict no-regression criterion.** Seed 102
+has nine guarded regressions: projectile error, missing and stale projectile
+fractions at both counts, 2-robot Pong delay, and 12-robot projectile age (+16 ms)
+and body error (+0.032 mm). Missing-projectile fractions rise by 0.209 / 0.157
+percentage points. Seed 103 has seven regressions, all at 2 robots: chassis age
+(+4 ms), body error (+0.018 mm), aim error (+0.011 rad), projectile error, missing
+and stale projectile fractions, and Pong delay. Missing coverage worsens by
+0.129 percentage points. Its 12-robot case has no guarded regressions. The
+[analysis](results/02-section-topics/t3-replication/screen/analysis.json) retains
+all exact deltas without introducing tolerances or pooling frames as replicates.
+All clean and RTT-loss guard metrics remain unchanged on both seeds; their byte
+counts differ slightly. Constrained budgets remain saturated.
+
+All 24 cases pass exact reconstruction, monotonic checkpoint promotion,
+confirmation-before-Pong, all 13 control completions, positive checkpoint progress,
+queue/partial-memory bounds and byte conservation checks. Paired workload and
+impairment hashes match; different seeds have different workload and lossy-link
+traces. Clean-link impairment hashes correctly remain identical because that
+profile has zero delay and loss. Frozen source, binary and raw-case hashes are in
+[metadata](results/02-section-topics/t3-replication/screen/metadata.json), with an
+[all-cell table](results/02-section-topics/t3-replication/screen/summary.md) and
+[compact records](results/02-section-topics/t3-replication/screen/runs.jsonl.gz).
+
+Validation: 240 library tests, one binary test and 39 doctests passed; clippy with
+warnings denied, formatting, crate boundaries, Python syntax, artifact validation
+and changed-file hooks passed. Matplotlib 3.11.2 was run through `uv`; regenerate
+with `uv run --with matplotlib==3.11.2 python docs/experiments/results/02-section-topics/t3-replication/plot.py OUTPUT_DIRECTORY`.
+
+Stop this stage here. Keep the candidate as an experimental checkpoint-age
+improvement with measured tradeoffs. The next useful question is whether those
+tradeoffs matter under application prediction, before selecting a practical
+acceptance tolerance or tuning another heuristic. T4 seeds 1001–1010 remain
+untouched. No commit, push, PR or full workspace `just verify` was performed
+for this replication.
+
+### Projectile-error follow-up
+
+A [post-hoc investigation](results/02-section-topics/t3-projectile-analysis/README.md)
+reconstructs all 12 constrained projectile-age distributions exactly from the
+existing seed 101–103 records. It identifies lower projectile delivery throughput
+at 2 robots, timing-sensitive results at 12 robots, and the distinction between
+held-position error and actual application prediction. No new simulation runs,
+policy changes or acceptance tolerances were introduced.
+
+The subsequent [common-ID/common-time audit](results/02-section-topics/t3-projectile-paired/README.md)
+of seed 102 at 2 robots finds a +2.64 cm mean and +1.25 cm p95 error change on
+matched observations, with transient changes over 1 m in both directions. It
+regenerates only truth positions and reuses the recorded network arrivals. These
+held-position findings do not establish actual prediction or gameplay impact.
+
+### Decision after projectile investigation
+
+The user accepts the measured few-centimetre aggregate projectile-error tradeoff
+and requests committing T3, its replication and diagnostics. Retain completion
+priority as an explicit experimental option at the tested rates and weights.
+This is a practical development decision made after inspecting the results,
+not a retroactive pass of the prespecified strict no-regression hypothesis or
+a change to the original production-adoption gate. The metre-scale transient
+paired differences, missing coverage, and lack of application-prediction evidence
+remain documented. No new numerical tolerance or default/live policy is introduced.

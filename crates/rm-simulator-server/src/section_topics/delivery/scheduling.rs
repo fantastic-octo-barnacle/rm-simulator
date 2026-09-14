@@ -75,11 +75,12 @@ impl Sender {
     }
 }
 impl Queue {
-    fn weighted_fronts(&self, header: usize) -> [Option<(usize, usize)>; GROUPS] {
+    fn weighted_fronts(&mut self, header: usize) -> [Option<(usize, usize)>; GROUPS] {
         let start = self.drr.as_ref().unwrap().checkpoint;
         let checkpoint = (0..=REPAIR_MANIFEST)
             .map(|offset| (start + offset) % (REPAIR_MANIFEST + 1))
             .find(|&class| self.front(class).is_some());
+        let checkpoint = self.completion_front(checkpoint);
         [
             checkpoint,
             Some(presentation::CHASSIS),
@@ -125,6 +126,7 @@ impl Queue {
             drr.deficits[drr.group] -= served + shared_header;
             if class <= REPAIR_MANIFEST {
                 drr.checkpoint = (class + 1) % (REPAIR_MANIFEST + 1);
+                self.completion_served(served + shared_header);
             }
             if (1..REPAIR_MANIFEST).contains(&class) {
                 self.stats.topic_service_bytes[(class - 1) % TOPICS] += served as u64;

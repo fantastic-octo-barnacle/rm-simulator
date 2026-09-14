@@ -9,7 +9,9 @@ rate/priority screening, refinements and independent validation. Its
 [T1 diagnostics and results](02-section-topics-tuning.md#t1-results-and-stop-decision)
 are complete, including a [Zstd rerun](02-section-topics-tuning.md#t1-after-the-zstd-rebase);
 the [T2 rate/priority screen](02-section-topics-tuning.md#t2-results-and-stop-decision)
-is also complete. No candidate passes the adoption gate; live networking remains unchanged.
+is also complete. The [focused T3 completion ablation](02-section-topics-tuning.md#t3-results-and-stop-decision)
+improves checkpoint delivery but fails the strict no-regression check. No candidate
+passes the adoption gate; live networking remains unchanged.
 
 ## Hypothesis and ablations
 
