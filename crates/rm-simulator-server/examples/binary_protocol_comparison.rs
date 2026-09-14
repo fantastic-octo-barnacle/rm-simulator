@@ -310,10 +310,12 @@ fn candidate(
             if proposing { base_id } else { 0 },
             packed,
             fixed,
-        );
+        )
+        .unwrap();
         let mut wire = compress_candidate(&mut compressor, &mut trained, &full);
         if delta && !proposing {
-            let patch = bitpack::encode(&state, sender_base.as_ref(), 0, base_id, packed, fixed);
+            let patch =
+                bitpack::encode(&state, sender_base.as_ref(), 0, base_id, packed, fixed).unwrap();
             let patch = compress_candidate(&mut compressor, &mut trained, &patch);
             if patch.len() < wire.len() {
                 wire = patch;
@@ -394,7 +396,7 @@ fn replay(name: &str, checkpoints: &[Vec<u8>], mode: Quantization) {
         if !index.is_multiple_of(32) {
             continue;
         }
-        let raw = bitpack::encode(&quantized, None, 0, 0, true, true);
+        let raw = bitpack::encode(&quantized, None, 0, 0, true, true).unwrap();
         let restored = bitpack::decode(&raw, None, 0).unwrap().0;
         let mut message = decode_player_message(&serde_json::to_vec(&restored).unwrap()).unwrap();
         fixed_point::normalize(&mut message).unwrap();

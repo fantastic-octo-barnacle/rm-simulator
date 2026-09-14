@@ -49,11 +49,27 @@ fn invalid() -> io::Error {
     )
 }
 
+/// Shared traversal accounting, including a delta's full-value fallback.
+#[derive(Default)]
+struct Budget {
+    nodes: usize,
+}
+impl Budget {
+    fn visit(&mut self, depth: usize) -> io::Result<()> {
+        self.nodes += 1;
+        if depth > 64 || self.nodes > 100_000 {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+}
+
 struct Writer {
     bytes: Vec<u8>,
     bit: usize,
     packed: bool,
     fixed: bool,
+    budget: Budget,
 }
 impl Writer {
     fn bits(&mut self, value: u64, width: usize) {
@@ -88,7 +104,8 @@ impl Writer {
             self.bits(u64::from(byte), 8);
         }
     }
-    fn full(&mut self, value: &Value) {
+    fn full(&mut self, value: &Value, depth: usize) -> io::Result<()> {
+        self.budget.visit(depth)?;
         match value {
             Value::Null => self.bits(0, 4),
             Value::Bool(false) => self.bits(1, 4),
@@ -121,7 +138,7 @@ impl Writer {
                 self.bits(7, 4);
                 self.var(a.len() as u64);
                 for v in a {
-                    self.full(v);
+                    self.full(v, depth + 1)?;
                 }
             }
             Value::Object(o) => {
@@ -129,16 +146,18 @@ impl Writer {
                 self.var(o.len() as u64);
                 for (k, v) in o {
                     self.string(k);
-                    self.full(v);
+                    self.full(v, depth + 1)?;
                 }
             }
         }
+        Ok(())
     }
-    fn delta(&mut self, before: &Value, after: &Value) {
+    fn delta(&mut self, before: &Value, after: &Value, depth: usize) -> io::Result<()> {
+        self.budget.visit(depth)?;
         let unchanged = exact(before, after);
         self.bits(u64::from(!unchanged), 1);
         if unchanged {
-            return;
+            return Ok(());
         }
         let same_shape = match (before, after) {
             (Value::Array(a), Value::Array(b)) => a.len() == b.len(),
@@ -148,18 +167,18 @@ impl Writer {
         };
         self.bits(u64::from(same_shape), 1);
         if !same_shape {
-            self.full(after);
-            return;
+            self.full(after, depth + 1)?;
+            return Ok(());
         }
         match (before, after) {
             (Value::Array(a), Value::Array(b)) => {
                 for (a, b) in a.iter().zip(b) {
-                    self.delta(a, b);
+                    self.delta(a, b, depth + 1)?;
                 }
             }
             (Value::Object(a), Value::Object(b)) => {
                 for (k, b) in b {
-                    self.delta(&a[k], b);
+                    self.delta(&a[k], b, depth + 1)?;
                 }
             }
             (Value::Number(a), Value::Number(b)) => {
@@ -176,7 +195,7 @@ impl Writer {
                     self.bits(i as u64, 3);
                     self.bits((width - 1) as u64, 6);
                     self.bits(difference, width);
-                    return;
+                    return Ok(());
                 }
                 let xor = a.as_f64().unwrap().to_bits() ^ b.as_f64().unwrap().to_bits();
                 let leading = xor.leading_zeros() as usize;
@@ -188,6 +207,7 @@ impl Writer {
             }
             _ => unreachable!(),
         }
+        Ok(())
     }
 }
 
@@ -195,7 +215,7 @@ struct Reader<'a> {
     bytes: &'a [u8],
     bit: usize,
     packed: bool,
-    nodes: usize,
+    budget: Budget,
     fixed: bool,
 }
 impl Reader<'_> {
@@ -255,15 +275,8 @@ impl Reader<'_> {
             .collect::<io::Result<Vec<_>>>()?;
         String::from_utf8(bytes).map_err(|_| invalid())
     }
-    fn budget(&mut self, depth: usize) -> io::Result<()> {
-        self.nodes += 1;
-        if depth > 64 || self.nodes > 100_000 {
-            return Err(invalid());
-        }
-        Ok(())
-    }
     fn full(&mut self, depth: usize) -> io::Result<Value> {
-        self.budget(depth)?;
+        self.budget.visit(depth)?;
         Ok(match self.bits(4)? {
             0 => Value::Null,
             1 => Value::Bool(false),
@@ -310,7 +323,7 @@ impl Reader<'_> {
         })
     }
     fn delta(&mut self, before: &Value, depth: usize) -> io::Result<Value> {
-        self.budget(depth)?;
+        self.budget.visit(depth)?;
         if self.bits(1)? == 0 {
             return Ok(before.clone());
         }
@@ -381,11 +394,14 @@ pub fn exact(a: &Value, b: &Value) -> bool {
 /// Encode a full frame or a delta. `base_id == 0` means independent; a positive
 /// id with no baseline proposes a retained full frame. Header includes an epoch
 /// and baseline identity, so no schema or dictionary is supplied out of band.
+/// Returns an error when traversal exceeds 64 levels or 100,000 visited values,
+/// the frame exceeds 4 MiB, or a delta has a zero baseline id. Unchanged delta
+/// subtrees consume one visit, matching the decoder.
 ///
 /// ```
 /// use rm_simulator_server::binary_snapshot::bitpack::{encode, decode};
 /// let state = serde_json::json!({"tick": 42, "x": 1.25});
-/// let bytes = encode(&state, None, 3, 0, true, true);
+/// let bytes = encode(&state, None, 3, 0, true, true).unwrap();
 /// assert_eq!(decode(&bytes, None, 3).unwrap().0, state);
 /// ```
 pub fn encode(
@@ -395,23 +411,30 @@ pub fn encode(
     base_id: u64,
     packed: bool,
     fixed: bool,
-) -> Vec<u8> {
+) -> io::Result<Vec<u8>> {
+    if baseline.is_some() && base_id == 0 {
+        return Err(invalid());
+    }
     let mut w = Writer {
         bytes: b"RMB0".to_vec(),
         bit: 32,
         packed,
         fixed,
+        budget: Budget::default(),
     };
     w.bits(u64::from(packed) | (u64::from(fixed) << 1), 8);
     w.bits(u64::from(baseline.is_some()), 1);
     w.var(epoch);
     w.var(base_id);
     if let Some(base) = baseline {
-        w.delta(base, value);
+        w.delta(base, value, 0)?;
     } else {
-        w.full(value);
+        w.full(value, 0)?;
     }
-    w.bytes
+    if w.bytes.len() > LIMIT {
+        return Err(invalid());
+    }
+    Ok(w.bytes)
 }
 
 /// Inspect the bounded frame header: delta flag, epoch and baseline id. This
@@ -425,7 +448,7 @@ pub fn header(bytes: &[u8]) -> io::Result<(bool, u64, u64)> {
         bytes,
         bit: 40,
         packed: bytes[4] & 1 != 0,
-        nodes: 0,
+        budget: Budget::default(),
         fixed: bytes[4] & 2 != 0,
     };
     Ok((r.bits(1)? != 0, r.var()?, r.var()?))
@@ -445,7 +468,7 @@ pub fn decode(
         bytes,
         bit: 40,
         packed: bytes[4] & 1 != 0,
-        nodes: 0,
+        budget: Budget::default(),
         fixed: bytes[4] & 2 != 0,
     };
     let delta = r.bits(1)? != 0;
@@ -486,10 +509,10 @@ mod tests {
         ];
         for packed in [false, true] {
             for state in &states {
-                let bytes = encode(state, None, 7, 1, packed, true);
+                let bytes = encode(state, None, 7, 1, packed, true).unwrap();
                 assert!(exact(&decode(&bytes, None, 7).unwrap().0, state));
                 for base in &states {
-                    let bytes = encode(state, Some(base), 7, 1, packed, true);
+                    let bytes = encode(state, Some(base), 7, 1, packed, true).unwrap();
                     assert!(exact(&decode(&bytes, Some((base, 1)), 7).unwrap().0, state));
                     assert!(decode(&bytes, None, 7).is_err());
                     assert!(decode(&bytes, Some((base, 2)), 7).is_err());
@@ -501,9 +524,10 @@ mod tests {
 
     #[test]
     fn truncation_trailing_bytes_and_hostile_input_are_rejected_without_panics() {
-        for packed in [false, true] {
+        for flags in 0_u8..4 {
+            let packed = flags & 1 != 0;
             let state = json!({"x": [1.25, "test", false], "v": u64::MAX});
-            let mut bytes = encode(&state, None, 0, 0, packed, true);
+            let mut bytes = encode(&state, None, 0, 0, packed, flags & 2 != 0).unwrap();
             for len in 0..bytes.len() {
                 assert!(decode(&bytes[..len], None, 0).is_err());
             }
@@ -511,15 +535,84 @@ mod tests {
             assert!(decode(&bytes, None, 0).is_err());
             // Deterministic malformed bodies exercise lengths, varints and tags.
             let mut seed = 1_u64;
-            for len in 0..256 {
-                let mut bytes = b"RMB0".to_vec();
-                bytes.push(u8::from(packed));
-                bytes.extend([0, 0, 0]);
-                for _ in 0..len {
-                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-                    bytes.push((seed >> 32) as u8);
+            for delta in [false, true] {
+                for len in 0..256 {
+                    let mut writer = Writer {
+                        bytes: b"RMB0".to_vec(),
+                        bit: 32,
+                        packed,
+                        fixed: flags & 2 != 0,
+                        budget: Budget::default(),
+                    };
+                    writer.bits(u64::from(flags), 8);
+                    writer.bits(u64::from(delta), 1);
+                    writer.var(0);
+                    writer.var(1);
+                    for _ in 0..len {
+                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        writer.bits((seed >> 32) & 255, 8);
+                    }
+                    let _ = decode(&writer.bytes, Some((&state, 1)), 0);
                 }
-                let _ = decode(&bytes, Some((&state, 1)), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn full_and_delta_traversal_limits_match() {
+        for packed in [false, true] {
+            for fixed in [false, true] {
+                // Full arrays visit the root plus each element; changed integer
+                // deltas additionally visit a full replacement for each leaf.
+                for (base, leaf, accepted) in [
+                    (None, Value::Null, 99_999),
+                    (Some(Value::from(0)), Value::from(1), 49_999),
+                ] {
+                    for len in [accepted, accepted + 1] {
+                        let value = Value::Array(vec![leaf.clone(); len]);
+                        let baseline = base.as_ref().map(|v| Value::Array(vec![v.clone(); len]));
+                        let encoded = encode(&value, baseline.as_ref(), 0, 1, packed, fixed);
+                        if len == accepted {
+                            let bytes = encoded.unwrap();
+                            let decoded = decode(&bytes, baseline.as_ref().map(|b| (b, 1)), 0)
+                                .unwrap()
+                                .0;
+                            assert!(exact(&decoded, &value));
+                        } else {
+                            assert!(encoded.is_err());
+                        }
+                    }
+                }
+                for depth in [63, 64, 65] {
+                    let mut value = Value::from(1);
+                    let mut baseline = Value::from(0);
+                    for _ in 0..depth {
+                        value = Value::Array(vec![value]);
+                        baseline = Value::Array(vec![baseline]);
+                    }
+                    for base in [None, Some(&baseline)] {
+                        let encoded = encode(&value, base, 0, 1, packed, fixed);
+                        let limit = if base.is_some() { 63 } else { 64 };
+                        if depth <= limit {
+                            assert!(exact(
+                                &decode(&encoded.unwrap(), base.map(|b| (b, 1)), 0)
+                                    .unwrap()
+                                    .0,
+                                &value
+                            ));
+                        } else {
+                            assert!(encoded.is_err());
+                        }
+                    }
+                }
+                // An unchanged subtree counts as one delta visit, even when
+                // expanding it as a full frame would exceed the node budget.
+                let value = Value::Array(vec![Value::Null; 100_000]);
+                let bytes = encode(&value, Some(&value), 0, 1, packed, fixed).unwrap();
+                assert!(exact(
+                    &decode(&bytes, Some((&value, 1)), 0).unwrap().0,
+                    &value
+                ));
             }
         }
     }
@@ -530,8 +623,8 @@ mod tests {
         for packed in [false, true] {
             let a = json!({"tick": 2, "pos": [1.1, 2.2, 3.3]});
             let b = json!({"tick": 3, "pos": [1.2, 2.4, 3.6]});
-            let packet_a = encode(&a, Some(&base), 0, 9, packed, true);
-            let packet_b = encode(&b, Some(&base), 0, 9, packed, true);
+            let packet_a = encode(&a, Some(&base), 0, 9, packed, true).unwrap();
+            let packet_b = encode(&b, Some(&base), 0, 9, packed, true).unwrap();
             for (packet, expected) in [(&packet_b, &b), (&packet_b, &b), (&packet_a, &a)] {
                 assert!(exact(
                     &decode(packet, Some((&base, 9)), 0).unwrap().0,

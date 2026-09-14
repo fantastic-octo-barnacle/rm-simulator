@@ -271,7 +271,8 @@ impl Encoder {
     }
     /// Encodes one frame from an independent player checkpoint, compressed for
     /// the wire. `epoch` selects the state generation: a change discards every
-    /// baseline and restarts the rotation.
+    /// baseline and restarts the rotation. Binary traversal and frame-size
+    /// violations return an error before transmission.
     ///
     /// ```
     /// use rm_simulator_server::compression::decompress;
@@ -325,7 +326,7 @@ impl Encoder {
         if self.retiring.is_some() {
             self.retire_age += 1;
         }
-        let independent = full_frame(&mut self.binary, &mut self.compressor, epoch, None, &state);
+        let independent = full_frame(&mut self.binary, &mut self.compressor, epoch, None, &state)?;
         self.full_bytes += independent.len() as u64;
         if bytes.len() > BASE_LIMIT {
             self.sent_bytes += independent.len() as u64;
@@ -352,7 +353,7 @@ impl Encoder {
                 epoch,
                 Some(*id),
                 baseline,
-            )
+            )?
         } else if let Some((id, baseline)) = &self.pending
             && self.count.is_multiple_of(8)
         {
@@ -362,7 +363,7 @@ impl Encoder {
                 epoch,
                 Some(*id),
                 baseline,
-            )
+            )?
         } else if let Some((id, baseline)) = &self.active {
             let delta = if let Some(binary) = &mut self.binary {
                 binary.compress(&crate::binary_snapshot::bitpack::encode(
@@ -372,7 +373,7 @@ impl Encoder {
                     *id,
                     true,
                     true,
-                ))
+                )?)
             } else {
                 let patch = difference(baseline, &state);
                 self.compressor.compress(&envelope_bytes(&Wire::Delta {
@@ -436,8 +437,8 @@ fn full_frame(
     epoch: u64,
     id: Option<u64>,
     state: &Value,
-) -> Vec<u8> {
-    if let Some(binary) = binary {
+) -> io::Result<Vec<u8>> {
+    Ok(if let Some(binary) = binary {
         binary.compress(&crate::binary_snapshot::bitpack::encode(
             state,
             None,
@@ -445,7 +446,7 @@ fn full_frame(
             id.unwrap_or(0),
             true,
             true,
-        ))
+        )?)
     } else {
         let wire = match id {
             Some(id) => Wire::Full {
@@ -459,7 +460,7 @@ fn full_frame(
             },
         };
         compressor.compress(&envelope_bytes(&wire))
-    }
+    })
 }
 
 /// Client-side delta decoder for one connection.
@@ -697,6 +698,22 @@ mod tests {
     }
 
     #[test]
+    fn binary_snapshot_propagates_restore_traversal_errors() {
+        let mut encoder = Encoder::binary();
+        let valid = source(0, 0);
+        let mut state: Value = serde_json::from_slice(&valid).unwrap();
+        state["CompactSnapshot"]["state"]["field"]["restore"] =
+            Value::Array(vec![Value::Null; 100_000]);
+        let error = encoder
+            .snapshot(0, &serde_json::to_vec(&state).unwrap())
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(encoder.sent_bytes, 0);
+        assert!(encoder.pending.is_none());
+        assert!(encoder.snapshot(0, &valid).is_ok());
+    }
+
+    #[test]
     fn malformed_binary_rotations_are_rejected_before_pinning_a_baseline() {
         use crate::binary_snapshot::bitpack;
         let mut state: Value = serde_json::from_slice(&source(0, 0)).unwrap();
@@ -711,7 +728,7 @@ mod tests {
             serde_json::to_value(snapshot.chassis).unwrap();
         state["CompactSnapshot"]["state"]["field"]["chassis"][0]["pose"]["rotation_wxyz"] =
             serde_json::json!([0., 0., 0., 0.]);
-        let bytes = bitpack::encode(&state, None, 0, 1, true, true);
+        let bytes = bitpack::encode(&state, None, 0, 1, true, true).unwrap();
         let mut decoder = Decoder::default();
         assert!(decoder.receive(parse(&bytes).unwrap().unwrap()).is_err());
         assert_eq!(decoder.pinned(), 0);

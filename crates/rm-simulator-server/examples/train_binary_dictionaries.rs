@@ -59,25 +59,31 @@ fn main() {
                 if proposing {
                     id += 1;
                 }
-                samples.push(bitpack::encode(
-                    &value,
-                    None,
-                    epoch,
-                    if proposing { id } else { 0 },
-                    packed,
-                    mode != Quantization::None,
-                ));
+                samples.push(
+                    bitpack::encode(
+                        &value,
+                        None,
+                        epoch,
+                        if proposing { id } else { 0 },
+                        packed,
+                        mode != Quantization::None,
+                    )
+                    .unwrap(),
+                );
                 if proposing {
                     base = Some(value.clone());
                 } else {
-                    samples.push(bitpack::encode(
-                        &value,
-                        base.as_ref(),
-                        epoch,
-                        id,
-                        packed,
-                        mode != Quantization::None,
-                    ));
+                    samples.push(
+                        bitpack::encode(
+                            &value,
+                            base.as_ref(),
+                            epoch,
+                            id,
+                            packed,
+                            mode != Quantization::None,
+                        )
+                        .unwrap(),
+                    );
                 }
                 // Verify full and delta samples against the same retained state.
                 for sample in samples.iter().rev().take(if proposing { 1 } else { 2 }) {
