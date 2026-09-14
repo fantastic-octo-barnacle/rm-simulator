@@ -21,7 +21,10 @@ use std::io::{self, BufRead, Read, Write};
 /// instead of repeating it in every anchor, with a dedicated reliable frame.
 /// Version 29 combines referenced owner configurations with lossless RMI3 input
 /// batches; experimental version 28 builds carried only one of these changes.
-pub const PROTOCOL_VERSION: u32 = 30;
+/// Version 30 carries projectile first-contact and dwell times for spent-ball
+/// retirement. Version 31 names the shared physics tick in Hello and Welcome
+/// so a host refuses a client that predicts at another rate.
+pub const PROTOCOL_VERSION: u32 = 31;
 
 /// The refusal a host sends a client whose physics rate differs from its own.
 /// Both are stated in Hz where the rate is one that is offered, and otherwise
