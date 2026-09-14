@@ -39,7 +39,9 @@ recorded with them; do not assume a local package still matches those captures.
   the protocol 29 integration of experiments 0/1/7 and remaining validation.
   The [cadence/deflate follow-up](bandwidth-results/cadence-deflate-followup.md)
   records the combined cadence trial, selected-stream compression sweep and
-  constrained-link measurements.
+  constrained-link measurements. The
+  [ZSTD dictionary experiment](bandwidth-results/exp-8-zstd-dictionary.md)
+  measures the selectable codec against DEFLATE, in sample and leave-one-out.
 
 - [UDP impairment and version compatibility tests](network-stress-2026-09-13.md)
 

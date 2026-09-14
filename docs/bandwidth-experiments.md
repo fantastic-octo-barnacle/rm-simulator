@@ -19,7 +19,10 @@ precision and pacing defaults are unchanged. Experiments 2–6 are retained as
 investigation records, not enabled production changes. The subsequent [cadence/deflate follow-up](bandwidth-results/cadence-deflate-followup.md)
 measures 64 ms world checkpoints with 32 ms owner updates and a separate
 selected-stream deflate 1/4 sweep. Both remain experimental, with production
-defaults unchanged and constrained-link acceptance failed.
+defaults unchanged and constrained-link acceptance failed. A later [ZSTD
+dictionary experiment](bandwidth-results/exp-8-zstd-dictionary.md) adds a
+selectable wire codec (`RM_NET_CODEC`), leaves the DEFLATE wire and the
+production default untouched, and measures a 30–58% cut of the selected stream.
 
 The isolated measurements below are not measurements of the combined build.
 Experiment 1's short unimpaired UDP pair corroborates its bandwidth saving, but
@@ -272,6 +275,7 @@ the measurement instrument and the harness hazards found while running are in
 | 5 | Separate cadence from encoding | **Largest measured lever.** 31.25/15.625 Hz gives −20.5…−36.8%; 15.625/15.625 gives ≈ −49%. Decoupling to 62.5/15.625 is a *loss* until the anchor shrinks. At 15.625 Hz the complete-context gap is 64 ms nominal and three consecutive lost checkpoints (256 ms) still fit the 300 ms limit; the fourth exceeds it. |
 | 6 | Reduce repeated outcome recovery | **Leave it in place.** The share is zero on the canonical workloads (they record no shot results and land no hits). In a populated scenario the two collections cost 1015 B/frame ≈ 20% and identity-keyed splices save 6.6%, which does not move NET-001 while owner anchors and `state.chassis` dominate. |
 | 7 | Compact upstream repetition | **Win.** A versioned RMI3 batch (shared header, exact changed-value masks, LEB128 relative fields, exact fallback) cuts upstream 22–27%: 36.5 → 27.0 kbps idle, 73.4 → 56.6 driving, 76.4 → 59.6 firing, losslessly. After compaction the offered upstream fits the existing 10 KiB/s `limited` budget, so **no pacing change is justified**. |
+| 8 | ZSTD with a trained dictionary | **Win, opt-in.** A selectable wire codec (`RM_NET_CODEC`) leaves the DEFLATE wire unchanged. Plain ZSTD cuts the selected stream by up to 38%; a 32 KiB trained dictionary cuts the selected acknowledged-delta stream 30–58% and independent envelopes 58–82% against `deflate-1`, halves fragments on `drive` and cuts them 26% on `fire`, and lowers CPU in both directions. Out of sample: a leave-one-out dictionary is only 8–22% better. See [exp-8](bandwidth-results/exp-8-zstd-dictionary.md). |
 
 What this says about the 100–200 kbps target: no single experiment reaches it.
 The owner stream alone is 111 kbps after experiment 1, and the world stream is
@@ -284,11 +288,20 @@ remaining bytes are. Before more format work, the next measurements should be:
 1. the experiment 1 + 5 composition, since it is the only pair with measured
    wins in different streams;
 2. the deflate level 1 → 4 change on the **selected** stream (experiment 3's
-   sweep measured it only on the independent frame);
+   sweep measured it only on the independent frame) — **measured by experiment
+   8**: level 4 cuts the selected stream 10–37% (idle −10%, drive −17%,
+   twelve −37%, fire −14%) at higher codec CPU, and the
+   dictionary codec beats it everywhere;
 3. a populated firing scenario for the canonical probe, because no canonical
    workload records a `ShotResult` or lands a hit, so `shot_results` and
    `state.hits` are empty and every conclusion about outcome history rests on a
    synthetic counterpart.
+
+Experiment 8 also supplies the next candidate for a harness pair: a
+dictionary-trained ZSTD is the largest single codec win measured on the
+*selected* stream, and its fragment reduction (999 → 509 on `twelve`) can only
+be validated under loss. It remains an opt-in development codec; DEFLATE is
+still the production default.
 
 Two coordination hazards are worth carrying forward: a shared
 `CARGO_TARGET_DIR` lets a concurrent `cargo test` silently run another

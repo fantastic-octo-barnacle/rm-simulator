@@ -35,10 +35,11 @@ const MAX_WIRE: usize = crate::protocol::MAX_LINE_BYTES;
 const FRAME_LIFETIME: Duration = Duration::from_millis(250);
 /// First four bytes of every RMG1 fragment.
 const MAGIC: &[u8; 4] = b"RMG1";
-/// First four bytes of a deflated command payload, which marks the unreliable
-/// shot-retry lane.
+/// First four bytes of a compressed command payload, which marks the unreliable
+/// shot-retry lane. The body is whatever `compression` writes; a DEFLATE body
+/// carries no further prefix.
 const COMMAND_MAGIC: &[u8; 4] = b"RMC1";
-/// First four bytes of a deflated compact pilot input batch. One shared batch
+/// First four bytes of a compressed compact pilot input batch. One shared batch
 /// header carries the chassis, input epoch and placement revision, and every
 /// frame carries relative sequence and sampled-time fields plus an exact
 /// changed-value mask over the five command values.
@@ -109,9 +110,8 @@ impl OwnerConfigSender {
         let message = ServerMessage::OwnerConfig(Box::new(crate::owner_stream::OwnerConfig::new(
             config.clone(),
         )));
-        Ok(miniz_oxide::deflate::compress_to_vec(
+        Ok(crate::compression::compress(
             &crate::snapshot_codec::encode_player_message(&message),
-            1,
         ))
     }
     /// Offers `config` and returns the frame to queue now, or `None` while the
@@ -407,7 +407,7 @@ fn input_batch(inputs: &VecDeque<Command>) -> io::Result<Vec<u8>> {
         previous_bits = Some(command_bits(&frame.command));
     }
     let mut packet = INPUT_BATCH_MAGIC.to_vec();
-    packet.extend(miniz_oxide::deflate::compress_to_vec(&bytes, 1));
+    packet.extend(crate::compression::compress(&bytes));
     if packet.len() > CHUNK {
         return Err(io_error("input batch exceeds one datagram"));
     }
@@ -429,11 +429,9 @@ fn decode_inputs(packet: &[u8]) -> io::Result<Vec<Command>> {
     let compressed = packet
         .strip_prefix(INPUT_BATCH_MAGIC_V2)
         .ok_or_else(|| io_error("invalid input batch"))?;
-    let bytes = miniz_oxide::inflate::decompress_to_vec_with_limit(
-        compressed,
-        1 + MAX_INPUT_FRAMES * INPUT_FRAME_BYTES,
-    )
-    .map_err(io_error)?;
+    let bytes =
+        crate::compression::decompress(compressed, 1 + MAX_INPUT_FRAMES * INPUT_FRAME_BYTES)
+            .map_err(io_error)?;
     let count = bytes.first().copied().unwrap_or(0) as usize;
     if !(1..=MAX_INPUT_FRAMES).contains(&count) || bytes.len() != 1 + count * INPUT_FRAME_BYTES {
         return Err(io_error("invalid input batch length"));
@@ -451,8 +449,7 @@ fn decode_inputs(packet: &[u8]) -> io::Result<Vec<Command>> {
 /// frame carries all 80 bytes of its own.
 fn decode_compact_inputs(compressed: &[u8]) -> io::Result<Vec<Command>> {
     let bytes =
-        miniz_oxide::inflate::decompress_to_vec_with_limit(compressed, INPUT_BATCH_BODY_LIMIT)
-            .map_err(io_error)?;
+        crate::compression::decompress(compressed, INPUT_BATCH_BODY_LIMIT).map_err(io_error)?;
     let count = bytes.first().copied().unwrap_or(0) as usize;
     if !(1..=MAX_INPUT_FRAMES).contains(&count) {
         return Err(io_error("invalid input count"));
@@ -678,8 +675,7 @@ impl Frames {
             return Ok(None);
         }
         let frame = self.pending.remove(position).unwrap();
-        let json = miniz_oxide::inflate::decompress_to_vec_with_limit(&frame.bytes, MAX_WIRE)
-            .map_err(io_error)?;
+        let json = crate::compression::decompress(&frame.bytes, MAX_WIRE).map_err(io_error)?;
         let message = if let Some(wire) = crate::udp_snapshot::parse(&json)? {
             if !reliable && matches!(wire, crate::udp_snapshot::Wire::Retire { .. }) {
                 return Err(io_error("unreliable baseline retirement"));
@@ -812,8 +808,7 @@ impl PeerCodec {
             return Ok(PeerRequest::Inputs(decode_inputs(payload)?));
         }
         let payload = if let Some(bytes) = payload.strip_prefix(COMMAND_MAGIC) {
-            miniz_oxide::inflate::decompress_to_vec_with_limit(bytes, INPUT_BATCH_LIMIT)
-                .map_err(io_error)?
+            crate::compression::decompress(bytes, INPUT_BATCH_LIMIT).map_err(io_error)?
         } else {
             payload.to_vec()
         };
@@ -1284,9 +1279,8 @@ impl ClientCodec {
             && let Some(command @ Command::FireAimed { .. }) = queued.command
         {
             let mut bytes = COMMAND_MAGIC.to_vec();
-            bytes.extend(miniz_oxide::deflate::compress_to_vec(
+            bytes.extend(crate::compression::compress(
                 &serde_json::to_vec(&ClientMessage::Command(command)).map_err(io_error)?,
-                1,
             ));
             return self
                 .pacer
@@ -1363,10 +1357,7 @@ mod tests {
         packets(
             revision,
             reliable,
-            &miniz_oxide::deflate::compress_to_vec(
-                &crate::snapshot_codec::encode_player_message(message),
-                1,
-            ),
+            &crate::compression::compress(&crate::snapshot_codec::encode_player_message(message)),
         )
         .unwrap()
     }
@@ -1421,8 +1412,7 @@ mod tests {
         if packet.len() < HEADER || &packet[..4] != b"RMG1" {
             return None;
         }
-        let json =
-            miniz_oxide::inflate::decompress_to_vec_with_limit(&packet[HEADER..], MAX_WIRE).ok()?;
+        let json = crate::compression::decompress(&packet[HEADER..], MAX_WIRE).ok()?;
         crate::snapshot_codec::decode_player_message(&json).ok()
     }
 
@@ -1772,6 +1762,45 @@ mod tests {
     }
 
     #[test]
+    fn shot_retry_uses_selected_codec_and_preserves_command() {
+        let now = Instant::now();
+        let command = Command::FireAimed {
+            shooter: 7,
+            shot_id: 1,
+            input: crate::input_stream::InputFrame {
+                input_epoch: 2,
+                sequence: 3,
+                sampled_time_ns: 48_000_000,
+                duration_ticks: 16,
+                placement_revision: 4,
+                command: rm_simulator_world::ChassisCommand::default(),
+            },
+            timing: None,
+        };
+        let mut client = ClientCodec::new(now, 1 << 20, 12);
+        client
+            .submit(
+                QueuedCommand {
+                    command: Some(command),
+                    confirmation: None,
+                    time_probe: None,
+                },
+                now,
+            )
+            .unwrap();
+        let packets = client_packets(&mut client, now + Duration::from_millis(64));
+        assert_eq!(packets.len(), 1);
+        let body = packets[0].strip_prefix(COMMAND_MAGIC).unwrap();
+        let expected = crate::compression::compress(
+            &serde_json::to_vec(&ClientMessage::Command(command)).unwrap(),
+        );
+        assert_eq!(body, expected);
+        let mut host = PeerCodec::new(now, 1 << 20, false);
+        assert!(matches!(host.receive(&packets[0], now).unwrap(),
+            PeerRequest::Message(message) if *message == ClientMessage::Command(command)));
+    }
+
+    #[test]
     fn redundant_history_retains_release_and_stays_below_one_datagram() {
         let mut history = VecDeque::new();
         for sequence in 1..=20 {
@@ -1977,7 +2006,7 @@ mod tests {
 
     /// The inflated `RMI3` body behind one encoded batch.
     fn body_of(packet: &[u8]) -> Vec<u8> {
-        miniz_oxide::inflate::decompress_to_vec_with_limit(
+        crate::compression::decompress(
             packet.strip_prefix(INPUT_BATCH_MAGIC).unwrap(),
             INPUT_BATCH_BODY_LIMIT,
         )

@@ -67,11 +67,12 @@ fn main() {
             let wire = encoder.snapshot(state.input_epoch, &compact).unwrap();
             encode_us += started.elapsed().as_micros();
             if sweep {
-                selected.push(miniz_oxide::inflate::decompress_to_vec(&wire).unwrap());
+                selected
+                    .push(rm_simulator_server::compression::decompress(&wire, 4 << 20).unwrap());
             }
             let started = std::time::Instant::now();
             let parsed = rm_simulator_server::udp_snapshot::parse(
-                &miniz_oxide::inflate::decompress_to_vec(&wire).unwrap(),
+                &rm_simulator_server::compression::decompress(&wire, 4 << 20).unwrap(),
             )
             .unwrap()
             .unwrap();

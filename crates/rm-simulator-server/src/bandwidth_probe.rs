@@ -255,7 +255,7 @@ fn account_up(totals: &mut Totals, bytes: &[u8]) {
     totals.up_bytes += bytes.len() as u64;
     if let Some(inflated) = bytes
         .strip_prefix(b"RMI3")
-        .and_then(|body| miniz_oxide::inflate::decompress_to_vec_with_limit(body, 16 * 1024).ok())
+        .and_then(|body| crate::compression::decompress(body, 16 * 1024).ok())
     {
         totals.up_batches += 1;
         totals.up_batch_bytes += bytes.len() as u64;

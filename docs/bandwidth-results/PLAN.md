@@ -34,6 +34,10 @@ matrix and populated outcome workloads remain outstanding; NET-001 stays open.
   bandwidth -- --nocapture`). Real server/app binaries over UDP are only built
   for a candidate that already shows a win in-process.
 - A results file per experiment: `docs/bandwidth-results/exp-N-*.md`.
+- Experiment 8 keeps the same measurement discipline but runs on
+  `feat/zstd-compression` in `.worktrees/zstd-compression` rather than a
+  `perf/bw-expN` worktree, because it also carries the selectable codec the
+  branch exists for.
 
 ## Measurement instrument
 
@@ -84,6 +88,7 @@ sensitivity. Canonical revision: `48f20e6` on `perf/bw-exp0`.
 | 5 | Cadence experiments | `perf/bw-exp5` | **done** | 31.25/15.625 Hz gives −20.5…−36.8%; 15.625/15.625 gives ≈−49%; 62.5/15.625 is a loss until the anchor shrinks; 3 lost checkpoints still inside the 300 ms context gate |
 | 6 | Outcome recovery repetition | `perf/bw-exp6` | **done** | zero share in the canonical workloads (sections empty); populated scenario 1015 B/frame ≈ 20%, identity splice −6.6% there; recommendation: leave it in place |
 | 7 | Upstream batch compaction | `perf/bw-exp7` | **done** | RMI3 batch: upstream 36.5→27.0 idle, 73.4→56.6 drive, 76.4→59.6 fire kbps (−22…−26%); no pacing change justified |
+| 8 | ZSTD with a trained dictionary | `feat/zstd-compression` | **done** | selectable codec; DEFLATE unchanged and still the default. Plain ZSTD saves up to 38% on the selected stream; `zstd-dict-3` cuts the selected stream 30–58% and the independent envelopes 58–82% against `deflate-1`, halves fragments on `drive` and cuts them 26% on `fire`, and lowers CPU in both directions. Full production probe, remote cadence: downstream 268.1→196.6 idle, 671.7→524.3 fire, 877.9→695.8 twelve kbps (−21…−27%), no checkpoint lost; upstream +1.5…3.3 kbps. Out of sample: a leave-one-out dictionary is only 8–22% better. See [exp-8](exp-8-zstd-dictionary.md) |
 
 ## Headline consequences so far
 
@@ -118,6 +123,13 @@ sensitivity. Canonical revision: `48f20e6` on `perf/bw-exp0`.
   outcome history or projectile churn must add a populated scenario first
   (experiment 6's `bandwidth_attribution_populated_outcomes` is a starting
   point).
+
+- Experiment 8 is the first codec change that beats DEFLATE by more than a few
+  percent on the *selected* stream: a dictionary-trained ZSTD cuts it 30–58%.
+  It is also the first result that lowers CPU in both directions, and it
+  composes with the acknowledged-baseline scheme (242 of 250 frames stayed
+  deltas). It still does not reach 200 kbps on the firing workloads, so it
+  stacks with cadence rather than replacing it.
 
 ## Real end-to-end acceptance run
 

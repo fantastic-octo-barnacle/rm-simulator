@@ -32,6 +32,9 @@ clap = { version = "4.6", features = ["derive"] }
 anyhow = "1"
 serde_json = "1"
 sha2 = "0.10"
+# Wire-compression candidate: ZSTD with a trained checkpoint dictionary.
+# `legacy` and `arrays` are unused; `zdict_builder` trains the embedded dictionary.
+zstd = { version = "0.13", default-features = false, features = ["zdict_builder"] }
 bevy = { version = "0.19.1", default-features = false, features = ["3d", "ui", "default_font"] }
 
 # Bevy is unusably slow unoptimized; keep the app itself debuggable.
