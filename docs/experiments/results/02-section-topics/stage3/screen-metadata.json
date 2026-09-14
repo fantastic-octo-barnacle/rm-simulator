@@ -1,0 +1,57 @@
+{
+  "base_revision": "dd214662be68fc2fe61f94c7dab7ce8f35e1acbc",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "machine": "arm64",
+  "binary_sha256": "f59aa8a76410cdce694c7e978f1aa77536e69544658ec097ff67fefe61d74023",
+  "source_sha256": {
+    "crates/rm-simulator-server/src/section_topics/delivery.rs": "1d07ddf55efbb9f0ead9d8db09e37e48a4550092eaccbc7988942062ec8928fa",
+    "crates/rm-simulator-server/src/section_topics/delivery/trials.rs": "9b3278850bba42e62c685f5f7bd647afbfa4836baab8ecbfe1ba1c5cf84ff1b0",
+    "crates/rm-simulator-server/src/section_topics/delivery/presentation.rs": "779e5c7b4545d6936272980a2385a063d78370c1e4f2c0d4dab9fa87052a68fc",
+    "crates/rm-simulator-server/src/section_topics/delivery/trials/stage3.rs": "174b7d2f0c12bbe604cb83b1231359355739dafca74ea4fb4a2d72d05446b137",
+    "crates/rm-simulator-server/src/section_topics.rs": "9d6bc24db47af092bbf2cb54d9ec0df38abee718cda584b71ddc0673545eabd3",
+    "crates/rm-simulator-server/src/udp_snapshot.rs": "a0d90e5bd0969cd27feac3377822e571230182148a57ba5f1d31aa417d3dbd6f"
+  },
+  "scope": "offline application datagrams; 1ms physics; no native wire, owner/input streams, rendered or prediction replay measurements",
+  "screen": {
+    "frames": 625,
+    "warmup_frames": 126,
+    "capture_ms": 16,
+    "seeds": 1,
+    "profiles": [
+      "clean",
+      "rtt100_loss",
+      "limited"
+    ],
+    "cadences": "full 2x2x3 matrix"
+  },
+  "followup": {
+    "cadence_ms": "32/64/128",
+    "frames": 3750,
+    "warmup_frames": 626,
+    "seeds": 5,
+    "profiles": [
+      "clean",
+      "rtt40",
+      "rtt100_loss",
+      "blackout",
+      "limited"
+    ],
+    "selection": "lowest downstream clean-link screening candidate in both player counts; same seed 1 included, not holdout"
+  },
+  "command": [
+    "target/nix/debug/deps/rm_simulator_server-6c971da1ee89cd65",
+    "--ignored",
+    "--exact",
+    "section_topics::delivery::trials::stage3::stage3_trials",
+    "--nocapture"
+  ],
+  "screen_environment": {
+    "RM_SECTION_STAGE3_SCREEN": "1",
+    "RM_SECTION_TRIAL_FRAMES": "625",
+    "RM_SECTION_TRIAL_WARMUP": "126",
+    "RM_SECTION_TRIAL_SEEDS": "1"
+  },
+  "followup_environment": {
+    "RM_SECTION_STAGE3_CADENCE": "32/64/128"
+  }
+}

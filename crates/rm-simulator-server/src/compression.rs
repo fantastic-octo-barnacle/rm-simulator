@@ -196,6 +196,19 @@ impl Compressor {
             Mode::Deflate => None,
             Mode::Zstd => zstd::bulk::Compressor::new(codec.level).ok(),
             Mode::ZstdDictionary => {
+                #[cfg(feature = "section-topics")]
+                {
+                    // An explicitly copied prepared dictionary avoids the lazy
+                    // CCtx-local dictionary's allocation-dependent adjacency.
+                    // See facebook/zstd#4738; retain one immutable CDict per level.
+                    static DICTIONARIES: [OnceLock<zstd::dict::EncoderDictionary<'static>>; 22] =
+                        [const { OnceLock::new() }; 22];
+                    let dictionary = DICTIONARIES[(codec.level - 1) as usize].get_or_init(|| {
+                        zstd::dict::EncoderDictionary::copy(DICTIONARY, codec.level)
+                    });
+                    zstd::bulk::Compressor::with_prepared_dictionary(dictionary).ok()
+                }
+                #[cfg(not(feature = "section-topics"))]
                 zstd::bulk::Compressor::with_dictionary(codec.level, DICTIONARY).ok()
             }
         };
@@ -285,6 +298,14 @@ pub fn dictionary() -> &'static [u8] {
 pub fn selected() -> Codec {
     static SELECTED: OnceLock<Codec> = OnceLock::new();
     *SELECTED.get_or_init(Codec::from_env)
+}
+
+// Each deterministic experiment replay starts with fresh reusable contexts,
+// matching a fresh process without changing the selected codec or live behavior.
+#[cfg(all(test, feature = "section-topics"))]
+pub(crate) fn reset_test_contexts() {
+    COMPRESSOR.with(|cell| *cell.borrow_mut() = None);
+    DECOMPRESSOR.with(|cell| *cell.borrow_mut() = None);
 }
 
 /// Compresses one frame with the process-wide codec.

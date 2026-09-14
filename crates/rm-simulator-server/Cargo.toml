@@ -10,6 +10,14 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Offline section/checkpoint experiment; does not change any live transport.
+section-topics = []
+
+[[example]]
+name = "section_topics"
+required-features = ["section-topics"]
+
 [[bin]]
 name = "rm-simulator-server"
 path = "src/main.rs"

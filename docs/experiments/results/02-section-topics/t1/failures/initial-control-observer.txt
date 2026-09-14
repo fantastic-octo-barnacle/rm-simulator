@@ -1,0 +1,15 @@
+
+running 1 test
+RM_SECTION_T1_ARTIFACT 2-clean.json.gz
+
+thread 'section_topics::delivery::trials::tuning::run::t1_diagnostics' (299496) panicked at crates/rm-simulator-server/src/section_topics/delivery/trials/tuning/run.rs:51:17:
+Pong overtook confirmation
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test section_topics::delivery::trials::tuning::run::t1_diagnostics ... FAILED
+
+failures:
+
+failures:
+    section_topics::delivery::trials::tuning::run::t1_diagnostics
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 227 filtered out; finished in 18.42s

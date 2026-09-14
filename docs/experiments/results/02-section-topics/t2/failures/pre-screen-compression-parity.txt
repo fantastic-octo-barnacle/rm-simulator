@@ -1,0 +1,7 @@
+---- section_topics::delivery::trials::tuning::t2::weighted_delivery_preserves_exact_state_and_observer_parity stdout ----
+
+thread 'section_topics::delivery::trials::tuning::t2::weighted_delivery_preserves_exact_state_and_observer_parity' (420077) panicked at crates/rm-simulator-server/src/section_topics/delivery/trials/tuning/t2.rs:110:13:
+assertion `left == right` failed: first compression mismatch at call 288, cadence Cadence { chassis_ms: 32, projectiles_ms: 64, checkpoint_ms: 32 } weights Some([2, 1, 1, 1])
+  left: ([20, 221, 112, 207, 40, 199, 149, 85, 242, 121, 80, 59, 24, 211, 141, 182, 232, 218, 188, 245, 164, 240, 226, 192, 169, 233, 241, 30, 10, 95, 103, 222], [4, 156, 73, 64, 84, 6, 41, 251, 153, 102, 64, 63, 231, 27, 30, 231, 89, 12, 223, 62, 152, 183, 251, 131, 198, 123, 45, 0, 124, 136, 13, 92], 21783, 4664)
+ right: ([20, 221, 112, 207, 40, 199, 149, 85, 242, 121, 80, 59, 24, 211, 141, 182, 232, 218, 188, 245, 164, 240, 226, 192, 169, 233, 241, 30, 10, 95, 103, 222], [151, 174, 136, 194, 51, 114, 48, 143, 15, 36, 15, 10, 117, 146, 58, 215, 112, 253, 43, 29, 29, 128, 194, 125, 218, 198, 150, 130, 175, 99, 144, 0], 21783, 4657)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

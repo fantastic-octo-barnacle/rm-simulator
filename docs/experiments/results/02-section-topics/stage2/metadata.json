@@ -1,0 +1,41 @@
+{
+  "stage": 2,
+  "base_revision": "dd214662be68fc2fe61f94c7dab7ce8f35e1acbc",
+  "working_tree": "stage-2 prototype; uncommitted source identified by SHA-256",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "architecture": "arm64",
+  "os": "Darwin 25.6.0",
+  "profile": "test/dev optimized; no wall-clock CPU measurements",
+  "features": [
+    "section-topics"
+  ],
+  "cad_manifest_hashes": null,
+  "geometry": "synthetic flat field, default mechanisms plus second rune; no CAD",
+  "publication_ms": 32,
+  "physics_tick_ns": 1000000,
+  "warmup_frames": 313,
+  "measured_frames": 1875,
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "command": "target/nix/debug/deps/rm_simulator_server-6c971da1ee89cd65 --ignored --exact section_topics::delivery::trials::stage2_trials --nocapture",
+  "source_sha256": {
+    "Cargo.lock": "6c1c68a93e6371ea50624b9bd2143124bc35c77fd481d1f01977cfbafb4e7027",
+    "Cargo.toml": "ff0a87f173594f4f42ba044bb15282a83dd24ef0545bd03fe05f8fa74e824158",
+    "crates/rm-simulator-server/Cargo.toml": "fecfce855c34a56472afae5d607d76d3d747f429c70ba05c4edb41326be50cf4",
+    "crates/rm-simulator-server/src/lib.rs": "e4d99bd981ac72a3551e2ae8ab7e4a17e04e2ddfbabbcf1e0d79068182a6e640",
+    "crates/rm-simulator-server/src/section_topics.rs": "9d6bc24db47af092bbf2cb54d9ec0df38abee718cda584b71ddc0673545eabd3",
+    "crates/rm-simulator-server/src/section_topics/delivery.rs": "54a4ffec41fc5352545c1b1251e4216e8145b7372843fece6694acdf31d3b614",
+    "crates/rm-simulator-server/src/section_topics/delivery/trials.rs": "4988e364fe0b4cc34ed5232c590304b2ab2eab375f0aa60ced68b27ddbadbb7a",
+    "crates/rm-simulator-server/src/udp_snapshot.rs": "a0d90e5bd0969cd27feac3377822e571230182148a57ba5f1d31aa417d3dbd6f",
+    "crates/rm-simulator-server/src/snapshot_codec.rs": "95a665905994b93882b1e91c8376c859944f749e22bf3c9c1c6ea42054cdd2cc",
+    "crates/rm-simulator-server/src/udp_codec.rs": "67a50256f56016399ee486357b5e1cb51a722b66edbd1f1c7bf790c1d9dc1a6c",
+    "crates/rm-simulator-server/src/pacing.rs": "ecff5df8e574d177831f4746eb53578b278903bae946b4f41323e871d1d4e084",
+    "crates/rm-simulator-server/src/scripted_link.rs": "40d9e27a17f327840a2a42b3f030a913e6bdc1b112b6102e046260dc9f32008d"
+  },
+  "binary_sha256": "5ed1a7add1820bbd458c515105b25687c066ee855572379d7db641164f143a86"
+}

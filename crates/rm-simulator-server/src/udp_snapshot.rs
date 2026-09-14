@@ -402,6 +402,15 @@ impl Decoder {
     /// the feedback the encoder needs. A delta for an unpinned baseline yields
     /// `Feedback::Missing` and no message rather than a partially applied state.
     pub fn receive(&mut self, wire: Wire) -> io::Result<(Option<ServerMessage>, Option<Feedback>)> {
+        self.receive_with(wire, validate)
+    }
+    /// Shares retained-baseline mechanics with the offline section experiment.
+    /// Validate candidates before pinning them and every result before delivery.
+    pub(crate) fn receive_with<T>(
+        &mut self,
+        wire: Wire,
+        validate: impl Fn(&[u8], u64) -> io::Result<T>,
+    ) -> io::Result<(Option<T>, Option<Feedback>)> {
         let epoch = match &wire {
             Wire::Independent { epoch, .. }
             | Wire::Full { epoch, .. }

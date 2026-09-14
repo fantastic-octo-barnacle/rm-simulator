@@ -1,0 +1,12 @@
+
+running 1 test
+RM_SECTION_T1_ARTIFACT 2-clean.json.gz
+RM_SECTION_T1_ARTIFACT 2-limited.json.gz
+RM_SECTION_T1_ARTIFACT 2-blackout.json.gz
+test section_topics::delivery::trials::tuning::run::t1_diagnostics has been running for over 60 seconds
+RM_SECTION_T1_ARTIFACT 12-clean.json.gz
+RM_SECTION_T1_ARTIFACT 12-limited.json.gz
+RM_SECTION_T1_ARTIFACT 12-blackout.json.gz
+test section_topics::delivery::trials::tuning::run::t1_diagnostics ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 227 filtered out; finished in 104.10s

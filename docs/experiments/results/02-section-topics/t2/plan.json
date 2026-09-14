@@ -1,0 +1,85 @@
+{
+  "status": "frozen before T2 pilot and performance inspection",
+  "revision": "User-approved 96-run screen replacing the initial 1098-run proposal",
+  "seed_ids": [
+    101
+  ],
+  "workload_seed": 268435557,
+  "impairment_seed": 536871013,
+  "players": [
+    2,
+    12
+  ],
+  "profiles": [
+    "clean",
+    "rtt",
+    "limited"
+  ],
+  "chassis_ms": 32,
+  "projectiles_ms": 64,
+  "checkpoint_ms": [
+    32,
+    64,
+    128
+  ],
+  "weights_checkpoint_chassis_projectiles_controls": [
+    [
+      1,
+      1,
+      1,
+      1
+    ],
+    [
+      2,
+      1,
+      1,
+      1
+    ],
+    [
+      1,
+      2,
+      1,
+      1
+    ],
+    [
+      1,
+      1,
+      2,
+      1
+    ]
+  ],
+  "controls": "Original fragment rotation at each checkpoint period plus one whole-snapshot control per block",
+  "compression": {
+    "mode": "ZstdDictionary",
+    "level": 3,
+    "deflate_fallback_level": 3,
+    "prepared_dictionary_by_copy": true
+  },
+  "warmup_ms": 10016,
+  "measured_ms": 60000,
+  "phase": "aligned",
+  "link": "2ms time-bin impairments; RTT/loss and limited share 40-60ms one-way delay and approximately 1% loss bins; clean has no delay/loss; budgets 512KiB/s except limited 40KiB/s; feedback10KiB/s",
+  "scheduler": "Logical group byte DRR, 1023-byte quantum per weight; deficit cap32736 bytes; fragment headers charged to serving group, shared datagram header charged to first fragment group; checkpoint child queues rotate; reliablecontrols/baselines FIFO; default remains original rotation",
+  "execution": "Deterministic shuffled variant order per block; up to3 independent processes; fresh compression contexts each replay; no CPU/timing-performance inference",
+  "pareto_objectives_minimize": [
+    "downstream_bytes",
+    "upstream_bytes",
+    "checkpoint_age_p95_ms",
+    "chassis_age_p95_ms",
+    "projectile_age_p95_ms",
+    "body_error_p95_m",
+    "aim_error_p95_rad",
+    "projectile_error_p95_m",
+    "missing_robot_fraction",
+    "missing_projectile_fraction",
+    "stale_projectile_fraction",
+    "pong_p95_ms"
+  ],
+  "frontier": "Exact nondominance over all objectives and all six cells, also report per-cell frontiers; no posthoc epsilon or composite score",
+  "correctness_filter": "Fatal reconstruction/order/bounds failures reject; pending controls or missing checkpoints at end reject; control completion counts and coverage denominators retained",
+  "nominations": "At most3 including rr-128 reference. Among globally nondominated eligible experiment variants, nominate lowest worst clean downstream ratio to whole and lowest worst limited p95 Pong. Ties use lowest worst checkpoint-age ratio then lexical ID; deduplicate. No statistical winner claim.",
+  "interactions": "Within-block DRR minus original rotation at each checkpoint period; report how each weight effect changes from32ms to128ms; no frame-level significance tests",
+  "adoption_gate": "50% reduction for2players without p95age/correction regression and no correctness failures; held-pose errors only proxy, not prediction validation",
+  "pilot": "12robots limited, whole + rr128 + drr128111, full durations; retained separately, verify identical hashes when repeated in full screen; timing estimate only, not extra statistical replicate",
+  "stop": "Stop after T2; seeds102-103 and1001-1010 untouched; no further rates/weights or holdout search"
+}

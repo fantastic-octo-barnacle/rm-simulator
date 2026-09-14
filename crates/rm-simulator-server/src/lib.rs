@@ -26,6 +26,9 @@ pub mod protocol;
 pub mod simulation;
 pub mod snapshot_codec;
 
+#[cfg(feature = "section-topics")]
+pub mod section_topics;
+
 pub mod semantics;
 
 pub mod prediction;
