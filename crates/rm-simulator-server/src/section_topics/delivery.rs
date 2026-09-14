@@ -43,6 +43,7 @@ use std::{
 };
 
 pub mod presentation;
+mod scheduling;
 
 const DATA: &[u8; 4] = b"RMS2";
 const RELIABLE: &[u8; 4] = b"RMR2";
@@ -133,6 +134,7 @@ impl Slot {
     }
 }
 struct Queue {
+    drr: Option<scheduling::Drr>,
     #[cfg(test)]
     trace: Option<trials::tuning::Trace>,
     slots: [Slot; CONTROL_CLASS],
@@ -145,6 +147,7 @@ struct Queue {
 impl Queue {
     fn new(rate: u32) -> Self {
         Self {
+            drr: None,
             #[cfg(test)]
             trace: None,
             slots: std::array::from_fn(|_| Slot::default()),
@@ -257,6 +260,9 @@ impl Queue {
     }
     fn next(&mut self, now: Duration) -> io::Result<Option<Datagram>> {
         self.budget.advance(now)?;
+        if self.drr.is_some() {
+            return self.next_weighted();
+        }
         let mut bytes = Vec::with_capacity(MTU);
         let mut reliable = false;
         for _ in 0..CLASSES * 2 {

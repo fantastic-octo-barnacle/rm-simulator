@@ -1,0 +1,8 @@
+
+running 1 test
+RM_SECTION_T2_ARTIFACT 12-limited-whole.json.gz
+RM_SECTION_T2_ARTIFACT 12-limited-drr-128-111.json.gz
+RM_SECTION_T2_ARTIFACT 12-limited-rr-128.json.gz
+test section_topics::delivery::trials::tuning::t2::t2_block ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 240 filtered out; finished in 16.45s

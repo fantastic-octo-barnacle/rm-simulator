@@ -196,6 +196,19 @@ impl Compressor {
             Mode::Deflate => None,
             Mode::Zstd => zstd::bulk::Compressor::new(codec.level).ok(),
             Mode::ZstdDictionary => {
+                #[cfg(feature = "section-topics")]
+                {
+                    // An explicitly copied prepared dictionary avoids the lazy
+                    // CCtx-local dictionary's allocation-dependent adjacency.
+                    // See facebook/zstd#4738; retain one immutable CDict per level.
+                    static DICTIONARIES: [OnceLock<zstd::dict::EncoderDictionary<'static>>; 22] =
+                        [const { OnceLock::new() }; 22];
+                    let dictionary = DICTIONARIES[(codec.level - 1) as usize].get_or_init(|| {
+                        zstd::dict::EncoderDictionary::copy(DICTIONARY, codec.level)
+                    });
+                    zstd::bulk::Compressor::with_prepared_dictionary(dictionary).ok()
+                }
+                #[cfg(not(feature = "section-topics"))]
                 zstd::bulk::Compressor::with_dictionary(codec.level, DICTIONARY).ok()
             }
         };

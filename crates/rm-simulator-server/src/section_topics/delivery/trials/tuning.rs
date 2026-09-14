@@ -8,6 +8,8 @@ use std::{cell::RefCell, rc::Rc};
 mod link;
 #[path = "tuning/run.rs"]
 mod run;
+#[path = "tuning/t2.rs"]
+mod t2;
 
 pub(in super::super) type Trace = Rc<RefCell<Recorder>>;
 

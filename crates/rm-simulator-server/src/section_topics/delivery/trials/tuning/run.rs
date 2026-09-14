@@ -135,6 +135,14 @@ fn recover(out: &mut [Option<u64>; 3], end: u64, now: u64, checkpoint: u64, view
         }
     }
 }
+#[derive(Clone, Copy)]
+pub(super) struct Experiment {
+    pub cadence: Cadence,
+    pub weights: Option<[u8; 4]>,
+    pub whole: bool,
+    pub sections: bool,
+    pub impairment_seed: u64,
+}
 fn trial(
     sources: &[SimulationState],
     seed: u64,
@@ -142,13 +150,28 @@ fn trial(
     warmup: u64,
     enabled: bool,
 ) -> serde_json::Value {
+    trial_configured(sources, seed, profile, warmup, enabled, None)
+}
+pub(super) fn trial_configured(
+    sources: &[SimulationState],
+    seed: u64,
+    profile: &str,
+    warmup: u64,
+    enabled: bool,
+    experiment: Option<Experiment>,
+) -> serde_json::Value {
     crate::compression::reset_test_contexts();
     let epoch = Instant::now();
-    let cadence = Cadence {
-        chassis_ms: 32,
-        projectiles_ms: 64,
-        checkpoint_ms: 128,
-    };
+    let cadence = experiment.map_or(
+        Cadence {
+            chassis_ms: 32,
+            projectiles_ms: 64,
+            checkpoint_ms: 128,
+        },
+        |e| e.cadence,
+    );
+    let run_whole = experiment.is_none_or(|e| e.whole);
+    let run_sections = experiment.is_none_or(|e| e.sections);
     let rate = if profile == "limited" {
         40 * 1024
     } else {
@@ -156,7 +179,7 @@ fn trial(
     };
     let schedule = Schedule::new(
         profile,
-        seed ^ 0x7000,
+        experiment.map_or(seed ^ 0x7000, |e| e.impairment_seed),
         sources.len() as u64 * 16,
         warmup * 16,
     );
@@ -180,7 +203,10 @@ fn trial(
     let mut host = PeerCodec::new(epoch, rate, false);
     host.joined(None);
     let mut client = ClientCodec::new(epoch, 10 * 1024, 12);
-    let mut sender = Sender::new(rate);
+    let mut sender = experiment.and_then(|e| e.weights).map_or_else(
+        || Sender::new(rate),
+        |weights| Sender::with_weights(rate, weights).unwrap(),
+    );
     let mut receiver = Receiver::new(10 * 1024);
     if enabled {
         sender.queue.trace = Some(trace.clone());
@@ -203,10 +229,12 @@ fn trial(
             let state = &sources[ms as usize / 16 - 1];
             let mut outbound = Outbound::new(ServerMessage::Snapshot(Box::new(state.clone())));
             outbound.periodic = true;
-            if ms % 32 == 0 {
+            if run_whole && ms % 32 == 0 {
                 host.send(&outbound, epoch + now, 0).unwrap();
             }
-            sender.publish_cadenced(state, now, cadence).unwrap();
+            if run_sections {
+                sender.publish_cadenced(state, now, cadence).unwrap();
+            }
             if ms > warmup * 16
                 && ((ms - warmup * 16 >= 1008 && (ms - warmup * 16 - 1008).is_multiple_of(4992))
                     || ms == warmup * 16 + 20_016)
@@ -219,73 +247,81 @@ fn trial(
                         nonce: state.snapshot_id,
                     },
                 ] {
-                    host.send(&Outbound::new(message.clone()), epoch + now, 0)
-                        .unwrap();
-                    sender.control(&message).unwrap();
+                    if run_whole {
+                        host.send(&Outbound::new(message.clone()), epoch + now, 0)
+                            .unwrap();
+                    }
+                    if run_sections {
+                        sender.control(&message).unwrap();
+                    }
                 }
             }
         }
-        // Both legs use the identical hand-advanced clock and captured source.
-        while let Some(packet) = host.next(epoch + now).unwrap() {
-            whole.down_bytes += packet.bytes.len() as u64;
-            whole.down_packets += 1;
-            hash_packet(&mut wire_hash, ms, "whole_down", &packet);
-            whole_link.send(0, ms, packet);
-        }
-        for packet in whole_link.take(0, ms) {
-            if let Some(message) = reliable_mirror.receive(&packet) {
-                whole_controls.receive(&message, ms, &controls, sources, true);
+        // T1 runs both legs; T2 runs one isolated codec per variant.
+        if run_whole {
+            while let Some(packet) = host.next(epoch + now).unwrap() {
+                whole.down_bytes += packet.bytes.len() as u64;
+                whole.down_packets += 1;
+                hash_packet(&mut wire_hash, ms, "whole_down", &packet);
+                whole_link.send(0, ms, packet);
             }
-            if let Some(ClientEvent::Message(message)) =
-                client.receive(&packet, epoch + now).unwrap()
-            {
-                hash_message(&mut message_hash, ms, "whole", &message);
-                if control_message(&message, &controls) {
-                    whole_controls.application_confirmations +=
-                        u64::from(matches!(message, ServerMessage::Snapshot(_)));
-                    continue;
+            for packet in whole_link.take(0, ms) {
+                if let Some(message) = reliable_mirror.receive(&packet) {
+                    whole_controls.receive(&message, ms, &controls, sources, true);
                 }
-                if let ServerMessage::Snapshot(ref state) = message {
-                    whole_view.checkpoint(state);
-                }
-                whole.message(message, sources);
-            }
-        }
-        client.acknowledge(epoch + now).unwrap();
-        while let Some(packet) = client.next(epoch + now).unwrap() {
-            whole.up_bytes += packet.bytes.len() as u64;
-            whole.up_packets += 1;
-            hash_packet(&mut wire_hash, ms, "whole_up", &packet);
-            whole_link.send(1, ms, packet);
-        }
-        for packet in whole_link.take(1, ms) {
-            host.receive(&packet, epoch + now).unwrap();
-        }
-        while let Some(packet) = sender.next(now).unwrap() {
-            sections.down_bytes += packet.bytes.len() as u64;
-            sections.down_packets += 1;
-            hash_packet(&mut wire_hash, ms, "section_down", &packet);
-            section_link.send(0, ms, packet);
-        }
-        for packet in section_link.take(0, ms) {
-            for message in receiver.receive(&packet, now).unwrap() {
-                hash_message(&mut message_hash, ms, "section", &message);
-                if section_controls.receive(&message, ms, &controls, sources, false) {
-                    section_controls.application_confirmations +=
-                        u64::from(matches!(message, ServerMessage::Snapshot(_)));
-                } else {
-                    sections.message(message, sources);
+                if let Some(ClientEvent::Message(message)) =
+                    client.receive(&packet, epoch + now).unwrap()
+                {
+                    hash_message(&mut message_hash, ms, "whole", &message);
+                    if control_message(&message, &controls) {
+                        whole_controls.application_confirmations +=
+                            u64::from(matches!(message, ServerMessage::Snapshot(_)));
+                        continue;
+                    }
+                    if let ServerMessage::Snapshot(ref state) = message {
+                        whole_view.checkpoint(state);
+                    }
+                    whole.message(message, sources);
                 }
             }
+            client.acknowledge(epoch + now).unwrap();
+            while let Some(packet) = client.next(epoch + now).unwrap() {
+                whole.up_bytes += packet.bytes.len() as u64;
+                whole.up_packets += 1;
+                hash_packet(&mut wire_hash, ms, "whole_up", &packet);
+                whole_link.send(1, ms, packet);
+            }
+            for packet in whole_link.take(1, ms) {
+                host.receive(&packet, epoch + now).unwrap();
+            }
         }
-        if let Some(packet) = receiver.feedback(now).unwrap() {
-            sections.up_bytes += packet.bytes.len() as u64;
-            sections.up_packets += 1;
-            hash_packet(&mut wire_hash, ms, "section_up", &packet);
-            section_link.send(1, ms, packet);
-        }
-        for packet in section_link.take(1, ms) {
-            sender.feedback(&packet, now).unwrap();
+        if run_sections {
+            while let Some(packet) = sender.next(now).unwrap() {
+                sections.down_bytes += packet.bytes.len() as u64;
+                sections.down_packets += 1;
+                hash_packet(&mut wire_hash, ms, "section_down", &packet);
+                section_link.send(0, ms, packet);
+            }
+            for packet in section_link.take(0, ms) {
+                for message in receiver.receive(&packet, now).unwrap() {
+                    hash_message(&mut message_hash, ms, "section", &message);
+                    if section_controls.receive(&message, ms, &controls, sources, false) {
+                        section_controls.application_confirmations +=
+                            u64::from(matches!(message, ServerMessage::Snapshot(_)));
+                    } else {
+                        sections.message(message, sources);
+                    }
+                }
+            }
+            if let Some(packet) = receiver.feedback(now).unwrap() {
+                sections.up_bytes += packet.bytes.len() as u64;
+                sections.up_packets += 1;
+                hash_packet(&mut wire_hash, ms, "section_up", &packet);
+                section_link.send(1, ms, packet);
+            }
+            for packet in section_link.take(1, ms) {
+                sender.feedback(&packet, now).unwrap();
+            }
         }
         sections.chassis_ns = receiver
             .presentation()

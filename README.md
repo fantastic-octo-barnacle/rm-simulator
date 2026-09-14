@@ -780,6 +780,9 @@ The [controlled tuning protocol](docs/experiments/02-section-topics-tuning.md)
 starts with T1 test-only queue, checkpoint-dependency and control-latency
 diagnostics. Its reproducible runner and records live in
 [`docs/experiments/results/02-section-topics/t1`](docs/experiments/results/02-section-topics/t1).
+The T2 screen adds logical-group byte weights through `Sender::with_weights`;
+its [runner and frozen plan](docs/experiments/results/02-section-topics/t2) compare
+96 cases with independent worker processes on an injected clock.
 
 `GET /api/fire-records` on the host HTTP endpoint returns the latest 256 accepted
 pilot shots, oldest first. Records include client-relative input time, estimated

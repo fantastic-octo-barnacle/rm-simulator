@@ -29,11 +29,11 @@ impl Schedule {
                     let ms = slot * 2;
                     let in_blackout =
                         profile == "blackout" && (blackout.0..blackout.1).contains(&ms);
-                    let drop = in_blackout || (profile == "limited" && x % 100 < 1);
+                    let drop = in_blackout || (matches!(profile, "limited" | "rtt") && x % 100 < 1);
                     let delay_ms = match profile {
                         "clean" => 0,
                         "blackout" => 20,
-                        "limited" => 40 + (x >> 32) % 21,
+                        "limited" | "rtt" => 40 + (x >> 32) % 21,
                         _ => panic!("unknown time-bin profile"),
                     };
                     Bin {

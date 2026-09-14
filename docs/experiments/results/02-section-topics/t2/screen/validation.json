@@ -1,0 +1,11 @@
+{
+  "pilot_metadata_sha256": "0232eb157c9667ff4a954f2fc2ad1612dac6fa7faa7bac9d449617377b2e41dd",
+  "screen_metadata_sha256": "0e2d7bae7164462b3c353601b682bdee33ed0d2dcef9a05bd8cd6bf2ed98731e",
+  "pilot_duplicates_exact": [
+    "12-limited-whole.json.gz",
+    "12-limited-drr-128-111.json.gz",
+    "12-limited-rr-128.json.gz"
+  ],
+  "source_and_binary_pairing": true,
+  "final_source_hashes_match": true
+}

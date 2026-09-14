@@ -1,0 +1,21 @@
+
+running 1 test
+RM_SECTION_T2_ARTIFACT 2-limited-drr-32-112.json.gz
+RM_SECTION_T2_ARTIFACT 2-limited-drr-64-121.json.gz
+RM_SECTION_T2_ARTIFACT 2-limited-drr-64-211.json.gz
+RM_SECTION_T2_ARTIFACT 2-limited-drr-64-112.json.gz
+RM_SECTION_T2_ARTIFACT 2-limited-drr-32-211.json.gz
+RM_SECTION_T2_ARTIFACT 2-limited-drr-128-111.json.gz
+RM_SECTION_T2_ARTIFACT 2-limited-drr-32-111.json.gz
+RM_SECTION_T2_ARTIFACT 2-limited-drr-32-121.json.gz
+RM_SECTION_T2_ARTIFACT 2-limited-drr-128-112.json.gz
+RM_SECTION_T2_ARTIFACT 2-limited-drr-128-211.json.gz
+RM_SECTION_T2_ARTIFACT 2-limited-drr-64-111.json.gz
+RM_SECTION_T2_ARTIFACT 2-limited-rr-32.json.gz
+RM_SECTION_T2_ARTIFACT 2-limited-rr-128.json.gz
+RM_SECTION_T2_ARTIFACT 2-limited-whole.json.gz
+RM_SECTION_T2_ARTIFACT 2-limited-drr-128-121.json.gz
+RM_SECTION_T2_ARTIFACT 2-limited-rr-64.json.gz
+test section_topics::delivery::trials::tuning::t2::t2_block ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 240 filtered out; finished in 22.87s

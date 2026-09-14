@@ -2,7 +2,7 @@
 <!-- Copyright (c) 2026 hxyulin <hxyulin@proton.me> -->
 # Section topics: controlled rate and scheduling experiments
 
-Status: T1 instrumentation implemented; T2–T4 remain experiment designs. T1
+Status: T1 instrumentation complete; T2 screening complete; T3–T4 remain designs. T1
 results and measurement definitions appear below. This extends
 [Stage 3](02-section-topics.md#stage-3-independent-presentation-and-checkpoint-cadences).
 Stop after each stage below and report its results before continuing.
@@ -107,31 +107,43 @@ Pong order; never replace them. Reserve a fixed positive control weight and reco
 its achieved delay under load. A positive weight guarantees neither a latency
 bound under overload nor delivery during loss: test both explicitly.
 
-Start with this finite, reproducible full factorial, crossing the three periods
-with four weight settings so rate/priority interactions can be observed:
+The adopted first screen is smaller than the original full factorial. Before any
+T2 performance run, the user reduced the budget to 96 runs while retaining the
+original-scheduler controls. The original 1098-run proposal (two chassis periods,
+two projectile periods, three checkpoint periods, four weights, three seeds)
+remains deferred; it is not a required matrix for this screening stage.
 
-| Factor | Candidate values |
+| Factor | Adopted screen values |
 |---|---|
-| Chassis period | 16, 32 ms |
-| Projectile period | 32, 64 ms |
+| Chassis period | Fixed at 32 ms |
+| Projectile period | Fixed at 64 ms |
 | Complete-checkpoint period | 32, 64, 128 ms |
 | Checkpoint : chassis : projectile weights | 1:1:1, 2:1:1, 1:2:1, 1:1:2 |
-| Reliable control weight | Fixed at 1, subject to T1 safety checks |
+| Reliable control/baseline weight | Fixed at 1 |
+| Compression | Dictionary Zstd 3, copied prepared dictionary |
 
-This is 48 configurations, not 48 claims of improvement. Keep MTU, token bucket,
-queue limits, compression, baseline retention, repair policy and aligned phase
-fixed. Include the existing fragment-rotation scheduler at all 12 cadences to
-separate scheduler changes from cadence changes; run the whole-envelope control
-once per block. Unit weights under DRR are not assumed equivalent to the old
-scheduler. Screening is 61 variants × 2 robot counts × 3 profiles (clean,
-100 ms RTT/loss, limited) × 3 fresh seed blocks = 1098 runs. Start with 10.016 s
-warm-up and 60 s measurement; freeze any duration revision after T1, before T2.
+This gives 12 weighted configurations plus the original fragment-rotation scheduler
+at each of the three checkpoint periods and one whole-snapshot control: 16 variants
+× 2 robot counts × 3 profiles = **96 runs**. MTU, token bucket, queue limits,
+baseline retention, repair policy and aligned phase stay fixed. Unit-weight DRR
+is not equivalent to the original scheduler, whose many checkpoint topic queues
+collectively receive more visits.
 
-Use tuning seed IDs 101–103 with distinct workload and impairment seed namespaces.
-Randomize execution order within each workload/network block and compare paired
-run results. Blocking controls nuisance variation; it does not make correlated
-2 ms samples independent repetitions.
+Use only fresh seed ID 101, with workload `0x10000000 + 101`, impairment
+`0x20000000 + 101`, and an independent deterministic order namespace. IDs 102–103
+and the validation IDs remain unused. Randomize execution order within each
+workload/network block. Compare paired runs; a single seed cannot support an
+independent uncertainty estimate or a claim of generalization.
 [NIST randomized block designs](https://www.itl.nist.gov/div898/handbook/pri/section3/pri332.htm).
+
+Retain 10.016 s warmup and 60 s **simulated** measurement. Up to three independent
+block processes may run concurrently: outcomes use an injected clock and fixed
+source/impairment streams, not wall-clock performance. No compilation runs during
+measurement. A three-variant 12-robot constrained-link pilot estimates wall time;
+its duplicate cases must match the full screen exactly and are not additional
+statistical replications. The [frozen plan](results/02-section-topics/t2/plan.json)
+records factors, objectives, pairing, nomination rules and exclusions before
+pilot/performance inspection.
 
 Keep a Pareto set: a candidate is dominated if another is no worse on every
 prespecified objective and strictly better on at least one. Report bandwidth,
@@ -139,7 +151,7 @@ checkpoint age, chassis/projectile age and error, coverage and control delay;
 retain per-profile results instead of hiding a bad profile in an average. Reject
 correctness failures regardless of performance. Select at most three candidates
 for further exploration; include the reference even if it is dominated. Use
-paired run-level differences and label uncertainty from three seeds exploratory.
+paired run-level differences; with one seed, report no confidence intervals.
 Do not manufacture a single weighted score whose weights were chosen after results.
 
 T2 exit: report the frontier, rate-by-weight interactions and bottleneck changes.
@@ -514,3 +526,164 @@ mode). Both complete T1 matrices pass all six off/on comparisons (24 full
 replays across the two codecs). Clippy with warnings denied, formatting,
 crate-boundary checks and changed-file hooks pass. Historical records remain
 unchanged. T2 has not started; no live codec default, rate or priority changed.
+
+## T2 implementation and reproducibility
+
+The offline `Sender::with_weights(bytes_per_s, [checkpoint, chassis, projectiles,
+controls])` constructor enables logical-group DRR; `Sender::new` retains the
+original fragment rotation. Weights must be positive and at most 16. A visit adds
+1023 application-byte credits per weight; stored credit is capped at 32 quanta.
+Empty groups discard credit and others borrow unused capacity. Each fragment's
+payload and 19-byte header are charged to its group; the first fragment also pays
+the shared four-byte datagram header. Credit does not accumulate just because a
+caller polls while pacing tokens are unavailable. Checkpoint children (normal,
+manifest and repair) rotate within one group. Reliable controls and baseline
+frames remain in the same non-replaceable FIFO. The experiment changes neither
+repair policy nor the exact complete-checkpoint promotion requirement.
+
+The harness runs each variant's codec independently, starting with fresh reusable
+compression contexts. It reuses captured source states within each block and
+records their hashes, the exogenous impairment schedule hash, randomized execution
+ordinal, wire/message hashes, byte ledgers, control completion and held-pose
+errors/coverage. Its `rtt` profile has the same time-bin jitter/loss as `limited`,
+but a 512 KiB/s rather than 40 KiB/s downstream budget. Independent processes
+share no runtime codec state; their wall time is operational timing only.
+
+Pre-screen parity checks exposed dictionary Zstd output differences for identical
+input bytes: one 21,783-byte input compressed to 4664 versus 4657 bytes before any
+scheduler-dependent divergence. An upstream [Zstd dictionary adjacency report](https://github.com/facebook/zstd/issues/4738)
+describes a related case where the prefix determinism flag is insufficient. That
+flag also failed our parity tests. The `section-topics` feature now prepares an
+explicitly copied dictionary, cached immutably per compression level, instead of
+letting each compressor lazily prepare a local dictionary. Replays and both codec
+legs use this same construction; dictionary content and level remain fixed. The
+passing tests establish reproducibility for these cases, not a general proof
+about Zstd. Builds without the experiment feature keep their existing constructor.
+The [pre-screen failure transcript](results/02-section-topics/t2/failures/pre-screen-compression-parity.txt)
+is retained. These tests consumed development fixtures, not validation seed IDs.
+Historical T1 measurements remain unchanged and are not pooled with T2.
+
+Reproduce after building and validating, using the test executable printed by Cargo:
+
+```sh
+cargo test --locked -p rm-simulator-server --features section-topics --lib --no-run
+python3 docs/experiments/results/02-section-topics/t2/run.py PATH_TO_TEST_BINARY NEW_OUTPUT_DIRECTORY --workers 3
+python3 docs/experiments/results/02-section-topics/t2/summarize.py NEW_OUTPUT_DIRECTORY
+```
+
+The output directory must be new. The runner freezes source/build/dictionary,
+runner, analysis and plan hashes, records each raw case as a compressed JSON file,
+and marks completion only after every block passes with all expected variants
+and unchanged hashes. `--pilot --workers 1` runs three full-duration cases in a
+separate directory. The actual pilot took 16.5 wall-clock seconds for all three,
+including fixture generation. A successful parallel pilot replay comparison is
+required before treating the screen as reproducible. Pilot duplicates do not add
+independent observations.
+
+The prespecified analysis minimizes twelve objectives jointly over all six cells
+and also reports per-cell frontiers. It retains paired candidate-minus-whole
+values and DRR-minus-original-rotation effects at each checkpoint period, plus
+the change in that effect from 32 to 128 ms. Exact nondominance uses no fitted
+weights or post-hoc tolerance. Nominations retain `rr-128`, the lowest worst-case
+clean byte ratio, and the lowest worst-case constrained p95 Pong among eligible
+frontier candidates, deduplicated to at most three. Ties use worst checkpoint-age
+ratio then configuration ID. These are exploration roles, not declared winners.
+
+## T2 results and stop decision
+
+The complete screen finished **96 runs in 171.6 seconds wall time with three
+workers**. All three pilot duplicates match the parallel screen byte-for-byte,
+including the full diagnostic events. Source/build/plan hashes remained fixed.
+All reconstructed checkpoints and confirmation/Pong ordering checks passed and
+resource bounds held. However, five policies failed the screen's progress
+criterion: with 12 robots on the constrained link they promoted **zero new
+checkpoints during the measured 60 s**, retaining an old warmup checkpoint.
+These are all three `1:1:2` policies and the 32/64 ms `1:2:1` policies. Their p95
+checkpoint ages reached 60.2–66.8 seconds. Positive service weights do not ensure
+that fragmented exact dependencies complete before partial expiry/repair churn.
+
+The remaining ten experimental policies and the whole-snapshot control are all
+nondominated across the twelve objectives and six cells. The complete frontier is
+`drr-128-111`, `drr-128-121`, `drr-128-211`, `drr-32-111`, `drr-32-211`,
+`drr-64-111`, `drr-64-211`, `rr-128`, `rr-32`, `rr-64`, and `whole`.
+That broad frontier is evidence of unresolved tradeoffs, not eleven equally good
+choices. In particular, merely passing the progress filter does not make a
+42-second p95 checkpoint age acceptable. This one-seed screen estimates no
+confidence intervals and declares no statistical winner.
+
+The frozen nomination rule retained the reference `rr-128`, nominated
+`drr-128-211` for lowest worst clean byte ratio, and `drr-64-111` for lowest worst
+constrained p95 Pong. Weights below are checkpoint:chassis:projectiles; control
+weight remains 1. All chassis/projectile periods remain 32/64 ms.
+
+| Robots | Constrained-link policy | p95 checkpoint age (ms) | p95 chassis age (ms) | p95 Pong (ms) | p95 matched projectile error (m) | Missing projectile samples |
+|---|---|---:|---:|---:|---:|---:|
+| 2 | Whole snapshots | 358 | 358 | 380 | 5.440 | 7.78% |
+| 2 | Original rotation, checkpoint 128 ms | 798 | 184 | 1306 | 8.313 | 11.75% |
+| 2 | DRR 2:1:1, checkpoint 128 ms | 874 | 162 | 1134 | 6.242 | 8.81% |
+| 2 | DRR 1:1:1, checkpoint 64 ms | 1102 | 138 | 866 | 5.125 | 7.18% |
+| 12 | Whole snapshots | 958 | 958 | 536 | 12.410 | 16.34% |
+| 12 | Original rotation, checkpoint 128 ms | 1732 | 474 | 3608 | 11.078 | 16.10% |
+| 12 | DRR 2:1:1, checkpoint 128 ms | 2222 | 382 | 2898 | 7.254 | 10.30% |
+| 12 | DRR 1:1:1, checkpoint 64 ms | 7774 | 306 | 2162 | 5.989 | 8.53% |
+
+![Checkpoint age versus control delay under congestion](results/02-section-topics/t2/screen/tradeoffs.png)
+
+The nominated 2:1:1 policy improves pose/error/coverage and control delay relative
+to original rotation, while increasing p95 checkpoint age by 76 / 490 ms for
+2 / 12 robots. Unit weights shift more capacity away from checkpoint dependencies:
+the 64 ms nominee improves constrained control delay further but increases the
+12-robot checkpoint p95 to 7.8 seconds. Its worst p95 Pong is only 10 ms lower than
+unit weights at 128 ms (2162 versus 2172 ms), so the frozen nomination is a
+metric extreme, not evidence that 64 ms is robustly preferable.
+
+Clean-link savings versus whole snapshots are 32.38% / 37.42% for the 128 ms
+2:1:1 nominee and 4.21% / 10.87% for the 64 ms unit-weight nominee (2 / 12 robots).
+The former differs from the original-rotation clean byte totals by only 176 / 1884
+bytes over 60 seconds. Scheduling alone cannot remove the inherent checkpoint-age
+cost of a slower cadence. Constrained streams exhaust essentially the same byte
+budget, so their throughput totals cannot establish useful bandwidth savings.
+No candidate passes the original adoption gate, including its 50% 2-player
+bandwidth reduction requirement and no p95 age/correction regression. These
+held-pose observations still do not evaluate prediction correction.
+
+Rate/weight interactions are not smooth. At 12 robots, increasing checkpoint
+period from 32 to 128 ms changes the original scheduler's constrained p95
+checkpoint age from 1644 to 1732 ms, but changes unit-weight DRR from 5936 to
+5634 ms. The difference in scheduler effect is therefore −390 ms. The intermediate
+64 ms unit-weight case is worse (7774 ms), so a monotonic rate-response assumption
+would mislead. With 2 robots, doubling chassis weight from 1:1:1 to 1:2:1 produces
+identical constrained-link wire hashes at all three checkpoint periods: unused
+weight adds no benefit in those cases. With 12 robots that same weight increase
+improves chassis age while severely damaging checkpoint progress.
+
+Dependency attribution remains useful: under 12-robot congestion, chassis triggers
+all completed checkpoints for the reference and both nominees (94 / 75 / 34
+completions including warmup). Repair's lifetime traffic share falls from 28.1%
+to 21.9% with 2:1:1 and 13.3% with the unit-weight 64 ms nominee, but the lower
+repair traffic accompanies fewer complete checkpoints. Ordered control/baseline
+p95 queue waits improve from 2356 to 1958 / 1566 ms; positive control weight alone
+still leaves seconds of delay. Less repair traffic is not automatically more
+successful delivery.
+
+**Stop at T2.** Keep the three nominated configurations as documented exploration
+references. The next useful refinement is completion-aware checkpoint service
+and bounded repair/partial-frame progress, with separate ablations; do not deploy
+these weights or start a wider rate/seed search from this screen. No T3 work or
+holdout validation has run. Seeds 102–103 and 1001–1010 remain untouched.
+
+Validation: 237 library tests, one binary test and 38 doctests pass (276 total),
+including byte-share/idle-credit, FIFO/pacing/bounds and repeated weighted
+instrumentation-off/on tests. Clippy with warnings denied, formatting, crate
+boundaries, Python syntax checks, data validators and changed-file hooks pass.
+The parallel screen is verified by [metadata](results/02-section-topics/t2/screen/metadata.json),
+[pilot replay validation](results/02-section-topics/t2/screen/validation.json),
+[all-cell tables](results/02-section-topics/t2/screen/summary.md),
+[compact records](results/02-section-topics/t2/screen/runs.jsonl.gz), and
+[frontiers and paired interactions](results/02-section-topics/t2/screen/analysis.json).
+The 96 individually hashed compressed raw cases retain every transfer/checkpoint
+event. Regenerate the plot with
+`uv run --with matplotlib==3.11.2 python docs/experiments/results/02-section-topics/t2/plot.py OUTPUT_DIRECTORY`;
+the [plot metadata](results/02-section-topics/t2/screen/plot-metadata.json) records
+its renderer version, script and data hashes. No full workspace `just verify`
+or PR was performed, and the live networking default is unchanged.

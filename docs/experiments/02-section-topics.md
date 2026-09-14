@@ -8,7 +8,8 @@ departures from the full trial matrix are recorded below. The next
 rate/priority screening, refinements and independent validation. Its
 [T1 diagnostics and results](02-section-topics-tuning.md#t1-results-and-stop-decision)
 are complete, including a [Zstd rerun](02-section-topics-tuning.md#t1-after-the-zstd-rebase);
-no rate or priority tuning has been applied.
+the [T2 rate/priority screen](02-section-topics-tuning.md#t2-results-and-stop-decision)
+is also complete. No candidate passes the adoption gate; live networking remains unchanged.
 
 ## Hypothesis and ablations
 
