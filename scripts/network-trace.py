@@ -5,7 +5,28 @@
 import argparse
 from collections import Counter, OrderedDict, deque
 import json
+import math
 from pathlib import Path
+
+
+def nonnegative_number(value):
+    """Accept finite JSON numbers, excluding booleans and negative values."""
+    return (type(value) is int and value >= 0
+            or type(value) is float and math.isfinite(value) and value >= 0)
+
+
+def valid_aggregates(row):
+    """Validate optional counters and queue arrays before updating any totals."""
+    for name in ('bytes', 'work_ns'):
+        value = row.get(name)
+        if value is not None and not nonnegative_number(value):
+            return False
+    for name in ('queue_bytes', 'queue_age_ms'):
+        value = row.get(name)
+        if value is not None and (not isinstance(value, list)
+                                  or not all(nonnegative_number(item) for item in value)):
+            return False
+    return True
 
 
 def summarize(path):
@@ -35,6 +56,7 @@ def summarize(path):
             needs_shot = ((stage == 'enqueue_attempt' and kind == 'shot')
                           or (stage == 'publish' and kind in ('shot_result', 'shot_rejected')))
             if (not stage or not kind
+                    or not valid_aggregates(row)
                     or type(row.get('elapsed_ns')) is not int or row['elapsed_ns'] < 0
                     or (needs_shot and (type(row.get('shot')) is not int or row['shot'] < 0))):
                 malformed += 1

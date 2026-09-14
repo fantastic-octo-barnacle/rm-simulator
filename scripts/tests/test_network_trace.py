@@ -48,6 +48,37 @@ class TraceTests(unittest.TestCase):
         self.assertEqual(result['application_bytes'], {'receive.inputs':10})
         self.assertFalse(result['complete'])
 
+    def test_malformed_aggregates_skip_whole_rows_and_continue(self):
+        """Bad optional metrics cannot crash or partially contaminate totals."""
+        invalid_numbers = ['bad', -1, True, {}, [], float('nan'), float('inf'), -float('inf')]
+        cases = [(name, value) for name in ('bytes', 'work_ns') for value in invalid_numbers]
+        for name in ('queue_bytes', 'queue_age_ms'):
+            cases.extend((name, value) for value in ['bad', 1, True, {}])
+            cases.extend((name, [1, 2, 3, value]) for value in invalid_numbers + [None])
+        for name, value in cases:
+            with self.subTest(field=name, value=value), tempfile.TemporaryDirectory() as directory:
+                bad = dict(stage='receive', kind='inputs', elapsed_ns=9000000000,
+                           bytes=100, work_ns=200, queue_bytes=[9, 9, 9], queue_age_ms=[9, 9, 9])
+                bad[name] = value
+                rows = [bad, dict(stage='receive', kind='inputs', elapsed_ns=10,
+                                  bytes=4, work_ns=2.5, queue_bytes=[0, 2, 3], queue_age_ms=[1.5]),
+                        dict(stage='receive', kind='inputs', elapsed_ns=20,
+                             bytes=None, work_ns=None, queue_bytes=None, queue_age_ms=None),
+                        dict(stage='receive', kind='inputs', elapsed_ns=30,
+                             bytes=0, work_ns=0, queue_bytes=[], queue_age_ms=[]),
+                        {'type': 'end'}]
+                path = Path(directory) / 'trace.jsonl'
+                path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+                result = trace.summarize(path)
+                self.assertEqual(result['malformed_lines'], 1)
+                self.assertFalse(result['complete'])
+                self.assertEqual(result['events'], {'receive.inputs': 3})
+                self.assertEqual(result['application_bytes'], {'receive.inputs': 4})
+                self.assertEqual(result['work_ns'], {'receive.inputs': 2.5})
+                self.assertEqual(result['max_queue_bytes'], [0, 2, 3])
+                self.assertEqual(result['max_queue_age_ms'], [1.5, 0, 0])
+                self.assertEqual(result['observed_duration_s'], 30 / 1e9)
+
     def test_partial_tail_is_reported_without_inventing_outcomes(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'partial.jsonl'

@@ -4,6 +4,9 @@
 
 ## Unreleased
 
+- Skip malformed optional network trace metrics before aggregation so diagnostic
+  summaries still report valid rows and flag incomplete traces.
+
 - Fix automation capture after focus loss, GNS link transport labels and completed
   world queue ages. Drain network trace writers on shutdown and preserve diagnostic
   reports when event histories reset or trace rows omit required fields.
