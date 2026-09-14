@@ -759,6 +759,28 @@ See the
 [cadence and compression measurements](docs/bandwidth-results/cadence-deflate-followup.md)
 for live trials and a progressive degraded-network play command.
 
+The opt-in [section-topic experiment](docs/experiments/02-section-topics.md)
+compares coherent section assembly against whole-snapshot baselines at 32 ms:
+`cargo run --locked -p rm-simulator-server --features section-topics --example
+section_topics`. It is an offline codec probe; enabling the feature does not
+change live transport or presentation. All experiment payloads follow the same
+`RM_NET_CODEC` selection as the whole-snapshot control, including poses, manifests,
+controls and feedback; DEFLATE remains the default.
+The stage-2 scripted-link comparison is an explicit ignored test:
+`cargo test --locked -p rm-simulator-server --features section-topics --lib
+section_topics::delivery::trials::stage2_trials -- --ignored --exact --nocapture`.
+Build and validate before collecting its five-seed byte and checkpoint-age results.
+Stage 3 adds independent headless pose presentation and cadence trials. Run the
+selected 32/64/128 ms chassis/projectile/checkpoint setting with
+`RM_SECTION_STAGE3_CADENCE=32/64/128 cargo test --locked -p rm-simulator-server
+--features section-topics --lib section_topics::delivery::trials::stage3::stage3_trials
+-- --ignored --exact --nocapture`. See the experiment for the screening matrix,
+limitations, and measured pose errors. This does not enable app presentation.
+The [controlled tuning protocol](docs/experiments/02-section-topics-tuning.md)
+starts with T1 test-only queue, checkpoint-dependency and control-latency
+diagnostics. Its reproducible runner and records live in
+[`docs/experiments/results/02-section-topics/t1`](docs/experiments/results/02-section-topics/t1).
+
 `GET /api/fire-records` on the host HTTP endpoint returns the latest 256 accepted
 pilot shots, oldest first. Records include client-relative input time, estimated
 simulation time, observed chassis/muzzle poses, authoritative muzzle pose,

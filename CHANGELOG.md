@@ -16,6 +16,17 @@
   and the full remote downstream 21–27% against DEFLATE, while DEFLATE stays the
   default; see `docs/bandwidth-results/exp-8-zstd-dictionary.md`.
 
+- Add an opt-in offline section-topic codec experiment with exact checkpoint
+  manifests, paced aggregation, acknowledged suppression and bounded repair.
+  Compare bytes and checkpoint age over scripted links at the same cadence,
+  then test independent pose presentation and slower complete checkpoints with
+  measured pose freshness and held-pose error. Add test-only T1 byte ledgers,
+  queue/dependency timing, time-indexed impairments and ordered-control diagnostics
+  with instrumentation-on/off equivalence checks before tuning rates or priorities.
+  Apply the shared compression selection to all experiment payloads and retain
+  separate post-Zstd-rebase T1 results. Live networking remains on the existing
+  whole-snapshot codec.
+
 - Add `--physics-rate-hz` to the app and the headless server, offering the
   measured 1000, 500, 250 and 128 Hz rates (128 Hz is exactly 7,812,500 ns per
   tick) and refusing any other value. The title screen remembers it, the HUD

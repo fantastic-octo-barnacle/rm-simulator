@@ -287,6 +287,14 @@ pub fn selected() -> Codec {
     *SELECTED.get_or_init(Codec::from_env)
 }
 
+// Each deterministic experiment replay starts with fresh reusable contexts,
+// matching a fresh process without changing the selected codec or live behavior.
+#[cfg(all(test, feature = "section-topics"))]
+pub(crate) fn reset_test_contexts() {
+    COMPRESSOR.with(|cell| *cell.borrow_mut() = None);
+    DECOMPRESSOR.with(|cell| *cell.borrow_mut() = None);
+}
+
 /// Compresses one frame with the process-wide codec.
 pub fn compress(bytes: &[u8]) -> Vec<u8> {
     let codec = selected();
