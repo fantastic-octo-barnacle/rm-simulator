@@ -165,7 +165,7 @@ later deployment. No directory is required or running for this feature.
 | [`rm-simulator-physics`](crates/rm-simulator-physics/README.md) | Reusable Rapier dynamics, chassis, projectiles, raw armor contacts, shared geometry and prescribed armor motion. No gameplay, Bevy, server or CAD-loader dependency. |
 | [`rm-simulator-world`](crates/rm-simulator-world/README.md) | Complete `Field` facade: explicit ticks, activation, detection, damage, referee integration and restore. Coordinates the physics library and preserves existing public world imports. |
 | [`rm-simulator-render`](crates/rm-simulator-render/README.md) | Bevy CAD scenery, lighting, rune and outpost light overlays, projectile spheres, chassis visuals, and pose/visibility/strike synchronization from caller-owned scene state. No world dependency. |
-| [`rm-simulator-server`](crates/rm-simulator-server/README.md) | Bevy-free glue: CAD loading and checksums, collision triangles, field layout, the `Simulation` wrapper, a `Host` worker that owns simulation and command ordering, the GNS UDP transport, the in-process owner channel, the HTTP referee panel, and the headless binary. |
+| [`rm-simulator-server`](crates/rm-simulator-server/README.md) | Bevy-free glue: CAD loading and checksums, collision triangles, field layout, the `Simulation` wrapper, a `Host` worker that owns simulation and command ordering, the GNS UDP transport, the embedded owner's loopback codec link, the HTTP referee panel, and the headless binary. |
 | [`rm-simulator-bench`](crates/rm-simulator-bench/README.md) | Fixed-camera CAD renderer benchmark, independent of physics, world, server and gameplay. |
 | [`rm-simulator-app`](crates/rm-simulator-app/README.md) | The `rm-simulator` binary: window, chassis driving and gimbal camera (or fly camera), gun, HUD, world-to-scene adaptation, and the local or remote session that turns inputs into protocol commands. |
 
@@ -297,8 +297,9 @@ can `--connect` to it, and `--http` opens the panel next to it. The panel is
 a single page that polls `/api/state`, posts `/api/command` and
 `/api/referee`, and shows the clock, teams, robots, outposts and event log.
 
-Standalone play starts an embedded server and a private in-process channel
-connection, without a gameplay socket or JSON serialization. It works offline without a separate server process or Steam. Its clock runs on a worker, held until scenery finishes loading,
+Standalone play starts an embedded server and a private in-process loopback that
+runs the same framed codec as a network peer, without a gameplay socket or
+compression. It works offline without a separate server process or Steam. Its clock runs on a worker, held until scenery finishes loading,
 and preserves `--start-paused`. The local owner retains match controls and
 free-camera firing; these privileges cannot be requested in a network hello.
 `--listen` exposes the same world to other players. Its local player also uses

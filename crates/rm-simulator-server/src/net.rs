@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
-//! GNS UDP transport and the in-process owner channel for the authoritative
+//! GNS UDP transport and the in-process owner link for the authoritative
 //! host and its clients. The GNS reactor submits decoded messages to the host
 //! mailbox; the per-peer codec in [`crate::udp_codec`] frames and paces every
 //! reply. A slow client whose bounded outbox fills or whose native backlog
-//! stalls past [`WRITE_TIMEOUT`] is dropped.
+//! stalls past [`WRITE_TIMEOUT`] is dropped. The embedded owner runs that same
+//! codec over two in-process datagram channels, with compression skipped, so a
+//! local session travels the identical bitpacked wire.
 pub use crate::host::BROADCAST_PERIOD;
 #[path = "presentation_clock.rs"]
 mod presentation_clock;
-use crate::host::{Host, HostHandle, PeerRegistration};
+use crate::host::{Host, HostHandle};
 use crate::lifecycle::Stop;
 #[path = "gns_transport.rs"]
 mod gns_transport;
@@ -18,10 +20,9 @@ pub(crate) mod outbox;
 #[cfg(test)]
 use crate::protocol::PROTOCOL_VERSION;
 pub use crate::protocol::describe_seat;
-use crate::protocol::{
-    ClientMessage, Command, PlayerInfo, Robot, Role, ServerMessage, Welcome,
-};
+use crate::protocol::{ClientMessage, Command, PlayerInfo, Robot, Role, ServerMessage, Welcome};
 use crate::simulation::{Simulation, SimulationState};
+use crate::udp_codec::{ClientCodec, ClientEvent, HostPeer, io_error};
 use rm_simulator_world::Team;
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -37,6 +38,9 @@ pub(crate) static NATIVE_TEST: Mutex<()> = Mutex::new(());
 
 /// A client must say hello within this long.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long one loopback worker waits for a datagram before pumping its codec,
+/// so a local owner still gets periodic snapshots with an idle client.
+const LOOPBACK_POLL: Duration = Duration::from_millis(2);
 /// A peer that accepts no bytes for this long is disconnected.
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Frames queued for one client before it is dropped as unresponsive; periodic
@@ -58,9 +62,10 @@ pub struct Server {
 }
 
 impl Server {
-    /// Create a host with no gameplay socket. Only the typed owner connection
-    /// and optional operator interfaces can reach it. `ready` releases the
-    /// startup hold; call `spawn_clock` separately to enable real-time ticks.
+    /// Create a host with no gameplay socket. Only the embedded owner's
+    /// loopback codec connection and optional operator interfaces can reach it.
+    /// `ready` releases the startup hold; call `spawn_clock` separately to
+    /// enable real-time ticks.
     pub fn in_process(simulation: Simulation, ready: bool) -> io::Result<Self> {
         let host = Host::new(simulation, ready)?;
         let handle = host.handle();
@@ -73,8 +78,12 @@ impl Server {
             owner: Mutex::new(None),
         })
     }
-    /// Create the privileged local connection in-process. Network hellos cannot
-    /// request owner authority or override their server-assigned spawn.
+    /// Create the privileged local connection in-process. The embedded owner
+    /// runs the exact per-peer codec a UDP client runs — the same framing,
+    /// baselines, input batches and owner anchors — over two in-process
+    /// datagram channels instead of a socket, with compression skipped. Network
+    /// hellos cannot request owner authority or override their server-assigned
+    /// spawn; the loopback peer registers that spawn directly.
     pub fn connect_owner(
         &self,
         name: &str,
@@ -88,100 +97,186 @@ impl Server {
         anyhow::ensure!(owner.is_none(), "an owner is already connected");
         anyhow::ensure!(!self.stop.wait(Duration::ZERO), "server is stopped");
         let stop = Stop::default();
-        let (sender, receiver) = outbox::channel(OUTBOX_CAPACITY);
-        let welcome = self
-            .handle
-            .join(PeerRegistration {
-                password: String::new(),
-                name: name.into(),
-                team: Some(team),
-                role,
-                robot,
-                owner_spawn: Some((spawn_m, yaw_deg)),
-                outbox: sender,
-                stream: stop.clone(),
-            })
-            .map_err(anyhow::Error::msg)?;
         let inbox = Arc::new(ClientInbox::for_transport(
             "local",
             crate::clock::TimeSource::system(),
         ));
-        let (outbox, commands) = mpsc::sync_channel(CLIENT_COMMAND_CAPACITY);
-        // Construct the guard before spawning: failure must release the seat.
-        let mut connection = LocalOwner {
+        let (outbox, commands) =
+            mpsc::sync_channel::<Option<QueuedCommand>>(CLIENT_COMMAND_CAPACITY);
+        let (welcome_tx, welcome_rx) = mpsc::sync_channel(1);
+        // One ordered in-process datagram channel per direction. Delivery order
+        // is enough: there is no loss, duplication or reordering to model, and
+        // the codec's own reliable/unreliable classes only choose a lane.
+        let (to_client, from_host) = mpsc::channel::<Vec<u8>>();
+        let (to_host, from_client) = mpsc::channel::<Vec<u8>>();
+        let timing = ClientTiming::default();
+        let epoch = timing.epoch;
+        // The loopback workers outlive this call, so they own their inputs.
+        let name = name.to_string();
+
+        let host_handle = self.handle.clone();
+        let host_stop = stop.clone();
+        let host_failure = inbox.clone();
+        let host_worker = thread::Builder::new()
+            .name("rm-local-host".into())
+            .spawn(move || {
+                let mut peer = HostPeer::new(
+                    host_handle,
+                    Instant::now(),
+                    crate::pacing::configured_rate(
+                        "RM_NET_DOWN_KIB_S",
+                        crate::pacing::downstream_default(),
+                    ),
+                    true,
+                )
+                .with_owner_spawn(spawn_m, yaw_deg);
+                let result = (|| -> io::Result<()> {
+                    // Keep pumping every turn even with no client datagram, so
+                    // periodic snapshots and the owner anchor still flow.
+                    while !host_stop.wait(Duration::ZERO) {
+                        match from_client.recv_timeout(LOOPBACK_POLL) {
+                            Ok(payload) => {
+                                let mut next = Some(payload);
+                                while let Some(bytes) = next {
+                                    peer.deliver(&bytes, Instant::now())?;
+                                    next = from_client.try_recv().ok();
+                                }
+                            }
+                            Err(mpsc::RecvTimeoutError::Timeout) => {}
+                            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+                        }
+                        if peer.closed() {
+                            return Ok(());
+                        }
+                        // An in-process carrier has no external backlog, so no
+                        // periodic frame is ever skipped as congested.
+                        peer.pump(Instant::now(), 0, 16, 16)?;
+                        for packet in peer.take_outgoing() {
+                            if to_client.send(packet.bytes).is_err() {
+                                return Ok(());
+                            }
+                        }
+                    }
+                    Ok(())
+                })();
+                match result {
+                    Ok(()) => host_failure.fail("host closed the local connection".into()),
+                    Err(error) => host_failure.fail(error.to_string()),
+                }
+            })?;
+        let client_stop = stop.clone();
+        let incoming = inbox.clone();
+        let client_worker = thread::Builder::new()
+            .name("rm-local-client".into())
+            .spawn(move || {
+                let result = (|| -> io::Result<()> {
+                    let mut codec = ClientCodec::new(
+                        epoch,
+                        crate::pacing::configured_rate(
+                            "RM_NET_UP_KIB_S",
+                            crate::pacing::upstream_default(),
+                        ),
+                        crate::udp_codec::MAX_INPUT_FRAMES,
+                        true,
+                    );
+                    let mut seat = None;
+                    to_host
+                        .send(ClientCodec::hello_with_password(
+                            &name,
+                            Some(team),
+                            role,
+                            robot,
+                            "",
+                        )?)
+                        .map_err(|_| io_error("host closed the local connection"))?;
+                    while !client_stop.wait(Duration::ZERO) {
+                        match from_host.recv_timeout(LOOPBACK_POLL) {
+                            Ok(payload) => {
+                                let mut next = Some(payload);
+                                while let Some(bytes) = next {
+                                    #[cfg(test)]
+                                    record_loopback_frame(&incoming, &bytes);
+                                    match codec.receive(&bytes, Instant::now())? {
+                                        Some(ClientEvent::Welcome(welcome)) => {
+                                            seat = Some(welcome.client_id);
+                                            welcome_tx.try_send(Ok(*welcome)).map_err(io_error)?;
+                                        }
+                                        Some(ClientEvent::Anchor(anchor)) => {
+                                            incoming
+                                                .data
+                                                .lock()
+                                                .unwrap_or_else(|p| p.into_inner())
+                                                .owner_anchor = Some(*anchor)
+                                        }
+                                        Some(ClientEvent::Message(message)) => {
+                                            incoming.publish(message)?
+                                        }
+                                        None => {}
+                                    }
+                                    next = from_host.try_recv().ok();
+                                }
+                            }
+                            Err(mpsc::RecvTimeoutError::Timeout) => {}
+                            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                return Err(io_error("host closed the local connection"));
+                            }
+                        }
+                        let now = Instant::now();
+                        codec.acknowledge(now)?;
+                        loop {
+                            match commands.try_recv() {
+                                Ok(Some(queued)) => {
+                                    if let Some(command) = queued.command {
+                                        incoming.observer.client(
+                                            "dequeue",
+                                            seat,
+                                            &ClientMessage::Command(command),
+                                            None,
+                                        );
+                                    }
+                                    codec.submit(queued, now)?;
+                                }
+                                Ok(None) | Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+                                Err(mpsc::TryRecvError::Empty) => break,
+                            }
+                        }
+                        while let Some(packet) = codec.next(Instant::now())? {
+                            if to_host.send(packet.bytes).is_err() {
+                                return Err(io_error("host closed the local connection"));
+                            }
+                        }
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    incoming.fail(error.to_string());
+                    let _ = welcome_tx.try_send(Err(error.to_string()));
+                }
+            })?;
+        // Construct the guard before waiting: a failed hello must release the
+        // seat and join both workers.
+        let connection = LocalOwner {
             stop: stop.clone(),
-            handle: self.handle.clone(),
-            id: welcome.client_id,
-            workers: Vec::new(),
+            workers: vec![host_worker, client_worker],
         };
-        let handle = self.handle.clone();
-        let stopping = stop.clone();
-        let incoming = inbox.clone();
-        let id = welcome.client_id;
-        connection
-            .workers
-            .push(
-                thread::Builder::new()
-                    .name("rm-local-input".into())
-                    .spawn(move || {
-                        let result = (|| -> Result<(), String> {
-                            while !stopping.wait(Duration::ZERO) {
-                                let queued: QueuedCommand = match commands
-                                    .recv_timeout(Duration::from_millis(2))
-                                {
-                                    Ok(Some(queued)) => queued,
-                                    Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                                };
-                                if let Some(command) = queued.command {
-                                    let message = ClientMessage::Command(command);
-                                    incoming
-                                        .observer
-                                        .client("dequeue", Some(id), &message, None);
-                                    handle.message(id, message)?;
-                                }
-                                if let Some(nonce) = queued.time_probe {
-                                    handle.message(id, ClientMessage::TimeProbe { nonce })?;
-                                }
-                                if let Some(nonce) = queued.confirmation {
-                                    handle.message(id, ClientMessage::Ping { nonce })?;
-                                }
-                            }
-                            Ok(())
-                        })();
-                        if let Err(reason) = result {
-                            incoming.fail(reason);
-                        }
-                        let _ = handle.leave(id);
-                    })?,
-            );
-        let incoming = inbox.clone();
-        let stopping = stop.clone();
-        connection
-            .workers
-            .push(
-                thread::Builder::new()
-                    .name("rm-local-state".into())
-                    .spawn(move || {
-                        while let Some(frame) = receiver.recv() {
-                            // Typed publication preserves barriers without serialization or sockets.
-                            if stopping.wait(Duration::ZERO) {
-                                break;
-                            }
-                            let started = Instant::now();
-                            let result = incoming.publish(frame.message().clone());
-                            incoming.observer.work("local_publish", started.elapsed());
-                            if let Err(error) = result {
-                                incoming.fail(error.to_string());
-                                break;
-                            }
-                        }
-                        incoming.fail("host closed the local connection".into());
-                        stopping.request();
-                    })?,
-            );
+        let welcome = match welcome_rx.recv_timeout(HELLO_TIMEOUT) {
+            Ok(Ok(welcome)) => welcome,
+            Ok(Err(reason)) => {
+                stop.request();
+                anyhow::bail!("{reason}");
+            }
+            Err(error) => {
+                stop.request();
+                anyhow::bail!("local hello failed: {error}");
+            }
+        };
         let client = Client {
             stream: stop,
+            timing,
+            transport_stats: None,
+            host_telemetry: None,
+            delivery_stats: None,
+            owner_anchor: None,
             outbox,
             inbox,
             welcome,
@@ -189,11 +284,6 @@ impl Server {
             roster: Vec::new(),
             disconnected: None,
             sent_confirmation: 0,
-            timing: ClientTiming::default(),
-            transport_stats: None,
-            host_telemetry: None,
-            delivery_stats: None,
-            owner_anchor: None,
             acknowledged: 0,
         };
         *owner = Some(connection);
@@ -295,21 +385,50 @@ impl Drop for Server {
     }
 }
 
-/// Owns the embedded seat and joins its typed delivery workers on server teardown.
+/// Owns the embedded seat's loopback codec workers and joins them on server
+/// teardown. The host worker's [`HostPeer`] releases the seat when it drops.
 struct LocalOwner {
     stop: Stop,
-    handle: HostHandle,
-    id: u32,
     workers: Vec<thread::JoinHandle<()>>,
 }
 impl Drop for LocalOwner {
     fn drop(&mut self) {
         self.stop.request();
-        let _ = self.handle.leave(self.id);
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
     }
+}
+
+/// Test seam for the loopback link: the embedded client records the application
+/// framing of every datagram it receives, because [`Client`] deliberately keeps
+/// payload bytes to itself. Classifying the RMG1 body (or the bare datagram)
+/// lets a server test prove the embedded owner ran the raw codec rather than a
+/// typed in-process path.
+#[cfg(test)]
+fn record_loopback_frame(inbox: &ClientInbox, payload: &[u8]) {
+    let body = if payload.starts_with(b"RMG1") {
+        payload.get(crate::udp_codec::HEADER..).unwrap_or_default()
+    } else {
+        payload
+    };
+    let kind = match body.get(..4) {
+        Some(b"RMB0") => "RMB0",
+        Some(b"RMRW") => "RMRW",
+        Some(b"RMZ1") => "RMZ1",
+        Some(b"RMBZ") => "RMBZ",
+        Some(b"RMO4") => "RMO4",
+        Some(b"RMI3") => "RMI3",
+        Some(b"RMC1") => "RMC1",
+        Some(b"RMA1") => "RMA1",
+        _ => "other",
+    };
+    inbox.observer.record(crate::network_trace::Event {
+        stage: "loopback_wire",
+        kind,
+        bytes: Some(payload.len()),
+        ..Default::default()
+    });
 }
 
 /// Latest replaceable state and ordered discrete events from the reader.
@@ -450,8 +569,8 @@ impl ClientInbox {
                 None
             }
             ServerMessage::Welcome(_) => None,
-            // The UDP client codec consumes the configuration frame before the
-            // inbox sees it; no other transport carries one.
+            // Every client codec — UDP or loopback — consumes the configuration
+            // frame before the inbox sees it; no other transport carries one.
             ServerMessage::OwnerConfig(_) => None,
         };
         drop(data);
@@ -927,6 +1046,7 @@ impl ClientLeg {
                 time.now(),
                 rate_bytes_per_s,
                 crate::udp_codec::MAX_INPUT_FRAMES,
+                false,
             ),
             inbox: Arc::new(ClientInbox::for_transport("gns", time.clone())),
             sender: Some(sender),
@@ -1117,7 +1237,7 @@ mod tests {
         }
     }
     #[test]
-    fn in_process_owner_preserves_barriers_without_sockets_or_serialization() {
+    fn in_process_owner_preserves_barriers_over_the_loopback_codec() {
         let mut server = Server::in_process(
             Simulation::new(Field::new(&FieldConfig::default()).unwrap(), true).with_spawner(
                 ChassisSpawner {
@@ -1131,16 +1251,25 @@ mod tests {
         assert!(server.listening_addr().is_none());
         let handle = server.handle();
         let mut client = server
-            .connect_owner("local", Team::Red, Role::Pilot, Robot::default(), [0., 0., 0.5], 0.)
+            .connect_owner(
+                "local",
+                Team::Red,
+                Role::Pilot,
+                Robot::default(),
+                [0., 0., 0.5],
+                0.,
+            )
             .unwrap();
         assert!(!client.stream.wait(Duration::ZERO));
         assert_eq!(client.network_stats().transport, "local");
         client.send_confirmed(Command::Step { ticks: 17 }).unwrap();
-        wait_until("typed confirmation", || {
+        wait_until("loopback confirmation", || {
             client.poll();
             client.commands_confirmed()
         });
         assert_eq!(client.state().unwrap().field.tick, 17);
+        // The inbox still receives typed messages: publication is unchanged, the
+        // transport under it is not.
         assert_eq!(
             client.trace_report().unwrap().stages["publish"]["snapshot"].bytes,
             None
@@ -1148,6 +1277,104 @@ mod tests {
         drop(client);
         wait_until("local seat removed", || handle.peer_count().unwrap() == 0);
         assert!(handle.snapshot().unwrap().chassis.is_empty());
+        server.shutdown();
+    }
+
+    #[test]
+    fn in_process_owner_travels_the_raw_codec_and_keeps_owner_authority() {
+        let spawn = [2.0, 3.0, 1.0];
+        let mut server = Server::in_process(
+            Simulation::new(Field::new(&FieldConfig::default()).unwrap(), true).with_spawner(
+                ChassisSpawner {
+                    config: ChassisConfig::default(),
+                    terrain: None,
+                },
+            ),
+            true,
+        )
+        .unwrap();
+        server.spawn_clock().unwrap();
+        let handle = server.handle();
+        let mut client = server
+            .connect_owner(
+                "local",
+                Team::Red,
+                Role::Pilot,
+                Robot::default(),
+                spawn,
+                0.0,
+            )
+            .unwrap();
+        let id = client.welcome().chassis.as_ref().unwrap().id;
+        // A command confirms only after it travelled the loopback codec and its
+        // answer came back the same way.
+        client.send_confirmed(Command::Step { ticks: 16 }).unwrap();
+        wait_until("loopback confirmation", || {
+            client.poll();
+            client.commands_confirmed()
+                && client
+                    .state()
+                    .is_some_and(|state| state.field.chassis.iter().any(|c| c.id == id))
+        });
+        let state = client.state().unwrap();
+        let chassis = state.field.chassis.iter().find(|c| c.id == id).unwrap();
+        assert!((chassis.pose.translation_m[0] - spawn[0]).abs() < 1e-6);
+        assert!((chassis.pose.translation_m[1] - spawn[1]).abs() < 1e-6);
+        // The frames the embedded client received were raw: packed `RMB0`
+        // snapshots and `RMRW` control frames, never the ZSTD framings.
+        let report = client.trace_report().unwrap();
+        let wire = &report.stages["loopback_wire"];
+        let kinds: Vec<_> = wire.keys().copied().collect();
+        assert!(
+            wire.contains_key("RMB0"),
+            "raw checkpoint missing: {kinds:?}"
+        );
+        assert!(wire.contains_key("RMRW"), "raw control missing: {kinds:?}");
+        assert!(
+            !wire.contains_key("RMZ1") && !wire.contains_key("RMBZ"),
+            "the local link must not compress: {kinds:?}"
+        );
+        // Owner authority survives the codec: an owner-only placement of the
+        // owner's own chassis applies, and a second local owner is refused.
+        client
+            .send_confirmed(Command::PlaceChassis {
+                chassis: id,
+                position_m: [4.0, 5.0, 1.0],
+                yaw_deg: 90.0,
+            })
+            .unwrap();
+        wait_until("owner placement confirmation", || {
+            client.poll();
+            client.commands_confirmed()
+                && client.state().is_some_and(|state| {
+                    state
+                        .field
+                        .chassis
+                        .iter()
+                        .find(|c| c.id == id)
+                        .is_some_and(|c| (c.pose.translation_m[0] - 4.0).abs() < 1e-6)
+                })
+        });
+        assert!(
+            server
+                .connect_owner(
+                    "second",
+                    Team::Red,
+                    Role::Pilot,
+                    Robot::default(),
+                    [0.0; 3],
+                    0.0
+                )
+                .is_err()
+        );
+        assert!(
+            client
+                .take_notices()
+                .iter()
+                .all(|n| !n.contains("embedded owner"))
+        );
+        drop(client);
+        wait_until("local seat removed", || handle.peer_count().unwrap() == 0);
         server.shutdown();
     }
 
@@ -1314,7 +1541,14 @@ mod tests {
         let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let (server, simulation) = host();
         let mut owner = server
-            .connect_owner("owner", Team::Red, Role::Pilot, Robot::default(), [2.0, 3.0, 1.0], 0.0)
+            .connect_owner(
+                "owner",
+                Team::Red,
+                Role::Pilot,
+                Robot::default(),
+                [2.0, 3.0, 1.0],
+                0.0,
+            )
             .unwrap();
         let mut guest =
             Client::connect_udp(server.local_addr(), "guest", None, Role::Pilot).unwrap();
@@ -1377,7 +1611,14 @@ mod tests {
         let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let (server, simulation) = host();
         let mut owner = server
-            .connect_owner("owner", Team::Red, Role::Pilot, Robot::default(), [2.0, 3.0, 1.0], 90.0)
+            .connect_owner(
+                "owner",
+                Team::Red,
+                Role::Pilot,
+                Robot::default(),
+                [2.0, 3.0, 1.0],
+                90.0,
+            )
             .unwrap();
         let id = owner.welcome().chassis.as_ref().unwrap().id;
         let mut guest =
@@ -1395,7 +1636,14 @@ mod tests {
         assert!(heading[0].abs() < 1e-9 && (heading[1] - 1.0).abs() < 1e-9);
         assert!(
             server
-                .connect_owner("second", Team::Red, Role::Pilot, Robot::default(), [0.0; 3], 0.0)
+                .connect_owner(
+                    "second",
+                    Team::Red,
+                    Role::Pilot,
+                    Robot::default(),
+                    [0.0; 3],
+                    0.0
+                )
                 .is_err()
         );
         owner.send_confirmed(Command::Step { ticks: 16 }).unwrap();
@@ -1444,7 +1692,14 @@ mod tests {
         let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let (server, simulation) = host();
         let mut owner = server
-            .connect_owner("owner", Team::Red, Role::Spectator, Robot::default(), [0.0; 3], 0.0)
+            .connect_owner(
+                "owner",
+                Team::Red,
+                Role::Spectator,
+                Robot::default(),
+                [0.0; 3],
+                0.0,
+            )
             .unwrap();
         let mut watcher =
             Client::connect_udp(server.local_addr(), "watcher", None, Role::Spectator).unwrap();
@@ -1478,7 +1733,14 @@ mod tests {
         let server = Server::bind_suspended("127.0.0.1:0", simulation).unwrap();
         server.spawn_clock().unwrap();
         let mut owner = server
-            .connect_owner("owner", Team::Red, Role::Spectator, Robot::default(), [0.0; 3], 0.0)
+            .connect_owner(
+                "owner",
+                Team::Red,
+                Role::Spectator,
+                Robot::default(),
+                [0.0; 3],
+                0.0,
+            )
             .unwrap();
         for _ in 0..5 {
             assert_eq!(
@@ -1514,7 +1776,14 @@ mod tests {
         let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let (server, simulation) = host();
         let mut owner = server
-            .connect_owner("owner", Team::Red, Role::Referee, Robot::default(), [0.0; 3], 0.0)
+            .connect_owner(
+                "owner",
+                Team::Red,
+                Role::Referee,
+                Robot::default(),
+                [0.0; 3],
+                0.0,
+            )
             .unwrap();
         let guard = simulation.stall();
         owner.send_confirmed(Command::Step { ticks: 16 }).unwrap();
@@ -1549,7 +1818,14 @@ mod tests {
         let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let (server, _) = host();
         let mut owner = server
-            .connect_owner("owner", Team::Red, Role::Referee, Robot::default(), [0.0; 3], 0.0)
+            .connect_owner(
+                "owner",
+                Team::Red,
+                Role::Referee,
+                Robot::default(),
+                [0.0; 3],
+                0.0,
+            )
             .unwrap();
         let mut guest =
             Client::connect_udp(server.local_addr(), "guest", None, Role::Spectator).unwrap();

@@ -33,6 +33,7 @@ const OWNER_BROADCAST_PERIOD: Duration = Duration::from_millis(4);
 pub(crate) struct Outbound {
     message: ServerMessage,
     compressed: OnceLock<Vec<u8>>,
+    uncompressed: OnceLock<Vec<u8>>,
     /// True on a periodic snapshot, whose unsent tail the peer outbox may
     /// replace. Reliable messages leave it false and are never replaced.
     pub(crate) periodic: bool,
@@ -42,18 +43,32 @@ impl Outbound {
         Self {
             message,
             compressed: OnceLock::new(),
+            uncompressed: OnceLock::new(),
             periodic: false,
         }
     }
     pub(crate) fn message(&self) -> &ServerMessage {
         &self.message
     }
-    pub(crate) fn compressed(&self) -> &[u8] {
-        self.compressed.get_or_init(|| {
-            crate::compression::compress(&crate::snapshot_codec::encode_player_message(
-                &self.message,
-            ))
-        })
+    /// The framed wire bytes for this message, cached separately per framing.
+    /// `raw` selects the loopback transport's uncompressed frame; the network
+    /// path uses the ZSTD frame. Both caches live for the message's life, so a
+    /// broadcast encodes at most once per framing.
+    pub(crate) fn body(&self, raw: bool) -> &[u8] {
+        if raw {
+            self.uncompressed.get_or_init(|| {
+                crate::compression::encode(
+                    true,
+                    &crate::snapshot_codec::encode_player_message(&self.message),
+                )
+            })
+        } else {
+            self.compressed.get_or_init(|| {
+                crate::compression::compress(&crate::snapshot_codec::encode_player_message(
+                    &self.message,
+                ))
+            })
+        }
     }
 }
 
@@ -1083,9 +1098,11 @@ mod tests {
         };
         assert_eq!(state.field.tick, 31);
         // Even with no socket writer running, the host keeps applying commands.
-        // Neither snapshot was compressed while the simulation worker owned it.
+        // Neither snapshot was encoded while the simulation worker owned it.
         assert!(confirmation.compressed.get().is_none());
+        assert!(confirmation.uncompressed.get().is_none());
         assert!(periodic.compressed.get().is_none());
+        assert!(periodic.uncompressed.get().is_none());
     }
 
     #[test]
@@ -1239,6 +1256,7 @@ mod tests {
         let latest = next(&messages);
         assert!(matches!(latest.message(), ServerMessage::Snapshot(s) if s.field.tick == 1_000));
         assert!(latest.compressed.get().is_none());
+        assert!(latest.uncompressed.get().is_none());
     }
 
     #[test]

@@ -226,6 +226,7 @@ fn serve(
                                     "RM_NET_DOWN_KIB_S",
                                     crate::pacing::downstream_default(),
                                 ),
+                                false,
                             )
                         });
                     }
@@ -388,6 +389,7 @@ impl Client {
                         epoch,
                         crate::pacing::configured_rate("RM_NET_UP_KIB_S", crate::pacing::upstream_default()),
                         crate::udp_codec::MAX_INPUT_FRAMES,
+                        false,
                     );
                     let mut last_stats = Instant::now() - Duration::from_secs(1);
                     while !stopping.wait(POLL) {
