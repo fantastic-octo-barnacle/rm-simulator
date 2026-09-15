@@ -543,7 +543,7 @@ mod tests {
     use rm_simulator_server::layout::{
         add_terrain, chassis_placement, default_spawn, load_terrain,
     };
-    use rm_simulator_world::{ChassisConfig, Field, Team};
+    use rm_simulator_world::{ChassisConfig, Field, Team, tick_ns};
 
     #[test]
     fn opening_a_panel_stops_drive_spin_and_latches_the_trigger_off() {
@@ -763,7 +763,7 @@ mod tests {
         })
         .unwrap();
         add_terrain(&mut field, &terrain).unwrap();
-        field.step(300).unwrap();
+        field.step(300_000_000 / tick_ns()).unwrap();
         let mut highest = f64::MIN;
         for _ in 0..40 {
             // Hold the heading the way the app's aim-follow does; the omni
@@ -775,7 +775,7 @@ mod tests {
                     drive_command(1.0, 0.0, false, false, 0.0, 0.0, yaw_of(chassis.pose)),
                 )
                 .unwrap();
-            field.step(100).unwrap();
+            field.step(100_000_000 / tick_ns()).unwrap();
             let chassis = field.snapshot().chassis.remove(0);
             highest = highest.max(chassis.pose.translation_m[2]);
             let up = rotate(chassis.pose.rotation_wxyz, [0.0, 0.0, 1.0]);

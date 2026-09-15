@@ -1396,6 +1396,9 @@ mod tests {
             placement_revision: state.field.chassis[0].placement_revision,
             command: Default::default(),
         };
+        let scheduled_ns: u64 = 64_000_000;
+        let executed_ns =
+            scheduled_ns.div_ceil(rm_simulator_world::tick_ns()) * rm_simulator_world::tick_ns();
         let shot = Command::FireAimed {
             shooter,
             shot_id: 1,
@@ -1410,7 +1413,7 @@ mod tests {
         });
         assert_eq!(
             client.take_scheduled_shots(),
-            vec![(shooter, 1, 64_000_000)]
+            vec![(shooter, 1, scheduled_ns)]
         );
         assert!(client.take_shot_results().is_empty());
         assert_eq!(client.state().unwrap().field.shots_fired, 0);
@@ -1427,7 +1430,11 @@ mod tests {
         handle
             .pilot_batch(client.welcome().client_id, inputs)
             .unwrap();
-        handle.apply(&Command::Step { ticks: 65 }).unwrap();
+        handle
+            .apply(&Command::Step {
+                ticks: scheduled_ns.div_ceil(rm_simulator_world::tick_ns()) + 1,
+            })
+            .unwrap();
         client.send(shot).unwrap();
         client.confirm().unwrap();
         wait_until("executed shot confirmation", || {
@@ -1439,7 +1446,7 @@ mod tests {
         assert!(
             results
                 .iter()
-                .all(|r| r.executed_time_ns == Some(64_000_000) && r.result.is_ok())
+                .all(|r| r.executed_time_ns == Some(executed_ns) && r.result.is_ok())
         );
         assert_eq!(client.state().unwrap().field.shots_fired, 1);
         assert_eq!(client.state().unwrap().shot_results.len(), 1);

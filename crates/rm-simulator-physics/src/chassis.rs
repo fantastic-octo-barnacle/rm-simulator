@@ -978,7 +978,10 @@ fn drive_power_scale(mechanical_w: f64, copper_w: f64, budget_w: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::projectile::{TargetFrames, WorldPhysics};
+    use crate::{
+        projectile::{TargetFrames, WorldPhysics},
+        tick_ns,
+    };
     fn chassis_world(config: ChassisConfig, spawn: Pose) -> WorldPhysics {
         let mut ballistics = WorldPhysics::new(&[], 0.0);
         ballistics.add_chassis(Team::Red, config, spawn).unwrap();

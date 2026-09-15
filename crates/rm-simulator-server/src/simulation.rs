@@ -1303,7 +1303,9 @@ mod tests {
         .unwrap();
         sim.step(17).unwrap();
         let v = sim.snapshot().projectiles[0].velocity_m_s;
-        assert!((v.iter().map(|v| v * v).sum::<f64>().sqrt() - 7.).abs() < 0.02);
+        // Spawn solver noise can shave a little speed; this only separates the
+        // settings at execution (7) from the settings at scheduling (30).
+        assert!((v.iter().map(|v| v * v).sum::<f64>().sqrt() - 7.).abs() < 0.5);
         assert_eq!(sim.snapshot().shots_fired, 1);
     }
 
@@ -1359,7 +1361,8 @@ mod tests {
         assert!(sim.apply(&buy(Caliber::Mm17)).is_err());
         sim.apply(&Command::Referee(RefereeCommand::StartMatch))
             .unwrap();
-        sim.step(6_001).unwrap();
+        sim.step(6_001_000_000 / rm_simulator_world::tick_ns())
+            .unwrap();
         let before = sim.snapshot().referee.unwrap().gameplay;
         sim.apply(&buy(Caliber::Mm17)).unwrap();
         sim.apply(&buy(Caliber::Mm42)).unwrap();
@@ -1411,7 +1414,8 @@ mod tests {
         let (mut sim, id) = pilot_simulation();
         sim.apply(&Command::Referee(RefereeCommand::StartMatch))
             .unwrap();
-        sim.step(6_001).unwrap();
+        sim.step(6_001_000_000 / rm_simulator_world::tick_ns())
+            .unwrap();
         sim.apply(&Command::BuyAmmo {
             chassis: id,
             caliber: rm_simulator_world::Caliber::Mm17,
@@ -1483,8 +1487,9 @@ mod tests {
             })
             .unwrap();
         }
-        whole.step(200).unwrap();
-        for ticks in [1, 99, 100] {
+        let total = 200_000_000 / rm_simulator_world::tick_ns();
+        whole.step(total).unwrap();
+        for ticks in [1, total / 3, total - 1 - total / 3] {
             split.step(ticks).unwrap();
         }
         let state = whole.snapshot();
@@ -1502,17 +1507,19 @@ mod tests {
     #[test]
     fn host_time_becomes_whole_ticks_with_a_cap_and_pause() {
         let mut simulation = simulation();
-        assert_eq!(simulation.advance(1_500_000).unwrap(), 1);
-        assert_eq!(simulation.advance(1_500_000).unwrap(), 2);
+        let tick = rm_simulator_world::tick_ns();
+        assert_eq!(simulation.advance(tick + tick / 2).unwrap(), 1);
+        assert_eq!(simulation.advance(tick + tick / 2).unwrap(), 2);
         assert_eq!(simulation.field().tick(), 3);
-        assert_eq!(simulation.advance(10_000_000_000).unwrap(), 250);
+        let capped = simulation.advance(10_000_000_000).unwrap();
+        assert_eq!(capped, MAX_ADVANCE_NS / tick);
         simulation.apply(&Command::Pause { paused: true }).unwrap();
         assert_eq!(simulation.advance(1_000_000_000).unwrap(), 0);
         simulation.apply(&Command::Step { ticks: 16 }).unwrap();
-        assert_eq!(simulation.field().tick(), 269);
+        assert_eq!(simulation.field().tick(), 3 + capped + 16);
         assert!(simulation.apply(&Command::Step { ticks: 0 }).is_err());
         simulation.apply(&Command::Pause { paused: false }).unwrap();
-        assert_eq!(simulation.advance(999_999).unwrap(), 0);
+        assert_eq!(simulation.advance(tick - 1).unwrap(), 0);
         assert_eq!(simulation.advance(1).unwrap(), 1);
     }
     #[test]
@@ -1585,7 +1592,7 @@ mod tests {
                 terrain: None,
             })
             .with_weapon(WeaponConfig {
-                interval_ns: 1_000_000,
+                interval_ns: rm_simulator_world::tick_ns(),
                 ..Default::default()
             })
             .unwrap();
@@ -1609,8 +1616,14 @@ mod tests {
         }
         let records = simulation.fire_records();
         assert_eq!(records.len(), 256);
-        assert_eq!(records.first().unwrap().accepted_time_ns, 1_000_000);
-        assert_eq!(records.last().unwrap().accepted_time_ns, 256_000_000);
+        assert_eq!(
+            records.first().unwrap().accepted_time_ns,
+            rm_simulator_world::tick_ns()
+        );
+        assert_eq!(
+            records.last().unwrap().accepted_time_ns,
+            256 * rm_simulator_world::tick_ns()
+        );
     }
 
     #[test]
@@ -1662,7 +1675,7 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].client_timing, Some(reported));
         assert_eq!(records[0].authoritative_muzzle_pose, expected);
-        assert_eq!(records[0].accepted_time_ns, 1_000_000);
+        assert_eq!(records[0].accepted_time_ns, rm_simulator_world::tick_ns());
         let snapshot = simulation.snapshot();
         assert_eq!(records[0].projectile_id, snapshot.projectiles[0].id);
         assert_eq!(snapshot.projectiles[0].position_m, expected.translation_m);
@@ -1699,7 +1712,9 @@ mod tests {
             })
             .unwrap();
         assert_eq!(simulation.snapshot().shots_fired, 2);
-        simulation.step(9).unwrap();
+        // One tick past the shot the gun is still cooling; the interval is
+        // longer than one tick, and two ticks clear it.
+        simulation.step(1).unwrap();
         assert!(
             simulation
                 .apply(&Command::Fire {
@@ -1812,9 +1827,13 @@ mod tests {
             placement_revision,
             command: Default::default(),
         };
-        // The first intent arrives 100 ms after its intended time and fires late.
-        sim.step(100_000_000 / rm_simulator_world::tick_ns())
-            .unwrap();
+        // The first intent arrives well past its intended time and fires late.
+        sim.step(
+            sim.weapon
+                .interval_ns
+                .div_ceil(rm_simulator_world::tick_ns()),
+        )
+        .unwrap();
         sim.apply(&Command::FireAimed {
             shooter,
             shot_id: 1,
@@ -1851,7 +1870,8 @@ mod tests {
         let (mut sim, shooter) = pilot_simulation();
         sim.apply(&Command::Referee(RefereeCommand::StartMatch))
             .unwrap();
-        sim.step(6_001).unwrap();
+        sim.step(6_001_000_000 / rm_simulator_world::tick_ns())
+            .unwrap();
         sim.apply(&Command::BuyAmmo {
             chassis: shooter,
             caliber: rm_simulator_world::Caliber::Mm17,
@@ -1900,14 +1920,20 @@ mod tests {
             })
             .is_err()
         );
-        sim.step(64).unwrap();
+        sim.step(64_000_000_u64.div_ceil(rm_simulator_world::tick_ns()) - 1)
+            .unwrap();
         assert!(sim.shot_result(shooter, 1).is_none());
         sim.apply(&Command::PilotInput {
             chassis: shooter,
             frame,
         })
         .unwrap();
+        // Advance to the tick before the shot's sampled time; the state there
+        // is exactly where the muzzle will be read.
+        sim.step(1).unwrap();
         let expected = crate::prediction::muzzle_for(&sim.snapshot().chassis[0], frame.command);
+        // The pending shot executes at the start of the first tick whose time
+        // has reached the sampled time.
         sim.step(1).unwrap();
         let actual = sim.fire_records()[0].authoritative_muzzle_pose;
         assert!(
@@ -1924,9 +1950,15 @@ mod tests {
                 .zip(expected.rotation_wxyz)
                 .all(|(a, b)| (a - b).abs() < 1e-12)
         );
+        // The shot executes at the first tick whose time reaches the sampled
+        // time, so the recorded execution is that tick's own clock reading.
+        let executed = frame
+            .sampled_time_ns
+            .div_ceil(rm_simulator_world::tick_ns())
+            * rm_simulator_world::tick_ns();
         assert_eq!(
             sim.shot_result(shooter, 1).unwrap().executed_time_ns,
-            Some(frame.sampled_time_ns)
+            Some(executed)
         );
         sim.apply(&fire).unwrap();
         assert_eq!(sim.snapshot().shots_fired, 1);

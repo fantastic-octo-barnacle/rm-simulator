@@ -266,12 +266,16 @@ mod tests {
         let wait = |snapshot: &FieldSnapshot, flight: &Flight, epoch, accepted| {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             loop {
+                // Ask for 100 ms of flight, aligned up so a whole tick of the
+                // fixed clock reaches it.
+                let time_ns = 100_000_000_u64.div_ceil(rm_simulator_world::tick_ns())
+                    * rm_simulator_world::tick_ns();
                 if let Some(output) = worker.exchange(Request {
                     epoch,
                     snapshot_id: if accepted { 2 } else { 1 },
                     snapshot: snapshot.clone(),
                     own: snapshot.chassis[0].clone(),
-                    time_ns: 100_000_000,
+                    time_ns,
                     flights: if epoch == 2 {
                         vec![]
                     } else {
@@ -296,8 +300,8 @@ mod tests {
         let provisional = wait(&snapshot, &flight, 1, false).unwrap();
         assert!(provisional.position_m[0] > 1.);
         flight.authoritative = Some(7);
-        snapshot.tick = 100;
-        snapshot.time_ns = 100_000_000;
+        snapshot.tick = 100_000_000_u64.div_ceil(rm_simulator_world::tick_ns());
+        snapshot.time_ns = snapshot.tick * rm_simulator_world::tick_ns();
         snapshot.projectiles.push(ProjectileSnapshot {
             id: 7,
             caliber: Caliber::Mm17,

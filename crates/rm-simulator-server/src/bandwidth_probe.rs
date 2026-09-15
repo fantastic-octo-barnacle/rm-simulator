@@ -31,13 +31,12 @@ use crate::net::QueuedCommand;
 use crate::protocol::{Command, ServerMessage};
 use crate::simulation::SimulationState;
 use crate::udp_codec::{CONGESTED_PENDING_BYTES, ClientCodec, PeerCodec};
-use rm_simulator_world::ChassisCommand;
+use rm_simulator_world::{ChassisCommand, tick_ns};
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-/// One simulation tick, in nanoseconds. The probe keeps the 1 ms rule clock.
-const TICK_NS: u64 = 1_000_000;
-/// Simulation time between two frames handed to a codec.
+/// Wall-clock milliseconds of simulation time between two frames handed to a
+/// codec. Steps the field by however many fixed ticks that takes.
 const STEP_MS: u64 = 2;
 /// Owner-only host publication period: `host.rs` `OWNER_BROADCAST_PERIOD` fires
 /// every 4 ms, and `publish_snapshot(true)` pushes those frames only to the
@@ -338,12 +337,14 @@ pub(crate) fn run_observed(
     );
     let mut sequence = 0_u64;
     let mut snapshot_id = 0_u64;
+    let step_ticks = (STEP_MS * 1_000_000).div_ceil(tick_ns()).max(1);
+    let mut sim_time_ns = 0_u64;
     let ticks = seconds * 1000 / STEP_MS;
     for tick in 0..ticks {
         let started = Instant::now();
         if tick.is_multiple_of(INPUT_MS / STEP_MS) {
             sequence += 1;
-            let sampled_time_ns = tick * STEP_MS * TICK_NS;
+            let sampled_time_ns = sim_time_ns + step_ticks * tick_ns();
             // One client connection carries one pilot, exactly as the wire does.
             // A twelve-player world is twelve such peers; this one measures the
             // single-pilot upstream stream that the budget is stated per player.
@@ -384,7 +385,8 @@ pub(crate) fn run_observed(
                     .unwrap();
             }
         }
-        simulation.step(STEP_MS).unwrap();
+        simulation.step(step_ticks).unwrap();
+        sim_time_ns += step_ticks * tick_ns();
         // Reproduce the host's two publication kinds explicitly. `PeerCodec` has
         // no flag that separates them, so this probe decides when a world
         // checkpoint may be offered and, for the owner cadence, uses the codec's
