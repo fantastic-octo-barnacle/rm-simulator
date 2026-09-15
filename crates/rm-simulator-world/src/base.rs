@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
 //! Live base armor. Geometry is fitted from the verified CAD by the server.
+use crate::projectile;
 use crate::{Caliber, Pose, Team};
 use serde::{Deserialize, Serialize};
 
@@ -107,8 +108,10 @@ impl BaseSnapshot {
 /// assert_eq!(damage(Caliber::Mm42, 0, [0.02, 0.0]), 200);
 /// // Plate 3 is the upper front, worth 5 HP to a 17 mm round.
 /// assert_eq!(damage(Caliber::Mm17, 3, [0.02, 0.0]), 5);
-/// // A centre hit on any plate but the dart detector earns the 150 % bonus.
+/// // A centre hit on any plate but the dart detector earns the 150 % bonus,
+/// // and an odd base value rounds up rather than being rounded away.
 /// assert_eq!(damage(Caliber::Mm17, 0, [0.0, 0.0]), 30);
+/// assert_eq!(damage(Caliber::Mm17, 3, [0.0, 0.0]), 8);
 /// assert_eq!(damage(Caliber::Mm17, 6, [0.0, 0.0]), 20);
 /// ```
 pub fn damage(caliber: Caliber, plate: u32, offset_m: [f64; 2]) -> u32 {
@@ -117,8 +120,10 @@ pub fn damage(caliber: Caliber, plate: u32, offset_m: [f64; 2]) -> u32 {
         Caliber::Mm17 => 20,
         Caliber::Mm42 => 200,
     };
-    if plate != 6 && offset_m.iter().all(|v| v.abs() <= 0.005) {
-        (amount * 3).div_ceil(2)
+    // The centre square and its rounding are shared with outpost scoring, so the
+    // same rule cannot answer differently for a base and an outpost.
+    if plate != 6 && projectile::in_centre_square(offset_m) {
+        projectile::centre_bonus(amount)
     } else {
         amount
     }

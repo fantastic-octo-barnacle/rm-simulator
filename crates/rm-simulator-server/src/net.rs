@@ -520,7 +520,6 @@ struct Incoming {
     shot_results: Vec<crate::protocol::ShotResult>,
     hits: Vec<(u64, u64, rm_simulator_world::ArmorHit)>,
     scheduled_shots: Vec<(u32, u64, u64)>,
-    finished_shots: Vec<(u32, u64, Option<String>)>,
     snapshot: Option<Box<SimulationState>>,
     received_at: Option<Instant>,
     checkpoint_intervals: crate::network_trace::EventSamples,
@@ -604,17 +603,6 @@ impl ClientInbox {
                 }
                 data.scheduled_shots
                     .push((shooter, shot_id, intended_time_ns));
-                None
-            }
-            ServerMessage::ShotFinished {
-                shooter,
-                shot_id,
-                reason,
-            } => {
-                if data.finished_shots.len() >= CLIENT_NOTICE_CAPACITY {
-                    return Err(io::Error::other("too many unread shot completions"));
-                }
-                data.finished_shots.push((shooter, shot_id, reason));
                 None
             }
             ServerMessage::ShotResult(result) => {
@@ -967,13 +955,6 @@ impl Client {
         if let Some(sample) = time_sample {
             self.timing.sample(sample);
         }
-    }
-    /// Drain completed-shot notices as `(shooter chassis id, shot id, reason)`,
-    /// oldest first. A reason is present when the shot ended without a result.
-    pub fn take_finished_shots(&self) -> Vec<(u32, u64, Option<String>)> {
-        self.inbox.try_data().map_or_else(Vec::new, |mut data| {
-            std::mem::take(&mut data.finished_shots)
-        })
     }
     /// Drain scheduled shot receipts as `(shooter chassis id, shot id, intended
     /// simulation time in ns)`, oldest first. A receipt means admitted, not

@@ -356,10 +356,6 @@ impl Observer {
                 event.shot = Some(*shot_id);
                 event.simulation_ns = Some(*intended_time_ns);
             }
-            ServerMessage::ShotFinished { shot_id, .. } => {
-                event.kind = "shot_finished";
-                event.shot = Some(*shot_id);
-            }
             ServerMessage::Hit {
                 epoch,
                 event_id,

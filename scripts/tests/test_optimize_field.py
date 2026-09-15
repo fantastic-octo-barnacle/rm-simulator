@@ -7,7 +7,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
-spec = importlib.util.spec_from_file_location('optimize_field', Path(__file__).with_name('optimize-field.py'))
+spec = importlib.util.spec_from_file_location(
+    'optimize_field', Path(__file__).resolve().parents[1] / 'optimize-field.py'
+)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 

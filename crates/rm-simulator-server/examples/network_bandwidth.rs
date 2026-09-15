@@ -3,8 +3,7 @@
 //! Reproducible JSON snapshot workload; no CAD assets or wall-clock pacing.
 //! Measures the live player path: the compact independent checkpoint and the
 //! acknowledged UDP baseline codec that carries it.
-use rm_simulator_server::{layout::ChassisSpawner, protocol::Command, simulation::Simulation};
-use rm_simulator_world::{ChassisCommand, ChassisConfig, Field, FieldConfig, RefereeConfig, Team};
+use rm_simulator_server::{protocol::Command, workload};
 
 fn main() {
     // The sweep recompresses identical selected envelopes, preserving level 1's
@@ -14,28 +13,14 @@ fn main() {
     let frames = if sweep { 938 } else { 250 };
     let seconds = (frames * step_ms) as f64 / 1000.;
     for (players, firing) in [(0, false), (2, false), (12, false), (2, true)] {
-        let mut config = FieldConfig {
-            referee: Some(RefereeConfig::alternating(2, 2)),
-            ..Default::default()
-        };
-        config.runes.push(config.runes[0]);
-        let mut simulation =
-            Simulation::new(Field::new(&config).unwrap(), false).with_spawner(ChassisSpawner {
-                config: ChassisConfig::default(),
-                terrain: None,
-            });
-        for i in 0..players {
-            let chassis = simulation
-                .spawn_chassis(if i % 2 == 0 { Team::Red } else { Team::Blue })
-                .unwrap();
+        // One builder, shared with the probe and the other measurement examples,
+        // so every harness drives the same field.
+        let (mut simulation, chassis) = workload::simulation(players);
+        for &chassis in &chassis {
             simulation
                 .apply(&Command::Chassis {
                     chassis,
-                    command: ChassisCommand {
-                        forward_m_s: 1.,
-                        yaw_rate_rad_s: 0.4,
-                        ..Default::default()
-                    },
+                    command: workload::constant_drive(),
                 })
                 .unwrap();
         }

@@ -84,6 +84,14 @@ pub struct Resources {
     /// Highest match time advanced to, in nanoseconds. `advance_to` never goes
     /// backwards.
     pub match_time_ns: u64,
+    /// Schedule index of the next Table 5-5 grant to pay, `0..=7`.
+    ///
+    /// This is paid history, not a function of `match_time_ns`: a boundary
+    /// crossed while the economy was disabled is never paid, even after the
+    /// economy is re-enabled, and the clock alone cannot say which grants are
+    /// still due. Recomputing it from `match_time_ns` (or skipping it in serde)
+    /// would back-pay those skipped boundaries. The boundary times themselves
+    /// depend only on the index, so editing the amounts leaves it valid.
     next_income: usize,
 }
 /// Referee-only edits. Caliber index 0 is 17 mm; index 1 is 42 mm.
@@ -287,6 +295,12 @@ mod tests {
         r.settings.economy_enabled = false;
         r.advance_to(61_000_000_000);
         r.settings.economy_enabled = true;
+        // The 61 s boundary was crossed while the economy was off, so it is never
+        // paid. That is why the paid-boundary counter has to be state: deriving
+        // income from the clock alone would re-grant it here.
+        assert_eq!(r.gold, [400; 2]);
+        r.advance_to(62_000_000_000);
+        assert_eq!(r.gold, [400; 2]);
         r.settings.minute_gold = 7;
         let mut split = r.clone();
         r.advance_to(420_000_000_000);

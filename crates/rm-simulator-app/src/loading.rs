@@ -95,7 +95,7 @@ fn start(world: &mut World) {
         .remove_resource::<JoinRequest>()
         .expect("join request")
         .0;
-    let multiplayer = args.connect.is_some() || args.listen.is_some();
+    let multiplayer = args.connect.is_some() || args.host.listen.is_some();
     world.remove_resource::<TitleScreen>();
     let cached = world.get_resource::<CadCache>().cloned();
     let (sender, receiver) = mpsc::channel();
@@ -110,13 +110,13 @@ fn start(world: &mut World) {
                     Some(cache) => cache.0,
                     None => {
                         progress(0.05, "Verifying field files");
-                        Arc::new(cad_assets::load(&args.cad_assets)?)
+                        Arc::new(cad_assets::load(&args.host.cad_assets)?)
                     }
                 };
                 let (side_spawn, side_yaw) = default_spawn(args.team.into());
                 let spawn = args.spawn.unwrap_or(side_spawn);
                 let yaw = args.spawn_yaw_deg.map_or(side_yaw, f64::from);
-                let minimap = crate::minimap::load(&args.cad_assets);
+                let minimap = crate::minimap::load(&args.host.cad_assets);
                 let opened = Session::open(&args, &cad, spawn, yaw, progress)?;
                 let floor = rm_simulator_server::collision_mesh::load_glb(
                     &cad.floor.physics_file(&cad.root),
@@ -267,7 +267,7 @@ fn poll(world: &mut World) {
                     if !world.contains_resource::<CadCache>() {
                         let instances = scene::cad_instances(
                             &cad,
-                            !args.no_rune,
+                            !args.host.no_rune,
                             !opened.session.snapshot.bases.is_empty(),
                         );
                         world.resource_mut::<CadSceneStatus>().expected = instances.len();

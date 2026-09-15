@@ -18,6 +18,7 @@ pub mod clock;
 pub mod collision_mesh;
 pub mod compression;
 pub mod host;
+pub mod host_args;
 pub mod http;
 pub mod layout;
 mod lifecycle;
@@ -32,6 +33,8 @@ pub mod semantics;
 pub mod prediction;
 
 pub mod view;
+
+pub mod workload;
 
 pub mod input_stream;
 

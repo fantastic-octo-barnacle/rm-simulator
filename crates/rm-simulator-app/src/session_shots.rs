@@ -256,8 +256,8 @@ impl Session {
             true
         });
     }
-    /// Take scheduled, answered and finished shot messages from the client
-    /// and update the flights accordingly.
+    /// Take scheduled and answered shot messages from the client and update
+    /// the flights accordingly.
     pub(super) fn poll_shot_results(&mut self) {
         for (shooter, id, _) in self.client.take_scheduled_shots() {
             if Some(shooter) == self.chassis_id
@@ -268,9 +268,6 @@ impl Session {
         }
         for result in self.client.take_shot_results() {
             self.shot_result(result);
-        }
-        for (_, shot_id, _) in self.client.take_finished_shots() {
-            self.shots.flights.remove(&shot_id);
         }
     }
     /// Retire flights older than 5 s, resend unconfirmed shots every 40 ms for
@@ -365,7 +362,7 @@ impl Session {
             if let Some(id) = flight.flight.authoritative
                 && let Some(state) = snapshot.projectiles.iter_mut().find(|p| p.id == id)
             {
-                state.id = (1_u64 << 63) | flight.flight.id;
+                state.id = crate::projectile_prediction::PROVISIONAL_BIT | flight.flight.id;
                 if let Some(predicted) = &flight.projectile {
                     *state = predicted.clone();
                 }

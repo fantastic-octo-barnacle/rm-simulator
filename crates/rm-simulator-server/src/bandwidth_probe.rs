@@ -27,12 +27,11 @@
 //! attribution would be meaningless.
 
 use crate::host::Outbound;
-use crate::layout::ChassisSpawner;
 use crate::net::QueuedCommand;
 use crate::protocol::{Command, ServerMessage};
-use crate::simulation::{Simulation, SimulationState};
+use crate::simulation::SimulationState;
 use crate::udp_codec::{CONGESTED_PENDING_BYTES, ClientCodec, PeerCodec};
-use rm_simulator_world::{ChassisCommand, ChassisConfig, Field, FieldConfig, RefereeConfig, Team};
+use rm_simulator_world::ChassisCommand;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -280,31 +279,6 @@ fn frame_command(workload: Workload, sequence: u64) -> ChassisCommand {
     }
 }
 
-/// Build the field one probe run drives. No CAD is read: the implicit floor and
-/// the rule layout are enough for chassis motion, projectiles and the referee.
-fn simulation(workload: Workload) -> (Simulation, Vec<u32>) {
-    let mut config = FieldConfig {
-        referee: Some(RefereeConfig::alternating(2, 2)),
-        ..Default::default()
-    };
-    config.runes.push(config.runes[0]);
-    let mut simulation =
-        Simulation::new(Field::new(&config).unwrap(), false).with_spawner(ChassisSpawner {
-            config: ChassisConfig::default(),
-            terrain: None,
-        });
-    let mut chassis = Vec::new();
-    for index in 0..workload.players() {
-        let team = if index.is_multiple_of(2) {
-            Team::Red
-        } else {
-            Team::Blue
-        };
-        chassis.push(simulation.spawn_chassis(team).unwrap());
-    }
-    (simulation, chassis)
-}
-
 /// The owner anchor for the first chassis cut from `state`, if the field has one.
 fn owner_anchor(state: &SimulationState) -> Option<Vec<u8>> {
     let chassis = state.field.chassis.first()?.id;
@@ -349,7 +323,9 @@ pub(crate) fn run_observed(
     let clock = crate::clock::ManualTime::new();
     let time = clock.source();
     let mut now = time.now();
-    let (mut simulation, chassis) = simulation(workload);
+    // The workload builder is shared with the measurement examples so both
+    // drive the same field; see `crate::workload`.
+    let (mut simulation, chassis) = crate::workload::simulation(workload.players() as usize);
     let driver = chassis[0];
     let mut totals = Totals::default();
     let mut peer = PeerCodec::new(now, budget_bytes_s, false);

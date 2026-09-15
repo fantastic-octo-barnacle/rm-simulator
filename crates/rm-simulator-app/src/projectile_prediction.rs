@@ -15,7 +15,9 @@ use std::{
 /// client that fell far behind the host.
 const MAX_REPLAY_NS: u64 = 1_000_000_000;
 /// The provisional ball ids a client draws are its own, never the host's.
-const PROVISIONAL_BIT: u64 = 1 << 63;
+/// `session_shots` marks an authoritative ball replaced by a prediction with the
+/// same bit, so one constant states that contract.
+pub(crate) const PROVISIONAL_BIT: u64 = 1 << 63;
 
 /// One provisional ball the client draws for its own unconfirmed shot. It is
 /// presentation only; the host's accepted ball replaces it by shot id.

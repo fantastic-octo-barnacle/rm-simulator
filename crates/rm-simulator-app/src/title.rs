@@ -244,7 +244,7 @@ impl TitleFields {
             join_password: base.password.clone(),
             name: pick(remembered.name, Some(base.name.clone()), "pilot"),
             address: pick(remembered.address, base.connect.clone(), ""),
-            host: pick(remembered.host, base.listen.clone(), DEFAULT_LISTEN),
+            host: pick(remembered.host, base.host.listen.clone(), DEFAULT_LISTEN),
             blue: base.team == crate::args::TeamArg::Blue || remembered.blue,
             spectate: base.fly || remembered.spectate,
             robot: if base.robot != Robot::default() {
@@ -255,28 +255,29 @@ impl TitleFields {
             referee: base.referee,
             max_fire_rate: pick(
                 remembered.max_fire_rate,
-                Some(base.max_fire_rate_hz.to_string()),
+                Some(base.host.max_fire_rate_hz.to_string()),
                 "30",
             ),
             max_muzzle_speed: pick(
                 remembered.max_muzzle_speed,
-                Some(base.max_muzzle_speed_m_s.to_string()),
+                Some(base.host.max_muzzle_speed_m_s.to_string()),
                 "30",
             ),
             fire_rate: pick(
                 remembered.fire_rate,
-                Some(base.fire_rate_hz.to_string()),
+                Some(base.host.fire_rate_hz.to_string()),
                 "20",
             ),
             physics_rate: pick(
                 remembered.physics_rate,
-                Some(base.physics_rate_hz.to_string()),
+                Some(base.host.physics_rate_hz.to_string()),
                 "1000",
             ),
             muzzle_speed: pick(
                 remembered.muzzle_speed,
                 Some(
-                    base.muzzle_speed_m_s
+                    base.host
+                        .muzzle_speed_m_s
                         .map(|v| v.to_string())
                         .unwrap_or_default(),
                 ),
@@ -284,14 +285,18 @@ impl TitleFields {
             ),
             speed_variation: pick(
                 remembered.speed_variation,
-                Some(base.muzzle_speed_variation_m_s.to_string()),
+                Some(base.host.muzzle_speed_variation_m_s.to_string()),
                 "0",
             ),
-            spread: pick(remembered.spread, Some(base.spread_deg.to_string()), "0"),
+            spread: pick(
+                remembered.spread,
+                Some(base.host.spread_deg.to_string()),
+                "0",
+            ),
             distribution: pick(
                 remembered.distribution,
                 Some(
-                    match base.spread_distribution {
+                    match base.host.spread_distribution {
                         rm_simulator_server::protocol::SpreadDistribution::Uniform => "uniform",
                         rm_simulator_server::protocol::SpreadDistribution::Gaussian => "gaussian",
                     }
@@ -299,7 +304,11 @@ impl TitleFields {
                 ),
                 "gaussian",
             ),
-            seed: pick(remembered.seed, Some(base.spread_seed.to_string()), "0"),
+            seed: pick(
+                remembered.seed,
+                Some(base.host.spread_seed.to_string()),
+                "0",
+            ),
         }
     }
     /// The seat the team, spectate, referee and robot fields describe. An
@@ -372,7 +381,7 @@ pub fn join_args(base: &Args, fields: &TitleFields, choice: Choice) -> Result<Ar
                 return Err("Enter the host address as HOST:PORT".into());
             }
             args.connect = Some(address.into());
-            args.listen = None;
+            args.host.listen = None;
         }
         Choice::Host => {
             if fields.lobby_name.trim().is_empty()
@@ -385,7 +394,7 @@ pub fn join_args(base: &Args, fields: &TitleFields, choice: Choice) -> Result<Ar
             args.public_lobby = false; // Public menu hosting awaits a relay.
             let host = fields.host.trim();
             args.connect = None;
-            args.listen = Some(if host.is_empty() {
+            args.host.listen = Some(if host.is_empty() {
                 DEFAULT_LISTEN.into()
             } else {
                 host.into()
@@ -393,7 +402,7 @@ pub fn join_args(base: &Args, fields: &TitleFields, choice: Choice) -> Result<Ar
         }
         Choice::Practice => {
             args.connect = None;
-            args.listen = None;
+            args.host.listen = None;
             args.password.clear();
         }
         _ => return Err("nothing to join".into()),
@@ -409,20 +418,21 @@ pub fn join_args(base: &Args, fields: &TitleFields, choice: Choice) -> Result<Ar
         if rm_simulator_world::tick_ns_for_hz(hz).is_none() {
             return Err("Physics rate must be 1000, 500, 250 or 128 Hz".into());
         }
-        args.physics_rate_hz = hz;
+        args.host.physics_rate_hz = hz;
     }
     if choice != Choice::Connect {
         if !fields.fire_rate.trim().is_empty() {
-            args.fire_rate_hz = fields
+            args.host.fire_rate_hz = fields
                 .fire_rate
                 .trim()
                 .parse()
                 .map_err(|_| "Enter a fire rate in Hz")?;
         }
-        if !args.fire_rate_hz.is_finite() || !(0.1..=1000.0).contains(&args.fire_rate_hz) {
+        if !args.host.fire_rate_hz.is_finite() || !(0.1..=1000.0).contains(&args.host.fire_rate_hz)
+        {
             return Err("Fire rate must be in [0.1, 1000] Hz".into());
         }
-        args.muzzle_speed_m_s = if fields.muzzle_speed.trim().is_empty() {
+        args.host.muzzle_speed_m_s = if fields.muzzle_speed.trim().is_empty() {
             None
         } else {
             Some(
@@ -434,51 +444,54 @@ pub fn join_args(base: &Args, fields: &TitleFields, choice: Choice) -> Result<Ar
             )
         };
         if !fields.spread.trim().is_empty() {
-            args.spread_deg = fields
+            args.host.spread_deg = fields
                 .spread
                 .trim()
                 .parse()
                 .map_err(|_| "Enter a spread angle in degrees")?;
         }
         if !fields.distribution.trim().is_empty() {
-            args.spread_distribution = match fields.distribution.trim() {
+            args.host.spread_distribution = match fields.distribution.trim() {
                 "uniform" => rm_simulator_server::protocol::SpreadDistribution::Uniform,
                 "gaussian" => rm_simulator_server::protocol::SpreadDistribution::Gaussian,
                 _ => return Err("Spread distribution must be uniform or gaussian".into()),
             };
         }
         if !fields.seed.trim().is_empty() {
-            args.spread_seed = fields
+            args.host.spread_seed = fields
                 .seed
                 .trim()
                 .parse()
                 .map_err(|_| "Spread seed must be a nonnegative integer")?;
         }
         if !fields.speed_variation.trim().is_empty() {
-            args.muzzle_speed_variation_m_s = fields
+            args.host.muzzle_speed_variation_m_s = fields
                 .speed_variation
                 .trim()
                 .parse()
                 .map_err(|_| "Enter muzzle-speed variation from 0 to 1 m/s")?;
         }
         if !fields.max_fire_rate.trim().is_empty() {
-            args.max_fire_rate_hz = fields
+            args.host.max_fire_rate_hz = fields
                 .max_fire_rate
                 .trim()
                 .parse()
                 .map_err(|_| "Enter a maximum rate in Hz")?;
         }
-        if !args.max_fire_rate_hz.is_finite() || !(0.1..=1000.0).contains(&args.max_fire_rate_hz) {
+        if !args.host.max_fire_rate_hz.is_finite()
+            || !(0.1..=1000.0).contains(&args.host.max_fire_rate_hz)
+        {
             return Err("Maximum fire rate must be in [0.1, 1000] Hz".into());
         }
         if !fields.max_muzzle_speed.trim().is_empty() {
-            args.max_muzzle_speed_m_s = fields
+            args.host.max_muzzle_speed_m_s = fields
                 .max_muzzle_speed
                 .trim()
                 .parse()
                 .map_err(|_| "Enter a maximum speed in m/s")?;
         }
-        args.weapon_limits()
+        args.host
+            .weapon_limits()
             .admit(args.caliber(), args.weapon())
             .map_err(str::to_string)?;
     }
@@ -1722,7 +1735,7 @@ fn title_input(
         && let Some(entry) = state.selected.and_then(|i| state.entries.get(i))
         && entry.address == fields.address.trim()
     {
-        base.transport = entry.transport().expect("compatible selection");
+        base.host.transport = entry.transport().expect("compatible selection");
     }
     match join_args(&base, &fields, choice) {
         Ok(_) if !confirming => {
@@ -1759,7 +1772,7 @@ mod tests {
         fields.seed = "123".into();
         fields.speed_variation = "0.5".into();
         let args = join_args(&base, &fields, Choice::Practice).unwrap();
-        assert_eq!(args.fire_rate_hz, 25.);
+        assert_eq!(args.host.fire_rate_hz, 25.);
         assert_eq!(args.weapon().shot.speed_m_s, 30.);
         assert_eq!(args.weapon().spread.angle_rad, 2_f64.to_radians());
         assert_eq!(args.weapon().spread.seed, 123);
@@ -1996,7 +2009,7 @@ mod tests {
         let connect = join_args(&base(), &fields, Choice::Connect).unwrap();
         assert_eq!(connect.name, "alice");
         assert_eq!(connect.connect.as_deref(), Some("host.local:7700"));
-        assert_eq!(connect.listen, None);
+        assert_eq!(connect.host.listen, None);
         assert_eq!(connect.team, crate::args::TeamArg::Red);
         assert!(connect.fly);
         assert!(!connect.referee);
@@ -2030,9 +2043,9 @@ mod tests {
         assert!(join_args(&base(), &blank, Choice::Practice).is_err());
         let host = join_args(&base(), &fields, Choice::Host).unwrap();
         assert_eq!(host.connect, None);
-        assert_eq!(host.listen.as_deref(), Some(DEFAULT_LISTEN));
+        assert_eq!(host.host.listen.as_deref(), Some(DEFAULT_LISTEN));
         let practice = join_args(&base(), &fields, Choice::Practice).unwrap();
-        assert_eq!((practice.connect, practice.listen), (None, None));
+        assert_eq!((practice.connect, practice.host.listen), (None, None));
         assert!(join_args(&base(), &fields, Choice::Quit).is_err());
     }
 
