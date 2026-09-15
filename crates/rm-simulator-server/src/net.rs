@@ -1578,7 +1578,6 @@ mod tests {
                     chassis: None,
                     weapon: Default::default(),
                     weapon_limits: Default::default(),
-                    tick_ns: rm_simulator_world::tick_ns(),
                 },
                 latest: None,
                 roster: Vec::new(),

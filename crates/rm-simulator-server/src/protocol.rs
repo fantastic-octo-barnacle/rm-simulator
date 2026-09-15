@@ -33,30 +33,9 @@ use serde::{Deserialize, Serialize};
 /// Version 35 makes packed checkpoints the only periodic snapshot encoding and
 /// ZSTD the only wire codec, removing the JSON checkpoint path, the DEFLATE
 /// codec and every environment selector that chose between them.
-pub const PROTOCOL_VERSION: u32 = 35;
-
-/// The refusal a host sends a client whose physics rate differs from its own.
-/// Both are stated in Hz where the rate is one that is offered, and otherwise
-/// in nanoseconds per tick.
-///
-/// ```
-/// use rm_simulator_server::protocol::rate_mismatch;
-///
-/// assert!(rate_mismatch(7_812_500, 1_000_000).contains("128"));
-/// ```
-pub fn rate_mismatch(host_tick_ns: u64, client_tick_ns: u64) -> String {
-    let name = |ns: u64| match rm_simulator_world::hz_for_tick_ns(ns) {
-        Some(hz) => format!("{hz} Hz"),
-        None => format!("{ns} ns per tick"),
-    };
-    format!(
-        "Physics rate mismatch: host runs at {}, you run at {}. Relaunch with --physics-rate-hz {}.",
-        name(host_tick_ns),
-        name(client_tick_ns),
-        rm_simulator_world::hz_for_tick_ns(host_tick_ns)
-            .map_or_else(|| "<unsupported>".to_string(), |hz| hz.to_string()),
-    )
-}
+/// Version 36 freezes the simulation at the 128 Hz tick and drops the rate from
+/// the handshake.
+pub const PROTOCOL_VERSION: u32 = 36;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///
@@ -622,7 +601,7 @@ pub enum Command {
     /// only on a host.
     Step {
         /// Ticks to advance, from 1 to 60,000. Each tick is `tick_ns` of world
-        /// time, 1 ms at the default rate.
+        /// time.
         ticks: u64,
     },
 }
@@ -729,7 +708,6 @@ pub struct FireTiming {
 ///     team: None,
 ///     role: Role::Pilot,
 ///     robot: Default::default(),
-///     tick_ns: rm_simulator_world::tick_ns(),
 /// };
 /// let start = ClientMessage::Command(Command::Referee(
 ///     rm_simulator_world::RefereeCommand::StartMatch,
@@ -758,8 +736,6 @@ pub struct FireTiming {
 ///         ..
 ///     }
 /// ));
-/// // An omitted physics rate decodes as zero, which every host refuses.
-/// assert!(matches!(old, ClientMessage::Hello { tick_ns: 0, .. }));
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 // Keep small fixed-size control records inline in bounded transport queues.
@@ -802,13 +778,6 @@ pub enum ClientMessage {
         /// that omits it drives infantry 3.
         #[serde(default)]
         robot: Robot,
-        /// Tick length in nanoseconds this client predicts at, from its own
-        /// `--physics-rate-hz`. The whole match must share one rate, so a host
-        /// refuses a client whose value differs from its own. An omitted field
-        /// decodes as zero, which no host runs at, so it is refused by the
-        /// same check rather than silently taking the host's rate.
-        #[serde(default)]
-        tick_ns: u64,
     },
     /// One action on the field, addressed to a chassis or to the match.
     Command(Command),
@@ -857,11 +826,6 @@ pub struct Welcome {
     pub weapon: WeaponConfig,
     /// Host caps, independent of the starting settings.
     pub weapon_limits: WeaponLimits,
-    /// Tick length in nanoseconds this host integrates at. It equals the value
-    /// the client sent in its `Hello`, because a mismatch is refused before a
-    /// Welcome is written; a client stores it to show the active rate.
-    #[serde(default = "rm_simulator_world::tick_ns")]
-    pub tick_ns: u64,
 }
 /// One connected client, as listed in the roster.
 ///
@@ -1065,13 +1029,6 @@ mod tests {
                 ..
             }
         ));
-        // An omitted rate decodes as zero rather than the reader's own rate,
-        // so a peer that never states its rate is refused by the rate check
-        // whatever rate the host runs at, instead of by a decode failure.
-        assert!(matches!(hello, ClientMessage::Hello { tick_ns: 0, .. }));
-        for host_tick_ns in [1_000_000, 7_812_500] {
-            assert!(rate_mismatch(host_tick_ns, 0).contains("0 ns per tick"));
-        }
         let command: Command = serde_json::from_str(
             r#"{"Chassis":{"chassis":1,"command":{"forward_m_s":1.0,"left_m_s":0.0,"yaw_rate_rad_s":0.0}}}"#,
         )

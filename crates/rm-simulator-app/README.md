@@ -13,7 +13,7 @@ place besides the server that reads host time.
 | File | Owns |
 |---|---|
 | `src/main.rs` | App wiring: plugins, systems and their ordering. |
-| `src/args.rs` | The clap command line: `--connect`, `--listen`, `--console`, `--window-mode`, `--cad-assets`, `--robot` (Hero or one of two infantries), `--physics-rate-hz`, `--start-paused`, `--screenshot` and `--fly`. |
+| `src/args.rs` | The clap command line: `--connect`, `--listen`, `--console`, `--window-mode`, `--cad-assets`, `--robot` (Hero or one of two infantries), `--start-paused`, `--screenshot` and `--fly`. |
 | `src/loading.rs` | The match lifecycle: a `JoinRequest` prepares a session on a worker behind a splash, `Ready` unlocks gameplay, and a `LeaveRequest` or any failure tears the match down to the title screen. |
 | `src/title.rs` | The title screen and the remembered fields; every choice becomes the arguments a command line would have given. |
 | `src/session.rs` | `Session` over a `Client` for embedded and remote hosts, prediction state and match keys; all gameplay input uses the same path. |

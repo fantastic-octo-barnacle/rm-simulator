@@ -370,7 +370,6 @@ fn run_arm(
         // No referee: the volley must not be throttled by ammo allowances, and
         // no robot may be defeated out of the workload half way through a run.
         referee: false,
-        physics_rate_hz: layout::DEFAULT_RATE_HZ,
         projectile_policy: arm.policy,
     };
     let mut config = layout::field_config(cad, &options);

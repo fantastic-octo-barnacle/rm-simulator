@@ -4,7 +4,7 @@
 
 A first-person RoboMaster field simulator in Rust with Bevy. It loads the
 RMUC 2026 field from the extracted competition CAD, runs the rune, outpost and
-projectile rules on an explicit 1 ms clock, referees a match on top of them, and
+projectile rules on an explicit 128 Hz clock, referees a match on top of them, and
 lets you drive an omni chassis over the terrain (or fly a free camera) and shoot
 at armor. Workspace crates keep gameplay rules, physics, rendering, the headless
 server, the interactive application and the rendering benchmark apart.
@@ -181,9 +181,10 @@ not a refactor.
   there); `layout::side_team`, `rune_team` and `outpost_team` derive
   ownership from that, and the render `TeamColor` follows it.
 - **Time.** World time advances only through explicit ticks (`tick_ns()`,
-  1 ms by default; `--physics-rate-hz` selects one of the offered 1000, 500,
-  250 or 128 Hz rates, frozen once per process and shared by every peer in a
-  match). Rule durations stay in nanoseconds, never tick counts. Never read
+  fixed at 128 Hz (7.8125 ms per tick) for every build, host and client; there
+  is no rate selector, environment override or per-match rate). Rule durations
+  stay in
+  nanoseconds, never tick counts. Never read
   host time in physics, world or gameplay code. Stepping must be deterministic
   and independent of how ticks are partitioned; there is a test for this.
   With no projectiles, chassis or referee, `Field::step` advances rune state

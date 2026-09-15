@@ -304,41 +304,6 @@ mod tests {
         assert!(Args::try_parse_from(["rm-simulator", "--window-mode", "hidden"]).is_err());
     }
     #[test]
-    fn only_the_measured_physics_rates_parse() {
-        assert_eq!(
-            Args::parse_from(["rm-simulator"]).host.physics_rate_hz,
-            1000
-        );
-        for hz in [1000, 500, 250, 128] {
-            let args = Args::parse_from(["rm-simulator", "--physics-rate-hz", &hz.to_string()]);
-            assert_eq!(args.host.physics_rate_hz, hz);
-            // 128 Hz must mean exactly 7,812,500 ns, not a rounded division.
-            assert_eq!(
-                rm_simulator_world::tick_ns_for_hz(args.host.physics_rate_hz).unwrap()
-                    * u64::from(hz),
-                1_000_000_000
-            );
-        }
-        for bad in ["0", "60", "333", "1001", "128.0", "many"] {
-            let error = Args::try_parse_from(["rm-simulator", "--physics-rate-hz", bad])
-                .expect_err(bad)
-                .to_string();
-            assert!(error.contains("1000, 500, 250, 128"), "{bad}: {error}");
-        }
-        // A remote client states its rate too, so the option survives --connect.
-        assert!(
-            Args::try_parse_from([
-                "rm-simulator",
-                "--connect",
-                "localhost:7700",
-                "--physics-rate-hz",
-                "128",
-            ])
-            .is_ok()
-        );
-    }
-
-    #[test]
     fn the_robot_fixes_the_caliber_and_travels_to_remote_hosts_too() {
         let args = Args::parse_from(["rm-simulator"]);
         assert_eq!(args.robot, Robot::Infantry3);

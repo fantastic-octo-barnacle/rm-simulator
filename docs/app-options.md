@@ -10,7 +10,7 @@ for automation, see [console commands](console.md).
 ## Command-line options
 
 `rm-simulator` accepts every option below. `rm-simulator-server` accepts the
-field, weapon and physics-rate options that a host owns; a client
+field and weapon options that a host owns; a client
 joined with `--connect` takes those from the server.
 
 | Option | Purpose |
@@ -31,7 +31,6 @@ joined with `--connect` takes those from the server.
 | `--start-paused` | Open with the world clock paused |
 | `--screenshot PATH` | Capture the window or headless camera to a PNG once loaded and settled, then exit |
 | `--muzzle-speed-m-s V` | Starting muzzle speed, default 25 m/s for either caliber (the caliber follows each pilot's robot); unavailable with `--connect` |
-| `--physics-rate-hz R` | Shared physics rate: 1000 (default), 500, 250 or 128 Hz; 128 Hz is exactly 7,812,500 ns per tick. Every peer in a match must use the same rate, and a host refuses a client that does not |
 | `--fire-rate-hz R` | Starting firing rate in simulation time, default 20 Hz; unavailable with `--connect` |
 | `--max-fire-rate-hz R` | Host firing-rate cap, default 30 Hz; unavailable with `--connect` |
 | `--max-muzzle-speed-m-s V` | Host actual launch-speed cap, default 30 m/s; unavailable with `--connect` |
@@ -180,7 +179,7 @@ an NVIDIA laptop GPU; Mac performance still needs separate measurements.
 | F3 | Open / close debug panel: collider Off / Overlay / Only, visual wireframe, rendering statistics, remote motion buffering, reset own robot to spawn |
 | Space / Left Shift | Move up / down (flying) |
 | F6 | Pause or resume the world clock (local world or referee) |
-| F7 | Step the world one frame (16 ms, or the next tick boundary after it at a reduced rate) while paused (local world or referee) |
+| F7 | Step the world one frame (16 ms) while paused (local world or referee) |
 | O / I | Buy one 17 mm / 42 mm round using team gold, at default prices of 1 / 10 gold during a running match |
 | F5 | Start the match (or reset a finished one) (local world or referee) |
 | F | Activate the rune for your team when it has an opportunity (local world or referee) |

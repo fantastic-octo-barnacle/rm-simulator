@@ -29,9 +29,7 @@ use rune::{BigRune, RuneError, SmallRune};
 pub use rune::{BigRuneMotion, HitOutcome, Rune, RuneKind, RuneSnapshot, RuneState};
 use serde::{Deserialize, Serialize};
 
-pub use rm_simulator_physics::{
-    OFFERED_RATES_HZ, Pose, hz_for_tick_ns, set_tick_ns, tick_ns, tick_ns_for_hz,
-};
+pub use rm_simulator_physics::{Pose, tick_ns};
 
 /// One armor module pose on a rotating mechanism, keyed by face index.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1394,11 +1392,11 @@ mod tests {
         ));
     }
     /// Partition invariance stated in world time rather than tick counts, so it
-    /// holds at whatever rate `tick_ns` froze. Experiment 1 runs this under
-    /// `RM_SIM_TICK_NS`; the tick-counting tests around it read their durations
-    /// as milliseconds and only describe the 1 kHz default.
+    /// holds whatever the fixed `tick_ns` length is (always 1 ms). The
+    /// tick-counting tests around it read their durations as milliseconds and
+    /// therefore describe the fixed 1 kHz tick.
     #[test]
-    fn field_partition_invariance_holds_at_the_configured_rate() {
+    fn field_partition_invariance_holds_at_the_fixed_tick() {
         let ticks = |ns: u64| ns / tick_ns();
         let config = FieldConfig::default();
         let mut whole = Field::new(&config).unwrap();
@@ -1411,7 +1409,7 @@ mod tests {
                 .unwrap();
         }
         // Split by uneven tick counts derived from the total, so the parts
-        // still sum to it at the slowest offered rate.
+        // still sum to it at the fixed 1 ms tick.
         let total = ticks(1_500_000_000);
         whole.step(total).unwrap();
         let parts = [1, total / 7, total / 3];

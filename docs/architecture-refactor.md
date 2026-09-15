@@ -4,7 +4,7 @@
 
 Physics and prescribed motion live in `rm-simulator-physics`. The complete
 `Field` facade in `rm-simulator-world` coordinates them with live rules and the
-referee on one explicit clock (1 ms per tick by default). Rendering consumes caller-owned appearance
+referee on one explicit clock (a fixed 128 Hz tick). Rendering consumes caller-owned appearance
 and has no dependency on physics or gameplay. The server host worker owns each
 live simulation and roster; app systems and transports submit commands to it.
 

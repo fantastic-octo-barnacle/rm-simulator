@@ -113,7 +113,7 @@ positive pitch looks up. Camera pitch follows the existing gameplay limits.
 | `camera` | Optional `position_m: [x,y,z]`, `yaw_deg`, `pitch_deg`, `third_person` | Set free-camera position or pilot aim; third person requires a pilot |
 | `spawn` | `position_m: [x,y,z]`, optional `yaw_deg` default 0 | Place the existing local pilot using the ground below z, or move a free camera. Resets pitch, body velocity and wheel contacts; preserves ID, HP and defeat state. Remote pilot placement is rejected |
 | `pause` | `paused: bool` | Set the clock's paused state |
-| `step` | `ticks: 1..60000` | Advance a paused world by this many physics ticks (1 ms per tick at the default 1000 Hz rate) |
+| `step` | `ticks: 1..60000` | Advance a paused world by this many physics ticks (7.8125 ms per tick at the fixed 128 Hz rate) |
 | `screenshot` | `path: "file.png"` | Save the current rendered view and HUD; relative paths use the app's working directory; parent directory must exist |
 | `key` | `key: string`, `pressed: bool` | Hold or release a game key |
 | `mouse_button` | `button: "left"`, `"right"` or `"middle"`, `pressed: bool` | Press or release a button in gameplay and UI picking |
@@ -190,7 +190,7 @@ See [network tracing](network-tracing.md) for recording and accounting details.
 ## Deterministic tick scripts
 
 For repeatable world motion, pause, press the controls, step an exact number of
-ticks, release the controls, then capture. Each tick is 1 ms at the default
-1000 Hz rate, and longer at the reduced `--physics-rate-hz` rates. Free-camera keyboard
+ticks, release the controls, then capture. Each tick is 7.8125 ms at the fixed
+128 Hz rate. Free-camera keyboard
 movement and held firing use app frames and are not deterministic tick scripts;
 use explicit camera poses or the `world` command for those cases.

@@ -500,7 +500,6 @@ mod tests {
                 team: None,
                 role: crate::protocol::Role::Pilot,
                 robot: Default::default(),
-                tick_ns: rm_simulator_world::tick_ns(),
             },
             None,
         );

@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+- Remove the selectable physics rate. The `--physics-rate-hz` option and the
+  `RM_SIM_TICK_NS` environment override are gone; every build, host and client
+  now runs the fixed 128 Hz tick (7.8125 ms per tick), so `Hello` and `Welcome`
+  no longer carry a tick length and a host no longer refuses a rate mismatch.
+  The
+  `physics_rate` measurement example and the `physics_rate_hz` layout option go
+  with them. `PROTOCOL_VERSION` is 35, so both peers must update.
+
 - Remove the TCP gameplay transport. Valve GameNetworkingSockets over UDP is now
   the only network transport, alongside the in-process owner channel and the HTTP
   referee panel, so the shared `--transport` option is gone from both binaries and

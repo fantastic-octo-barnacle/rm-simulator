@@ -37,122 +37,29 @@ pub use projectile::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Nanoseconds in one simulation tick at the shipped 1 kHz rate. Every time
-/// argument in this crate counts ticks of [`tick_ns`] length, and physics
-/// integrates at that fixed step; this is the default and the rollback value.
-pub const DEFAULT_TICK_NS: u64 = 1_000_000;
+/// Nanoseconds in one simulation tick: 7.8125 ms, the fixed 128 Hz rate. Every
+/// time argument in this crate counts ticks of this length, and physics
+/// integrates at that fixed step. [`tick_ns`] always returns this value.
+pub const DEFAULT_TICK_NS: u64 = 7_812_500;
 
-/// Process-wide tick length in nanoseconds, frozen on first read.
-static TICK_NS_CELL: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-
-/// Nanoseconds in one simulation tick. Every time argument in this crate counts
-/// ticks of this length, and physics integrates at this fixed step.
+/// Nanoseconds in one simulation tick, fixed at 128 Hz (7.8125 ms) for every
+/// build, host and client. Every time argument in this crate counts ticks of
+/// this length, and physics integrates at this fixed step.
 ///
-/// This is [`DEFAULT_TICK_NS`] unless [`set_tick_ns`] or the `RM_SIM_TICK_NS`
-/// environment variable chose another rate before the first read. It is frozen
-/// on first read so that no two parts of one process disagree, and so that a
-/// snapshot's tick count always means the same span of time. Experiment 1
-/// (shared physics rate) is the only reason this is not a constant.
+/// The tick is not selectable: there is no rate option, no environment
+/// override and no per-match rate, so a snapshot's tick count always means
+/// 7.8125 ms per tick.
 ///
 /// ```
 /// use rm_simulator_physics::{DEFAULT_TICK_NS, tick_ns};
 ///
-/// // Unset by default: the shipped 1 kHz control path.
+/// assert_eq!(tick_ns(), 7_812_500);
 /// assert_eq!(tick_ns(), DEFAULT_TICK_NS);
 /// assert_eq!(1_000_000_000 % tick_ns(), 0);
+/// assert_eq!(1_000_000_000 / tick_ns(), 128);
 /// ```
-pub fn tick_ns() -> u64 {
-    *TICK_NS_CELL.get_or_init(|| {
-        std::env::var("RM_SIM_TICK_NS")
-            .ok()
-            .and_then(|text| text.trim().parse::<u64>().ok())
-            .filter(|ns| valid_tick_ns(*ns))
-            .unwrap_or(DEFAULT_TICK_NS)
-    })
-}
-
-/// Whether `ns` is a usable tick length: a whole nanosecond count from 100 us
-/// to 20 ms that divides one second exactly, so a rule deadline expressed in
-/// seconds still lands on a tick boundary.
-///
-/// ```
-/// use rm_simulator_physics::valid_tick_ns;
-///
-/// assert!(valid_tick_ns(7_812_500)); // exactly 128 Hz
-/// assert!(!valid_tick_ns(3_000_000)); // 333.3 Hz does not divide a second
-/// ```
-pub fn valid_tick_ns(ns: u64) -> bool {
-    (100_000..=20_000_000).contains(&ns) && 1_000_000_000 % ns == 0
-}
-
-/// Choose the tick length before anything reads it. Returns the frozen value,
-/// which is `ns` only when this call won the race and `ns` was valid. Intended
-/// for experiment harnesses, once, before any [`WorldPhysics`] exists.
-///
-/// ```
-/// use rm_simulator_physics::{set_tick_ns, tick_ns};
-///
-/// // An invalid rate never replaces the frozen default.
-/// assert_eq!(set_tick_ns(3), tick_ns());
-/// ```
-pub fn set_tick_ns(ns: u64) -> u64 {
-    if !valid_tick_ns(ns) {
-        return tick_ns();
-    }
-    *TICK_NS_CELL.get_or_init(|| ns)
-}
-
-/// The physics rates offered on the command line, in Hz, paired with the exact
-/// tick length each one means in nanoseconds.
-///
-/// Only these four are offered because each has been measured; 128 Hz is listed
-/// as its exact 7,812,500 ns rather than the 7,812,500.0 a division would give.
-///
-/// ```
-/// use rm_simulator_physics::{OFFERED_RATES_HZ, valid_tick_ns};
-///
-/// for (hz, ns) in OFFERED_RATES_HZ {
-///     assert!(valid_tick_ns(*ns));
-///     assert_eq!(*ns * u64::from(*hz), 1_000_000_000);
-/// }
-/// ```
-pub const OFFERED_RATES_HZ: &[(u32, u64)] = &[
-    (1000, 1_000_000),
-    (500, 2_000_000),
-    (250, 4_000_000),
-    (128, 7_812_500),
-];
-
-/// The tick length for one of [`OFFERED_RATES_HZ`], or `None` for any other
-/// rate. A rate that does not divide one second exactly is refused rather than
-/// rounded, so no caller silently gets a different clock than it asked for.
-///
-/// ```
-/// use rm_simulator_physics::tick_ns_for_hz;
-///
-/// assert_eq!(tick_ns_for_hz(128), Some(7_812_500));
-/// assert_eq!(tick_ns_for_hz(300), None);
-/// ```
-pub fn tick_ns_for_hz(hz: u32) -> Option<u64> {
-    OFFERED_RATES_HZ
-        .iter()
-        .find(|(rate, _)| *rate == hz)
-        .map(|(_, ns)| *ns)
-}
-
-/// The offered rate in Hz matching `ns`, or `None` when the frozen tick length
-/// is not one of them.
-///
-/// ```
-/// use rm_simulator_physics::{hz_for_tick_ns, tick_ns};
-///
-/// assert_eq!(hz_for_tick_ns(tick_ns()), Some(1000));
-/// ```
-pub fn hz_for_tick_ns(ns: u64) -> Option<u32> {
-    OFFERED_RATES_HZ
-        .iter()
-        .find(|(_, tick)| *tick == ns)
-        .map(|(hz, _)| *hz)
+pub const fn tick_ns() -> u64 {
+    DEFAULT_TICK_NS
 }
 
 /// A rigid pose in forward/left/up coordinates, metres and a wxyz quaternion.

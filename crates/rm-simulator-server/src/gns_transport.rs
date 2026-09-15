@@ -701,7 +701,6 @@ mod tests {
                 team: None,
                 role: Role::Referee,
                 robot: Robot::default(),
-                tick_ns: rm_simulator_world::tick_ns(),
             },
             ClientMessage::Command(Command::Step { ticks: 17 }),
             ClientMessage::Command(Command::Step { ticks: 19 }),

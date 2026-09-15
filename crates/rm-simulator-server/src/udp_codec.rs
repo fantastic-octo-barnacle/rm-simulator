@@ -957,7 +957,6 @@ impl HostPeer {
                     team,
                     role,
                     robot,
-                    tick_ns,
                 } = message
                 else {
                     return Err(io_error("expected hello"));
@@ -966,14 +965,6 @@ impl HostPeer {
                     return Err(io_error(crate::protocol::version_mismatch(
                         crate::protocol::PROTOCOL_VERSION,
                         protocol,
-                    )));
-                }
-                // One match runs at one physics rate, so a peer predicting at a
-                // different tick length is refused before it holds a seat.
-                if tick_ns != rm_simulator_world::tick_ns() {
-                    return Err(io_error(crate::protocol::rate_mismatch(
-                        rm_simulator_world::tick_ns(),
-                        tick_ns,
                     )));
                 }
                 self.join(name, team, role, robot, password)
@@ -1126,7 +1117,6 @@ impl ClientCodec {
             team,
             role,
             robot,
-            tick_ns: rm_simulator_world::tick_ns(),
         })
         .map_err(io_error)
     }

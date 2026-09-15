@@ -5,8 +5,8 @@
 A first-person RoboMaster field simulator written in Rust with Bevy. It loads
 the RMUC 2026 field from the extracted competition CAD, with both faces of the
 rune, both rotating outposts, the bases and the tech cores placed where the CAD
-puts them, and steps the rune and outpost rules on an explicit clock — 1 ms per
-tick by default — and drives the CAD rune faces and outpost rotors. You drive a
+puts them, and steps the rune and outpost rules on an explicit clock — 7.8125 ms
+per tick (128 Hz) — and drives the CAD rune faces and outpost rotors. You drive a
 four-wheel omni
 chassis over the CAD terrain (plateaus, undulating roads, ramps, highlands,
 tunnels) with a mouse-aimed gun, or fly a free camera with `--fly`. A referee
@@ -97,7 +97,7 @@ The essentials, for driving and for match control:
 | Space / Left Shift | Move up / down (flying) |
 | F5 | Start the match (or reset a finished one) (local world or referee) |
 | F6 | Pause or resume the world clock (local world or referee) |
-| F7 | Step the world one frame (16 ms, or the next tick boundary after it at a reduced rate) while paused (local world or referee) |
+| F7 | Step the world one frame (16 ms) while paused (local world or referee) |
 | F | Activate the rune for your team when it has an opportunity (local world or referee) |
 | Tab (hold) | Show team robot status |
 | P | Toggle settings; 1 toggles reticle, 2 toggles minimap, - / = adjusts mouse sensitivity |
@@ -439,8 +439,9 @@ does not acknowledge its execution by the host.
 | 32 | Defaults periodic UDP world checkpoints to bitpacked fine fixed point with a separately trained, embedded ZSTD dictionary. Both peers must run this build. Owner anchors and full confirmations retain their existing precision. |
 | 33 | Removes the `ShotFinished` message, which no host ever produced: a shot's end was only ever reported as a `ShotResult`. |
 | 34 | Makes packed checkpoints the only periodic snapshot encoding and ZSTD the only wire codec, removing the JSON checkpoint path and the DEFLATE codec. |
+| 35 | Freezes the simulation at the 128 Hz tick and drops the rate from the handshake. Every build, host and client now runs the fixed 128 Hz tick; `Hello` and `Welcome` no longer carry a tick length. |
 
-The current protocol version is 34, defined by `PROTOCOL_VERSION` in
+The current protocol version is 35, defined by `PROTOCOL_VERSION` in
 `crates/rm-simulator-server/src/protocol.rs`. GNS sends redundant controls
 and retried shot intents unreliably; scheduling receipts and terminal shot results
 remain reliable. There is no shooter-view fire path or input-acknowledgement
@@ -517,7 +518,7 @@ effective disk. A struck module's lights turn grey for 50 ms after confirmed fee
 ### Referee and match clock
 
 By default the field carries a referee that runs a match under the RMUC 2026
-rules on the same default 1 ms clock: a 5 s countdown, a 7 min round, and two teams,
+rules on the same fixed 128 Hz clock: a 5 s countdown, a 7 min round, and two teams,
 red and blue. The CAD paints its red markings on the +x half of the field
 and its blue markings on the −x half, so red owns the outpost standing at
 x > 0 and the rune face that looks towards +x, and blue the other pair
