@@ -20,7 +20,11 @@ use crate::session::Session;
 /// Muzzle offset from the gun pivot along the view line. Driving, the pivot is
 /// the turret and this is the barrel length; flying, the pivot is the eye and
 /// the muzzle also sits below the view line.
-pub const MUZZLE_FORWARD_M: f32 = 0.35;
+///
+/// It is the physics barrel length the host launches from, published once by
+/// `rm_simulator_physics::chassis`, so the muzzle a player sees cannot drift
+/// from the point their ball actually leaves.
+pub const MUZZLE_FORWARD_M: f32 = rm_simulator_world::chassis::MUZZLE_FORWARD_M as f32;
 /// Muzzle offset below the view line in metres while flying. Driving levels the
 /// muzzle with the turret, since the gun pivot already sits on the barrel axis.
 pub const MUZZLE_DROP_M: f32 = 0.05;
@@ -36,8 +40,10 @@ const DRIVE_FAST_M_S: f64 = 5.0;
 const SPIN_RAD_S: f64 = 6.0;
 const FOLLOW_GAIN_PER_S: f64 = 6.0;
 const MAX_FOLLOW_RAD_S: f64 = 8.0;
-/// Gimbal pitch range while driving.
-const DRIVE_PITCH_RAD: (f32, f32) = (-0.52, 0.79);
+/// Gimbal pitch range while driving, as (lowest, highest) radians. The auto-aim
+/// assist solves inside this same range, so an assist solution is always a pitch
+/// the player's own aim could have reached.
+pub(crate) const DRIVE_PITCH_RAD: (f32, f32) = (-0.52, 0.79);
 
 /// The local client's view: eye and gun pivot positions, view angles and mouse
 /// capture. Every role has one; a client with no chassis only ever flies it.
@@ -707,7 +713,7 @@ mod tests {
     fn installed_cad_packages() -> Vec<(String, CadAssets)> {
         let home = std::env::var_os("HOME").unwrap_or_default();
         [
-            crate::args::default_cad_assets(),
+            rm_simulator_server::cad_assets::default_cad_assets(),
             std::path::PathBuf::from(home).join("dev/RM/assets/rm2026-extracted"),
         ]
         .into_iter()

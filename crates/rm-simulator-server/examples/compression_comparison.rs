@@ -26,13 +26,11 @@
 //! ```
 use rm_simulator_server::{
     compression::{Codec, Compressor, Decompressor, dictionary},
-    layout::ChassisSpawner,
     protocol::{Command, ServerMessage},
-    simulation::Simulation,
     snapshot_codec::encode_player_message,
     udp_snapshot::{self, Decoder as BaselineDecoder, Encoder as BaselineEncoder, Wire},
+    workload,
 };
-use rm_simulator_world::{ChassisCommand, ChassisConfig, Field, FieldConfig, RefereeConfig, Team};
 use serde_json::Value;
 use std::time::Instant;
 
@@ -249,28 +247,12 @@ fn selected_row(workload: &str, name: &str, codec: Codec, checkpoints: &[Vec<u8>
 /// The compact checkpoint stream one workload publishes, exactly as the
 /// canonical probe and `network_bandwidth` build it.
 fn checkpoint_stream(players: usize, firing: bool) -> Vec<Vec<u8>> {
-    let mut config = FieldConfig {
-        referee: Some(RefereeConfig::alternating(2, 2)),
-        ..Default::default()
-    };
-    config.runes.push(config.runes[0]);
-    let mut simulation =
-        Simulation::new(Field::new(&config).unwrap(), false).with_spawner(ChassisSpawner {
-            config: ChassisConfig::default(),
-            terrain: None,
-        });
-    for i in 0..players {
-        let chassis = simulation
-            .spawn_chassis(if i % 2 == 0 { Team::Red } else { Team::Blue })
-            .unwrap();
+    let (mut simulation, chassis) = workload::simulation(players);
+    for &chassis in &chassis {
         simulation
             .apply(&Command::Chassis {
                 chassis,
-                command: ChassisCommand {
-                    forward_m_s: 1.,
-                    yaw_rate_rad_s: 0.4,
-                    ..Default::default()
-                },
+                command: workload::constant_drive(),
             })
             .unwrap();
     }

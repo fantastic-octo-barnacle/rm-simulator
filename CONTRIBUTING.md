@@ -68,9 +68,10 @@ just verify
 
 It runs the repository hooks, `cargo fmt --all -- --check`, `cargo check`,
 Clippy with denied warnings, the workspace tests, the crate-boundary and MPL
-notice scripts, the Python regression tests and `cargo deny`. The individual
-steps are also available as `just fmt`, `just check`, `just lint`, `just test`,
-`just deny`, `just module-deps`, `just mpl`, and `just hooks`. See the
+notice scripts, the field package inventory check, the Python regression tests
+and `cargo deny`. The individual steps are also available as `just fmt`, `just
+check`, `just lint`, `just test`, `just deny`, `just module-deps`, `just mpl`,
+`just field-check`, and `just hooks`. See the
 [development reference](docs/development.md) for the full target list and the
 order `just verify` uses.
 

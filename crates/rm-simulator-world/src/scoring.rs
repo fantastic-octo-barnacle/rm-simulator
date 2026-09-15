@@ -63,11 +63,17 @@ impl Field {
         match contact.target {
             ArmorTarget::Base { base, plate } => {
                 let state = &mut self.bases[base as usize];
-                // Outpost immunity applies during a match; Idle is training.
-                let protected = self
-                    .referee
-                    .as_ref()
-                    .is_some_and(|r| r.base_protected(state.config.team));
+                // Outpost immunity applies during a match; Idle is training. The
+                // outposts' own state is the authority, so cover cannot disagree
+                // with the tower it reflects.
+                let outposts_destroyed: Vec<bool> = self
+                    .outposts
+                    .iter()
+                    .map(|outpost| outpost.hp() == 0)
+                    .collect();
+                let protected = self.referee.as_ref().is_some_and(|referee| {
+                    referee.base_protected(state.config.team, &outposts_destroyed)
+                });
                 if !protected {
                     let damage = base::damage(contact.caliber, plate, offset);
                     let defense = self

@@ -23,7 +23,12 @@ use rm_simulator_world::{
 const MAX_RANGE_M: f64 = 40.;
 const MAX_FLIGHT_S: f64 = 2.5;
 const AIM_CONE_RAD: f64 = 0.10;
-const PITCH_LIMIT: [f64; 2] = [-0.52, 0.79];
+/// The gimbal pitch range the player's manual aim is clamped to. Solving inside
+/// the same range keeps an assist solution reachable by hand.
+const PITCH_LIMIT: [f64; 2] = [
+    crate::controls::DRIVE_PITCH_RAD.0 as f64,
+    crate::controls::DRIVE_PITCH_RAD.1 as f64,
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TargetId {

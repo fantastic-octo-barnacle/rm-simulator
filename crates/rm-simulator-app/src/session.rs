@@ -6,14 +6,12 @@ use bevy::prelude::*;
 use rm_simulator_server::{
     cad_assets::CadAssets,
     clock::TimeSource,
-    layout::LayoutOptions,
     net::{Client, Server, describe_seat},
     protocol::{Command, PlayerInfo, Role, WeaponConfig},
     simulation::{BuildProgress, Simulation},
 };
 use rm_simulator_world::{
-    ChassisCommand, ChassisConfig, ChassisSnapshot, FieldSnapshot, RefereeSnapshot, RuneKind, Team,
-    projectile::ProjectilePolicy,
+    ChassisCommand, ChassisConfig, ChassisSnapshot, FieldSnapshot, RefereeSnapshot, Team,
 };
 use std::collections::VecDeque;
 
@@ -191,21 +189,22 @@ impl Session {
         // The tick length is process-wide and frozen on first use, so the first
         // match of a run fixes it. A later match asking for another rate is
         // refused here rather than silently running at the frozen one.
-        let wanted = rm_simulator_world::tick_ns_for_hz(args.physics_rate_hz).ok_or_else(|| {
-            anyhow::anyhow!("unsupported physics rate {} Hz", args.physics_rate_hz)
-        })?;
+        let wanted =
+            rm_simulator_world::tick_ns_for_hz(args.host.physics_rate_hz).ok_or_else(|| {
+                anyhow::anyhow!("unsupported physics rate {} Hz", args.host.physics_rate_hz)
+            })?;
         let frozen = rm_simulator_world::set_tick_ns(wanted);
         anyhow::ensure!(
             frozen == wanted,
             "this run already froze the physics rate at {} Hz; relaunch with --physics-rate-hz {}",
             rm_simulator_world::hz_for_tick_ns(frozen).unwrap_or(0),
-            args.physics_rate_hz,
+            args.host.physics_rate_hz,
         );
         let role = args.role();
         let (client, host) = if let Some(address) = &args.connect {
             progress(0.3, "Connecting to host");
             (
-                match args.transport {
+                match args.host.transport {
                     rm_simulator_server::net::Transport::Gns => Client::connect_udp_with_password(
                         address,
                         &args.name,
@@ -228,27 +227,12 @@ impl Session {
             )
         } else {
             let team: Team = args.team.into();
-            let options = LayoutOptions {
-                rune: (!args.no_rune).then_some(if args.big_rune {
-                    RuneKind::Big
-                } else {
-                    RuneKind::Small
-                }),
-                outpost_speed_rad_s: args.outpost_speed_rad_s,
-                terrain: !args.no_field_collision,
-                referee: !args.no_referee,
-                physics_rate_hz: args.physics_rate_hz,
-                projectile_policy: if args.no_projectile_retirement {
-                    ProjectilePolicy::default().without_retirement()
-                } else {
-                    ProjectilePolicy::default()
-                },
-            };
+            let options = args.host.layout_options();
             let simulation = Simulation::from_cad(
                 cad,
                 &options,
                 Some(ChassisConfig::default()),
-                args.start_paused,
+                args.host.start_paused,
                 |stage| match stage {
                     BuildProgress::ReadingTerrain => progress(0.3, "Reading terrain triangles"),
                     BuildProgress::BuildingPhysics => progress(0.5, "Building field physics"),
@@ -261,13 +245,13 @@ impl Session {
             .with_password(args.password.clone())
             .with_weapon(args.weapon())
             .map_err(anyhow::Error::msg)?
-            .with_weapon_limits(args.weapon_limits())
+            .with_weapon_limits(args.host.weapon_limits())
             .map_err(anyhow::Error::msg)?;
-            let address = args.listen.as_deref().unwrap_or("127.0.0.1:0");
-            let server = if args.listen.is_none() && args.lobby_name.is_none() {
+            let address = args.host.listen.as_deref().unwrap_or("127.0.0.1:0");
+            let server = if args.host.listen.is_none() && args.lobby_name.is_none() {
                 Server::in_process(simulation, false)
             } else {
-                match args.transport {
+                match args.host.transport {
                     rm_simulator_server::net::Transport::Gns => {
                         Server::bind_udp_suspended(address, simulation)
                     }
@@ -279,14 +263,14 @@ impl Session {
             server.spawn_clock()?;
             let client =
                 server.connect_owner(&args.name, team, role, args.robot, spawn, spawn_yaw_deg)?;
-            if args.listen.is_some() {
+            if args.host.listen.is_some() {
                 println!(
                     "hosting players using {:?} at {}",
-                    args.transport,
+                    args.host.transport,
                     server.local_addr()
                 );
             }
-            let http = if let Some(address) = &args.http {
+            let http = if let Some(address) = &args.host.http {
                 let http = rm_simulator_server::http::HttpServer::bind(address, server.handle())
                     .map_err(|e| anyhow::anyhow!("serving the referee panel on {address}: {e}"))?;
                 println!("referee panel: http://{}/", http.local_addr());
@@ -302,7 +286,7 @@ impl Session {
                         &args.lobby_host,
                         name,
                         server.local_addr(),
-                        args.transport,
+                        args.host.transport,
                         !args.password.is_empty(),
                         args.public_lobby,
                         &args.advertise_address,
@@ -449,7 +433,7 @@ impl Session {
             remote_history,
             client,
             host: None,
-            singleplayer: args.connect.is_none() && args.listen.is_none(),
+            singleplayer: args.connect.is_none() && args.host.listen.is_none(),
             snapshot,
             paused,
             team,
@@ -1309,7 +1293,7 @@ fn test_session_mode(paused: bool, predict: bool, time: TimeSource) -> Session {
         "--no-referee",
     ])
     .unwrap();
-    args.start_paused = paused;
+    args.host.start_paused = paused;
     args.no_prediction = !predict;
     let cad = test_cad_assets();
     let mut opened = Session::open(&args, &cad, [2.0, 3.0, 1.0], 90.0, |_, _| {}).unwrap();

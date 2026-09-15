@@ -36,6 +36,7 @@ The shell sets `CARGO_TARGET_DIR="$PWD/target/nix"`, so Nix builds land in
 | `just hooks` | Run every `prek` hook over all files |
 | `just module-deps` | Crate boundaries via `scripts/check-module-dependencies.py` |
 | `just mpl` | MPL-2.0 notice via `scripts/check-mpl-compliance.py` |
+| `just field-check` | Verify the tracked field package inventory and LFS pointers |
 | `just verify` | The full pre-PR gate; see below |
 | `just run <args>` / `just server <args>` | Interactive app / headless server |
 | `just world-test` | Renderer-independent world tests |
@@ -57,9 +58,14 @@ conflicts, YAML/JSON/TOML validity, line endings, large files, `typos`, `actionl
 5. `cargo test --workspace --all-features --locked`
 6. `python3 scripts/check-module-dependencies.py`
 7. `python3 scripts/check-mpl-compliance.py`
-8. `python3 -m unittest discover -s scripts/tests -p '<pattern>'` for `test_network*.py`, `test_render_benchmark.py`, `test_mpl_compliance.py`, `test_release*.py` and `test_ci.py`, in that order
-9. `python3 -m doctest scripts/check-mpl-compliance.py`
-10. `cargo deny check advisories bans licenses sources`
+8. `python3 scripts/stage-release-field.py --verify-only --allow-lfs-pointers`, the field inventory CI checks (also `just field-check`)
+9. `python3 -m unittest discover -s scripts/tests`, every Python regression test
+10. `python3 -m doctest scripts/check-mpl-compliance.py`
+11. `cargo deny check advisories bans licenses sources`
+
+Steps 6-11 are the same commands CI runs, so a green `just verify` should mean a
+green CI job. If the two lists ever disagree, fix the target rather than adding a
+second command line.
 
 Run it before opening a pull request, after compilation has finished.
 

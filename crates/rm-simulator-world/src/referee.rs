@@ -670,7 +670,12 @@ pub struct Referee {
     stage: RuneStage,
     teams: [TeamState; 2],
     robots: Vec<RobotSnapshot>,
-    outposts_destroyed: Vec<bool>,
+    /// Outposts whose destruction has already been announced, in outpost
+    /// index order. This is announcement memory for the
+    /// [`RefereeEvent::OutpostDestroyed`] event only: cover reads the outpost
+    /// states the field reports, so a destruction that was never announced can
+    /// cost an event but can never wrongly leave a base immune.
+    outposts_announced: Vec<bool>,
     events: VecDeque<TimedEvent>,
     now_ns: u64,
 }
@@ -709,7 +714,7 @@ impl Referee {
             stage: RuneStage::Small,
             teams: [TeamState::fresh(), TeamState::fresh()],
             robots: Vec::new(),
-            outposts_destroyed: vec![false; outposts],
+            outposts_announced: vec![false; outposts],
             events: VecDeque::new(),
             now_ns: 0,
             config,
@@ -980,14 +985,19 @@ impl Referee {
             .map_or(0, |buff| buff.defense_pct)
     }
     /// Section 5.5.1 outpost protection, disabled in Idle training.
-    pub fn base_protected(&self, team: Team) -> bool {
+    ///
+    /// `outposts_destroyed` is the field's per-outpost destruction state in
+    /// outpost index order. The field owns the outposts, so this reads them
+    /// rather than a copy kept here: a base is immune exactly while a tower of
+    /// its team still stands, whatever the event log has been told.
+    pub fn base_protected(&self, team: Team, outposts_destroyed: &[bool]) -> bool {
         self.phase != MatchPhase::Idle
             && self
                 .config
                 .outpost_teams
                 .iter()
-                .zip(&self.outposts_destroyed)
-                .any(|(owner, dead)| *owner == team && !dead)
+                .zip(outposts_destroyed)
+                .any(|(owner, destroyed)| *owner == team && !destroyed)
     }
     /// Record a base strike the field already applied to the physical base.
     /// Reaching zero HP finishes a running match.
@@ -1018,11 +1028,16 @@ impl Referee {
             }
         }
     }
-    /// Note outposts whose HP reached zero since the last call.
+    /// Note every outpost's destruction state, in outpost index order, and
+    /// announce each newly destroyed one: it opens its team's base cover and
+    /// records an [`RefereeEvent::OutpostDestroyed`]. Calling this repeatedly
+    /// with the same states announces nothing further.
     pub fn observe_outposts(&mut self, destroyed: impl IntoIterator<Item = bool>) {
-        for (index, now) in destroyed.into_iter().enumerate() {
-            if index < self.outposts_destroyed.len() && now && !self.outposts_destroyed[index] {
-                self.outposts_destroyed[index] = true;
+        for (index, destroyed) in destroyed.into_iter().enumerate() {
+            if index >= self.outposts_announced.len() {
+                break;
+            }
+            if destroyed && !self.outposts_announced[index] {
                 let team = self.config.outpost_teams[index];
                 self.base_open[team.index()] = true;
                 self.push_event(RefereeEvent::OutpostDestroyed {
@@ -1030,9 +1045,7 @@ impl Referee {
                     team,
                 });
             }
-            if index < self.outposts_destroyed.len() {
-                self.outposts_destroyed[index] = now;
-            }
+            self.outposts_announced[index] = destroyed;
         }
     }
 
@@ -1125,7 +1138,7 @@ impl Referee {
                 self.gameplay.reset();
                 self.stage = RuneStage::Small;
                 self.schedule_index = 0;
-                self.outposts_destroyed.fill(false);
+                self.outposts_announced.fill(false);
                 for (index, rune) in runes.iter_mut().enumerate() {
                     if index < self.config.rune_teams.len() {
                         rune.set_auto_restart(false);
@@ -1885,12 +1898,36 @@ mod tests {
             }
         ));
         assert_eq!(destroyed[0].match_time_ns, Some(2_800_000_002));
+        // Cover is read from the states the caller reports, not the announcement
+        // memory: red's tower still stands, blue's does not.
+        assert!(referee.base_protected(Team::Red, &[false, true]));
+        assert!(!referee.base_protected(Team::Blue, &[false, true]));
         // Finish early and the clock freezes.
         referee
             .command(RefereeCommand::FinishMatch, 8_000_000_000, &mut runes)
             .unwrap();
         assert_eq!(referee.snapshot().match_time_ns, 3_000_000_000);
         assert_eq!(referee.tick(1, &mut runes), Err(RuneError::TimeReversal));
+    }
+
+    #[test]
+    fn base_cover_follows_the_outposts_the_caller_reports() {
+        let mut referee = referee();
+        let mut runes = runes();
+        // Idle is training: no tower protects a base there.
+        assert!(!referee.base_protected(Team::Red, &[false, false]));
+        referee
+            .command(RefereeCommand::StartMatch, 0, &mut runes)
+            .unwrap();
+        assert_ne!(referee.snapshot().phase, MatchPhase::Idle);
+        // Both towers stand, so both bases are covered.
+        assert!(referee.base_protected(Team::Red, &[false, false]));
+        assert!(referee.base_protected(Team::Blue, &[false, false]));
+        // Losing red's tower drops only red's cover. Cover follows the flags, so
+        // an unannounced destruction cannot leave the base wrongly immune.
+        assert!(!referee.base_protected(Team::Red, &[true, false]));
+        assert!(referee.base_protected(Team::Blue, &[true, false]));
+        assert!(!referee.base_protected(Team::Red, &[true, true]));
     }
 
     #[test]

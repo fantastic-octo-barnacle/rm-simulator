@@ -40,13 +40,14 @@ verify:
     cargo test --workspace --all-features --locked
     python3 scripts/check-module-dependencies.py
     python3 scripts/check-mpl-compliance.py
-    python3 -m unittest discover -s scripts/tests -p 'test_network*.py'
-    python3 -m unittest discover -s scripts/tests -p 'test_render_benchmark.py'
-    python3 -m unittest discover -s scripts/tests -p 'test_mpl_compliance.py'
-    python3 -m unittest discover -s scripts/tests -p 'test_release*.py'
-    python3 -m unittest discover -s scripts/tests -p 'test_ci.py'
+    python3 scripts/stage-release-field.py --verify-only --allow-lfs-pointers
+    python3 -m unittest discover -s scripts/tests
     python3 -m doctest scripts/check-mpl-compliance.py
     cargo deny check advisories bans licenses sources
+
+# The field package inventory CI checks, without staging a release.
+field-check:
+    python3 scripts/stage-release-field.py --verify-only --allow-lfs-pointers
 
 # Standalone network harness tests, including real UDP and process cleanup.
 network-test:

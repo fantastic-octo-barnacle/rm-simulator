@@ -21,6 +21,42 @@
   and the host weapon settings. The server's `--robot` is gone too. Both
   peers must update.
 
+- Share the host command line between the two binaries. The field, rune, weapon
+  and chassis options now live in `rm_simulator_server::host_args::HostArgs`,
+  which the app and the headless host both flatten, so a new option is declared
+  once and the two cannot disagree about a default. Every option keeps its name,
+  default and accepted values; `rm-simulator-server` now also accepts a bare
+  `--listen`/`--http` (both resolve to the same defaults as before), and the app's
+  `--connect` refuses every shared host option except `--robot`, which names the
+  pilot rather than the host and travels in `Hello`.
+
+- Remove the `ShotFinished` message, which no host ever produced: a shot's end is
+  reported as a `ShotResult`. The client loop that read it could never iterate.
+  The wire is now protocol 34, so both peers must update.
+
+- Remove the stale `scripts/capture-rune-reference.py`, which still handshook
+  with protocol 6. `just verify` now runs the same Python commands as CI (every
+  module under `scripts/tests`, two of which its pattern list skipped) plus the
+  field package inventory check; `just field-check` runs that check alone.
+
+- Fix the 150 % centre-square bonus to round the same way on both scoring paths:
+  a base plate and an outpost implemented the same rule with different rounding,
+  so the odd Table 5-2 value (17 mm on a base's upper front) answered 8 through
+  the base path and 7 through the outpost path. Both now round up.
+
+- Read base cover from the field's outposts rather than the referee's copy of
+  their destruction, so a base is immune exactly while a tower of its team still
+  stands. The referee keeps that copy only to avoid repeating an
+  `OutpostDestroyed` event.
+
+- Derive the drawn muzzle offset from the physics barrel length, and share the
+  gimbal pitch range and the provisional-ball id bit between the aim assist, the
+  drawn shots and the shot retirement path, so each value has one definition.
+
+- Move the deterministic bandwidth workload into `rm_simulator_server::workload`,
+  used by the probe and all four measurement examples; the five copies of the
+  field builder had to be edited together to stay comparable.
+
 - Reject binary checkpoints that exceed the decoder’s traversal or frame-size
   limits before transmission.
 

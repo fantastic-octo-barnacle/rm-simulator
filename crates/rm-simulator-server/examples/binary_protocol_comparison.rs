@@ -22,13 +22,12 @@ mod fixed_point;
 use fixed_point::Quantization;
 use rm_simulator_server::{
     compression::{Codec, Compressor, Decompressor},
-    layout::ChassisSpawner,
     protocol::{Command, ServerMessage},
-    simulation::Simulation,
     snapshot_codec::{decode_player_message, encode_player_message},
     udp_snapshot::{self, Decoder, Encoder},
+    workload,
 };
-use rm_simulator_world::{ChassisCommand, ChassisConfig, Field, FieldConfig, RefereeConfig, Team};
+use rm_simulator_world::{ChassisCommand, Field, FieldConfig, Team};
 use serde_json::Value;
 use std::time::Instant;
 
@@ -92,7 +91,7 @@ fn main() {
         ("fire", 2, true, false),
         ("skirmish", 12, true, true),
     ] {
-        let checkpoints = workload(name, players, firing, dynamic);
+        let checkpoints = checkpoint_stream(name, players, firing, dynamic);
         for (compression, codec) in [
             ("none", None),
             ("deflate-1", Some(Codec::deflate(1))),
@@ -141,24 +140,8 @@ fn main() {
     }
 }
 
-fn workload(name: &str, players: usize, firing: bool, dynamic: bool) -> Vec<Vec<u8>> {
-    let mut config = FieldConfig {
-        referee: Some(RefereeConfig::alternating(2, 2)),
-        ..Default::default()
-    };
-    config.runes.push(config.runes[0]);
-    let mut simulation =
-        Simulation::new(Field::new(&config).unwrap(), false).with_spawner(ChassisSpawner {
-            config: ChassisConfig::default(),
-            terrain: None,
-        });
-    let mut ids = (0..players)
-        .map(|i| {
-            simulation
-                .spawn_chassis(if i % 2 == 0 { Team::Red } else { Team::Blue })
-                .unwrap()
-        })
-        .collect::<Vec<_>>();
+fn checkpoint_stream(name: &str, players: usize, firing: bool, dynamic: bool) -> Vec<Vec<u8>> {
+    let (mut simulation, mut ids) = workload::simulation(players);
     let mut stream = Vec::new();
     let mut owner_bytes = 0;
     for frame in 0..FRAMES {
@@ -171,22 +154,25 @@ fn workload(name: &str, players: usize, firing: bool, dynamic: bool) -> Vec<Vec<
         if frame == 0 || (dynamic && frame.is_multiple_of(8)) {
             for &id in &ids {
                 let phase = frame as f64 * 0.03 + f64::from(id);
+                // The steady runs drive the shared constant command; the idle
+                // run stands still and the dynamic one scripts its own motion.
+                let command = if name == "idle" {
+                    ChassisCommand::default()
+                } else if dynamic {
+                    ChassisCommand {
+                        forward_m_s: 2. * phase.sin(),
+                        left_m_s: phase.cos(),
+                        yaw_rate_rad_s: 0.4,
+                        aim_yaw_rad: phase.sin(),
+                        aim_pitch_rad: 0.2 * phase.cos(),
+                    }
+                } else {
+                    workload::constant_drive()
+                };
                 simulation
                     .apply(&Command::Chassis {
                         chassis: id,
-                        command: ChassisCommand {
-                            forward_m_s: if name == "idle" {
-                                0.
-                            } else if dynamic {
-                                2. * phase.sin()
-                            } else {
-                                1.
-                            },
-                            left_m_s: if dynamic { phase.cos() } else { 0. },
-                            yaw_rate_rad_s: if name == "idle" { 0. } else { 0.4 },
-                            aim_yaw_rad: if dynamic { phase.sin() } else { 0. },
-                            aim_pitch_rad: if dynamic { 0.2 * phase.cos() } else { 0. },
-                        },
+                        command,
                     })
                     .unwrap();
             }

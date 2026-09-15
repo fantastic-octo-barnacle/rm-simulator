@@ -2,15 +2,11 @@
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
 //! Shared training workloads; kept separate from bandwidth evaluation runs.
 use rm_simulator_server::{
-    layout::ChassisSpawner,
     protocol::{Command, ServerMessage},
-    simulation::Simulation,
     snapshot_codec::encode_player_message,
+    workload,
 };
-use rm_simulator_world::{
-    ChassisCommand, ChassisConfig, ChassisSnapshot, Field, FieldConfig, RefereeCommand,
-    RefereeConfig, Team,
-};
+use rm_simulator_world::{ChassisCommand, ChassisSnapshot, RefereeCommand, Team};
 use serde_json::Value;
 
 /// Production publication period in simulation ticks (1 ms each).
@@ -81,24 +77,7 @@ pub const SCENARIOS: [Scenario; 5] = [
 
 /// Independent compact values from one deterministic training run.
 pub fn checkpoints(scenario: &Scenario) -> Vec<Value> {
-    let mut config = FieldConfig {
-        referee: Some(RefereeConfig::alternating(2, 2)),
-        ..Default::default()
-    };
-    config.runes.push(config.runes[0]);
-    let mut simulation =
-        Simulation::new(Field::new(&config).unwrap(), false).with_spawner(ChassisSpawner {
-            config: ChassisConfig::default(),
-            terrain: None,
-        });
-    let mut pilots = Vec::new();
-    for i in 0..scenario.chassis {
-        pilots.push(
-            simulation
-                .spawn_chassis(if i % 2 == 0 { Team::Red } else { Team::Blue })
-                .unwrap(),
-        );
-    }
+    let (mut simulation, pilots) = workload::simulation(scenario.chassis);
     let mut bots = Vec::new();
     if scenario.match_running {
         simulation

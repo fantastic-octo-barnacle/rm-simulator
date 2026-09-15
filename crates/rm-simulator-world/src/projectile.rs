@@ -85,12 +85,34 @@ pub struct ArmorHit {
     pub damage: u32,
 }
 
-const CENTER_BONUS_HALF_M: f64 = 0.005;
+/// Half-width of the 10 mm centre square that earns the 150 % attack buff
+/// (section 5.5.1). The rule states the square's size, so this is half of it.
+pub(crate) const CENTER_BONUS_HALF_M: f64 = 0.005;
+
+/// Whether a hit offset lies inside the 10 mm centre square (section 5.5.1).
+/// Both scoring paths test the square through this, so they cannot disagree
+/// about its size.
+pub(crate) fn in_centre_square(offset_m: [f64; 2]) -> bool {
+    offset_m
+        .iter()
+        .all(|value| value.abs() <= CENTER_BONUS_HALF_M)
+}
+
+/// The 150 % centre-square damage for `amount`, rounded up.
+///
+/// Up rather than down, because the Table 5-2 value a 17 mm round does to a
+/// base's upper front is 5: rounding 7.5 down answers 7 and drops the larger
+/// half of the buff. One implementation serves bases and outposts, so a future
+/// odd outpost value cannot round differently from a base.
+pub(crate) fn centre_bonus(amount: u32) -> u32 {
+    (amount * 3).div_ceil(2)
+}
+
 /// Section 5.5.1: strikes inside the 10 mm centre square earn a 150% attack buff.
 pub(crate) fn outpost_damage(caliber: Caliber, offset_m: [f64; 2]) -> u32 {
     let base = caliber.outpost_damage();
-    if offset_m[0].abs() <= CENTER_BONUS_HALF_M && offset_m[1].abs() <= CENTER_BONUS_HALF_M {
-        base * 3 / 2
+    if in_centre_square(offset_m) {
+        centre_bonus(base)
     } else {
         base
     }
@@ -112,5 +134,18 @@ mod tests {
         assert_eq!(outpost_damage(Caliber::Mm17, [0.004, -0.004]), 30);
         assert_eq!(outpost_damage(Caliber::Mm42, [0., 0.]), 300);
         assert_eq!(Shot::at_limit(Caliber::Mm42).speed_m_s, 12.);
+    }
+
+    #[test]
+    fn the_centre_square_edges_and_the_odd_base_are_pinned() {
+        // Exactly on the boundary counts as inside, as the rule's square does.
+        assert!(in_centre_square([0.005, -0.005]));
+        assert!(!in_centre_square([0.0051, 0.0]));
+        assert!(!in_centre_square([0.0, 0.02]));
+        // 5 is the one odd Table 5-2 value (17 mm on a base's upper front), and
+        // both scoring paths must round it the same way: 7.5 rounds up to 8.
+        assert_eq!(centre_bonus(5), 8);
+        assert_eq!(centre_bonus(20), 30);
+        assert_eq!(centre_bonus(200), 300);
     }
 }

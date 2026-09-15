@@ -29,7 +29,9 @@ use std::io::{self, BufRead, Read, Write};
 /// Version 33 lets each pilot name the [`Robot`] it drives in Hello; the
 /// chassis assignment and the roster repeat it, and the gun caliber follows
 /// the robot instead of one host setting.
-pub const PROTOCOL_VERSION: u32 = 33;
+/// Version 34 removes the `ShotFinished` message, which no host ever produced:
+/// a shot's end was only ever reported as a `ShotResult`.
+pub const PROTOCOL_VERSION: u32 = 34;
 
 /// The refusal a host sends a client whose physics rate differs from its own.
 /// Both are stated in Hz where the rate is one that is offered, and otherwise
@@ -974,16 +976,6 @@ pub enum ServerMessage {
     /// Local diagnostics for the sender's connection. Missing native
     /// measurements stay missing rather than being reported as zero.
     Telemetry(crate::network_stats::HostTelemetry),
-    /// The host has stopped tracking a shot, because it was resolved or aged
-    /// out of the pending schedule.
-    ShotFinished {
-        /// Chassis that fired.
-        shooter: u32,
-        /// Client-assigned shot identity.
-        shot_id: u64,
-        /// Why the shot left the schedule, or `None` when no reason applies.
-        reason: Option<String>,
-    },
     /// Admission receipt only. No projectile or ammunition change is confirmed.
     ShotScheduled {
         /// Chassis that will fire.
