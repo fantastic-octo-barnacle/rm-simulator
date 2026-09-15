@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
-//! Projectile flight and raw armor contacts in a Rapier world stepped once per
-//! explicit 1 ms tick. Chassis and projectiles share the same solver; target
-//! endpoint poses and mechanism states come from the caller.
+//! Projectile flight and raw armor contacts in a Rapier world that integrates
+//! every explicit tick in fixed substeps of at most [`SUBSTEP_MAX_NS`]. Chassis
+//! and projectiles share the same solver; target endpoint poses and mechanism
+//! states come from the caller.
 //!
 //! Caliber helpers retain the simulator's nominal physical and rule lookup
 //! values for compatibility. Stepping does not apply detection intervals,
@@ -50,6 +51,21 @@ pub const RETIRE_DWELL_NS: u64 = 50_000_000;
 /// sustained-fire measurement on the CAD field: it cuts the mean live-ball
 /// count by 34% without changing aggregate scoring.
 pub const RETIRE_SPEED_M_S: f64 = 2.0;
+/// Longest integration slice of a world tick, in nanoseconds. A 17 mm shot at
+/// the 25 m/s limit crosses further in one 128 Hz tick than the thin armour
+/// housings are deep, and Rapier CCD does not recover the hit, so the ballistic
+/// world never integrates more than this at once whatever the tick length. A
+/// 1 ms tick is a single slice and steps exactly as before.
+const SUBSTEP_MAX_NS: u64 = 1_000_000;
+
+/// Solver runs per world tick: the tick split into [`SUBSTEP_MAX_NS`] slices,
+/// so a coarse tick still integrates ballistics at the fine step the contact
+/// margins were tuned at.
+fn substep_count() -> usize {
+    usize::try_from(tick_ns().div_ceil(SUBSTEP_MAX_NS))
+        .unwrap_or(1)
+        .max(1)
+}
 
 /// How long a ball stays in the world: its own contact restitution, the hard
 /// flight limit and the optional low-speed retirement rule.
@@ -584,7 +600,7 @@ impl WorldPhysics {
     ///     None,
     /// )?;
     /// assert!(!physics.is_idle());
-    /// for tick in 0..2_000 {
+    /// for tick in 0..2_000_000_000 / tick_ns() {
     ///     physics.step(tick * tick_ns(), &frames)?;
     /// }
     ///
@@ -597,8 +613,9 @@ impl WorldPhysics {
     pub fn new(faces: &[TargetFace], floor_height_m: f64) -> Self {
         let mut world = PhysicsWorld::new();
         world.gravity = Vector::new(0., 0., -GRAVITY_M_S2);
-        world.integration_parameters.dt = tick_ns() as f64 * 1e-9;
-        world.integration_parameters.min_ccd_dt = tick_ns() as f64 * 1e-9 / 100.;
+        let substep_s = tick_ns() as f64 * 1e-9 / substep_count() as f64;
+        world.integration_parameters.dt = substep_s;
+        world.integration_parameters.min_ccd_dt = substep_s / 100.;
         world.integration_parameters.max_ccd_substeps = 4;
         world.insert_collider(
             ColliderBuilder::new(SharedShape::halfspace(Vector::Z))
@@ -1299,10 +1316,12 @@ impl WorldPhysics {
     /// Advance one tick from `prev_ns`, taking the target face poses at the
     /// start and end of the tick from `frames`.
     ///
-    /// Returns every contact first seen this tick, oldest projectile first.
-    /// Applying detection intervals, damage and buffs is the caller's business.
-    /// Errors when the face count or identity order no longer matches the
-    /// targets the world was built with.
+    /// The solver runs [`SUBSTEP_MAX_NS`]-bounded slices, interpolating the
+    /// target poses across the tick, so a coarse tick still carries fast shots
+    /// past no armour between solver runs. Returns every contact first seen
+    /// this tick, oldest projectile first. Applying detection intervals,
+    /// damage and buffs is the caller's business. Errors when the face count or
+    /// identity order no longer matches the targets the world was built with.
     ///
     /// ```
     /// use rm_simulator_physics::{
@@ -1385,28 +1404,85 @@ impl WorldPhysics {
             if !pose_is_valid(start.pose) || !pose_is_valid(end.pose) {
                 return Err("target face pose must be finite with a unit rotation");
             }
-            let body = &mut self.world.bodies[target.body];
-            if teleport {
-                body.set_position(pose(start.pose), true);
-            }
-            body.set_next_kinematic_position(pose(end.pose));
         }
         let policy = self.policy;
-        self.velocities_before.clear();
-        for projectile in &self.projectiles {
-            let body = &mut self.world.bodies[projectile.body];
-            let velocity = body.linvel();
-            let area = std::f64::consts::PI * (projectile.caliber.diameter_m() / 2.).powi(2);
-            let drag = -0.5 * AIR_DENSITY_KG_M3 * DRAG_COEFFICIENT * area * velocity.length();
-            body.reset_forces(false);
-            body.add_force(velocity * drag, false);
-            self.velocities_before.push(velocity);
+        let substeps = substep_count();
+        let substep_s = tick_ns() as f64 * 1e-9 / substeps as f64;
+        let mut contacts = Vec::new();
+        for substep in 0..substeps {
+            let frac_prev = substep as f64 / substeps as f64;
+            let frac_next = (substep + 1) as f64 / substeps as f64;
+            for (target, (start, end)) in self.targets.iter().zip(frames.motions()) {
+                let body = &mut self.world.bodies[target.body];
+                if teleport && substep == 0 {
+                    body.set_position(pose(start.pose), true);
+                }
+                body.set_next_kinematic_position(pose(start.pose).lerp(&pose(end.pose), frac_next));
+            }
+            self.velocities_before.clear();
+            for projectile in &self.projectiles {
+                let body = &mut self.world.bodies[projectile.body];
+                let velocity = body.linvel();
+                let area = std::f64::consts::PI * (projectile.caliber.diameter_m() / 2.).powi(2);
+                let drag = -0.5 * AIR_DENSITY_KG_M3 * DRAG_COEFFICIENT * area * velocity.length();
+                body.reset_forces(false);
+                body.add_force(velocity * drag, false);
+                self.velocities_before.push(velocity);
+            }
+            for chassis in &mut self.chassis {
+                chassis.apply_forces(&mut self.world, substep_s);
+            }
+            self.world.step();
+            contacts
+                .extend(self.capture_contacts(frames, frac_prev, frac_next, substep_s, next_ns));
+            // Absorb perimeter shots the slice they cross the wall, so a fast
+            // shot cannot reach past the perimeter and bounce back inside. The
+            // convex XY volume also catches one that traverses an entire wall
+            // in a single slice.
+            let mut index = 0;
+            while index < self.projectiles.len() {
+                let shot = &self.projectiles[index];
+                let position = self.world.bodies[shot.body].translation();
+                let reason = if outside_projectile_bounds(
+                    self.projectile_bounds_m,
+                    position,
+                    shot.caliber.diameter_m() / 2.0,
+                ) {
+                    Some(RemovalReason::OutOfBounds)
+                } else if policy.retire_speed_m_s.is_some()
+                    && shot.dwell_since_ns.is_some_and(|since| {
+                        next_ns.saturating_sub(since) >= policy.retire_dwell_ns
+                    })
+                {
+                    Some(RemovalReason::Retired)
+                } else {
+                    None
+                };
+                if let Some(reason) = reason {
+                    let shot = self.projectiles.remove(index);
+                    self.record_removal(&shot, next_ns, reason);
+                    self.world.remove_body(shot.body);
+                } else {
+                    index += 1;
+                }
+            }
         }
-        for chassis in &mut self.chassis {
-            chassis.apply_forces(&mut self.world);
-        }
-        self.world.step();
         self.synced_ns = Some(next_ns);
+        Ok(contacts)
+    }
+    /// Contacts first seen by the substep that just stepped, which carried the
+    /// target motions between `frac_prev` and `frac_next` of the tick and
+    /// integrated for `dt_s` seconds. Latches and dwell windows stamp
+    /// `now_ns`, the end of the containing tick.
+    fn capture_contacts(
+        &mut self,
+        frames: &TargetFrames,
+        frac_prev: f64,
+        frac_next: f64,
+        dt_s: f64,
+        now_ns: u64,
+    ) -> Vec<Contact> {
+        let policy = self.policy;
         let mut contacts = Vec::new();
         for (projectile, velocity) in self
             .projectiles
@@ -1446,11 +1522,13 @@ impl WorldPhysics {
                 let (target_of_scorer, face_next, motion) = match scorer {
                     Scorer::Face(index) => {
                         let (start, end) = frames.motion(index);
+                        let from = pose(start.pose);
+                        let to = pose(end.pose);
                         (
                             self.targets[index].target,
-                            pose(end.pose),
+                            from.lerp(&to, frac_next),
                             PlateMotion::Kinematic {
-                                face_prev: pose(start.pose),
+                                face_prev: from.lerp(&to, frac_prev),
                             },
                         )
                     }
@@ -1491,8 +1569,7 @@ impl WorldPhysics {
                 let local = face_next.inverse_transform_point(world_point);
                 let plate_velocity = match motion {
                     PlateMotion::Kinematic { face_prev } => {
-                        (face_next.transform_point(local) - face_prev.transform_point(local))
-                            / (tick_ns() as f64 * 1e-9)
+                        (face_next.transform_point(local) - face_prev.transform_point(local)) / dt_s
                     }
                     PlateMotion::Body(body) => {
                         self.world.bodies[body].velocity_at_point(world_point)
@@ -1512,7 +1589,7 @@ impl WorldPhysics {
             }
             projectile.touching = touching;
             if touched_anything && projectile.first_contact_ns.is_none() {
-                projectile.first_contact_ns = Some(next_ns);
+                projectile.first_contact_ns = Some(now_ns);
             }
             // A spent ball has touched stationary scenery, still touches it and
             // stays below the residual speed for the whole dwell window. Any
@@ -1522,41 +1599,12 @@ impl WorldPhysics {
                 .retire_speed_m_s
                 .is_some_and(|limit| speed_m_s <= limit);
             if touching_scenery && slow {
-                projectile.dwell_since_ns.get_or_insert(next_ns);
+                projectile.dwell_since_ns.get_or_insert(now_ns);
             } else {
                 projectile.dwell_since_ns = None;
             }
         }
-        // Score contacts first, then absorb perimeter shots. The convex XY volume
-        // also catches a fast shot that traverses an entire wall in one tick.
-        let mut index = 0;
-        while index < self.projectiles.len() {
-            let shot = &self.projectiles[index];
-            let position = self.world.bodies[shot.body].translation();
-            let reason = if outside_projectile_bounds(
-                self.projectile_bounds_m,
-                position,
-                shot.caliber.diameter_m() / 2.0,
-            ) {
-                Some(RemovalReason::OutOfBounds)
-            } else if policy.retire_speed_m_s.is_some()
-                && shot
-                    .dwell_since_ns
-                    .is_some_and(|since| next_ns.saturating_sub(since) >= policy.retire_dwell_ns)
-            {
-                Some(RemovalReason::Retired)
-            } else {
-                None
-            };
-            if let Some(reason) = reason {
-                let shot = self.projectiles.remove(index);
-                self.record_removal(&shot, next_ns, reason);
-                self.world.remove_body(shot.body);
-            } else {
-                index += 1;
-            }
-        }
-        Ok(contacts)
+        contacts
     }
     /// Every projectile in flight, oldest first.
     pub fn snapshot(&self) -> Vec<ProjectileSnapshot> {
