@@ -39,7 +39,7 @@ to both the app and server.
 | `rm-simulator-physics` | Dynamics, raw contacts and prescribed armor motion |
 | Standalone `Game` | The larger engine described below; remains standalone |
 
-`RefereeSnapshot.gameplay` exposes the live state through TCP and `GET /api/state`.
+`RefereeSnapshot.gameplay` exposes the live state over GNS UDP and `GET /api/state`.
 The HTTP page's ammo/economy and equipment forms send ordinary referee commands
 through `POST /api/command` or `POST /api/referee`. Clients and hosts must use
 matching builds; `PROTOCOL_VERSION` in the server's `protocol.rs` is authoritative. Pilots and spectators cannot submit these edits.

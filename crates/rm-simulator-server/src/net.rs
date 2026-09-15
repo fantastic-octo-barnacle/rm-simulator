@@ -1,29 +1,30 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
-//! GNS UDP and TCP transports for the authoritative host and clients. TCP readers
-//! submit messages to the host mailbox; writer workers send ordered JSON-lines
-//! replies, one full snapshot per periodic frame. A slow client whose bounded
-//! outbox fills or whose socket stalls past [`WRITE_TIMEOUT`] is dropped.
-//! Broadcast encoding is shared by writers.
+//! GNS UDP transport and the in-process owner channel for the authoritative
+//! host and its clients. The GNS reactor submits decoded messages to the host
+//! mailbox; the per-peer codec in [`crate::udp_codec`] frames and paces every
+//! reply. A slow client whose bounded outbox fills or whose native backlog
+//! stalls past [`WRITE_TIMEOUT`] is dropped.
 pub use crate::host::BROADCAST_PERIOD;
 #[path = "presentation_clock.rs"]
 mod presentation_clock;
 use crate::host::{Host, HostHandle, PeerRegistration};
-use crate::lifecycle::{ConnectionStop, Listener, Stop};
+use crate::lifecycle::Stop;
 #[path = "gns_transport.rs"]
 mod gns_transport;
 /// Bounded per-peer output; only an unsent periodic frame is replaceable.
 #[path = "outbox.rs"]
 pub(crate) mod outbox;
+#[cfg(test)]
+use crate::protocol::PROTOCOL_VERSION;
 pub use crate::protocol::describe_seat;
 use crate::protocol::{
-    ClientMessage, Command, PROTOCOL_VERSION, PlayerInfo, Robot, Role, ServerMessage, Welcome,
-    read_message, write_message,
+    ClientMessage, Command, PlayerInfo, Robot, Role, ServerMessage, Welcome,
 };
 use crate::simulation::{Simulation, SimulationState};
 use rm_simulator_world::Team;
-use std::io::{self, BufReader};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::io;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
 use std::thread;
@@ -34,22 +35,12 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 pub(crate) static NATIVE_TEST: Mutex<()> = Mutex::new(());
 
-/// Gameplay transport. TCP remains available for protocol tools and comparisons.
-#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Transport {
-    /// Valve GameNetworkingSockets over UDP, the gameplay transport.
-    #[default]
-    Gns,
-    /// Ordered TCP lines, kept for protocol tools and transport comparisons.
-    Tcp,
-}
-
 /// A client must say hello within this long.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 /// A peer that accepts no bytes for this long is disconnected.
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Lines queued for one client before it is dropped as unresponsive; the
-/// writer coalesces snapshots, so this only fills while a write is stuck.
+/// Frames queued for one client before it is dropped as unresponsive; periodic
+/// state is replaceable, so this only fills while the carrier stalls.
 pub(crate) const OUTBOX_CAPACITY: usize = 256;
 /// Pending client commands, never coalesced across aim/fire or match controls.
 const CLIENT_COMMAND_CAPACITY: usize = 256;
@@ -57,11 +48,10 @@ const CLIENT_COMMAND_CAPACITY: usize = 256;
 const CLIENT_NOTICE_CAPACITY: usize = 256;
 const CLIENT_NOTICE_BYTES: usize = 1 << 20;
 
-/// An owned host. Dropping it stops its clock, listener and peer workers.
+/// An owned host. Dropping it stops its clock and peer workers.
 pub struct Server {
     host: Host,
     handle: HostHandle,
-    listener: Option<Listener>,
     udp: Option<gns_transport::UdpListener>,
     stop: Stop,
     owner: Mutex<Option<LocalOwner>>,
@@ -79,41 +69,7 @@ impl Server {
             host,
             handle,
             stop,
-            listener: None,
             udp: None,
-            owner: Mutex::new(None),
-        })
-    }
-    /// Transfer the simulation to its owner worker and start accepting clients.
-    /// Start real-time pacing with [`Server::spawn_clock`] or [`Server::run_clock`].
-    pub fn bind(addr: impl ToSocketAddrs, simulation: Simulation) -> io::Result<Server> {
-        Self::bind_with_readiness(addr, simulation, true)
-    }
-
-    /// Prepare a host whose clock will stay held until local scenery is ready.
-    pub fn bind_suspended(addr: impl ToSocketAddrs, simulation: Simulation) -> io::Result<Self> {
-        Self::bind_with_readiness(addr, simulation, false)
-    }
-
-    fn bind_with_readiness(
-        addr: impl ToSocketAddrs,
-        simulation: Simulation,
-        ready: bool,
-    ) -> io::Result<Self> {
-        let socket = TcpListener::bind(addr)?;
-        let host = Host::new(simulation, ready)?;
-        let handle = host.handle();
-        let stop = host.stop_signal();
-        let accepting = handle.clone();
-        let listener = Listener::start(socket, stop.clone(), "rm-accept", move |stream| {
-            serve_peer(accepting.clone(), stream, None);
-        })?;
-        Ok(Server {
-            host,
-            handle,
-            listener: Some(listener),
-            udp: None,
-            stop,
             owner: Mutex::new(None),
         })
     }
@@ -143,7 +99,7 @@ impl Server {
                 robot,
                 owner_spawn: Some((spawn_m, yaw_deg)),
                 outbox: sender,
-                stream: ConnectionStop::Worker(stop.clone()),
+                stream: stop.clone(),
             })
             .map_err(anyhow::Error::msg)?;
         let inbox = Arc::new(ClientInbox::for_transport(
@@ -225,7 +181,7 @@ impl Server {
                     })?,
             );
         let client = Client {
-            stream: ConnectionStop::Worker(stop),
+            stream: stop,
             outbox,
             inbox,
             welcome,
@@ -271,13 +227,10 @@ impl Server {
 
     /// The bound gameplay address, or `None` for a socket-free in-process host.
     pub fn listening_addr(&self) -> Option<SocketAddr> {
-        self.listener
-            .as_ref()
-            .map(|listener| listener.local_addr)
-            .or_else(|| self.udp.as_ref().map(|listener| listener.local_addr))
+        self.udp.as_ref().map(|listener| listener.local_addr)
     }
-    /// The bound address of the active listener, TCP or UDP.
-    /// Panics for an in-process host; use `listening_addr` when either mode is possible.
+    /// The bound address of the active GNS listener.
+    /// Panics for an in-process host; use `listening_addr` when either is possible.
     pub fn local_addr(&self) -> SocketAddr {
         self.listening_addr()
             .expect("in-process host has no gameplay listener")
@@ -329,9 +282,6 @@ impl Server {
     /// Call outside gameplay updates; completion waits for in-flight simulation work.
     pub fn shutdown(&mut self) {
         self.stop();
-        if let Some(listener) = &mut self.listener {
-            listener.shutdown();
-        }
         if let Some(listener) = &mut self.udp {
             listener.shutdown();
         }
@@ -360,154 +310,6 @@ impl Drop for LocalOwner {
             let _ = worker.join();
         }
     }
-}
-
-struct PeerWriter {
-    stream: TcpStream,
-    worker: Option<thread::JoinHandle<()>>,
-}
-impl Drop for PeerWriter {
-    fn drop(&mut self) {
-        let _ = self.stream.shutdown(Shutdown::Both);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-    }
-}
-
-fn serve_peer(handle: HostHandle, stream: TcpStream, owner_spawn: Option<([f64; 3], f64)>) {
-    let address = stream
-        .peer_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_else(|_| "?".into());
-    if let Err(error) = talk(&handle, stream, owner_spawn) {
-        eprintln!("client {address}: {error}");
-    }
-}
-
-fn talk(
-    handle: &HostHandle,
-    stream: TcpStream,
-    owner_spawn: Option<([f64; 3], f64)>,
-) -> io::Result<()> {
-    stream.set_nodelay(true)?;
-    stream.set_read_timeout(Some(HELLO_TIMEOUT))?;
-    let mut reader = BufReader::new(stream.try_clone()?);
-    let (name, wanted_team, role, robot, password) =
-        match read_message::<ClientMessage, _>(&mut reader)? {
-            Some(ClientMessage::Hello {
-                password,
-                protocol,
-                name,
-                team,
-                role,
-                robot,
-                tick_ns,
-            }) => {
-                if protocol != PROTOCOL_VERSION {
-                    let mut stream = stream;
-                    write_message(
-                        &mut stream,
-                        &ServerMessage::Rejected {
-                            reason: crate::protocol::version_mismatch(PROTOCOL_VERSION, protocol),
-                        },
-                    )?;
-                    return Ok(());
-                }
-                // One match runs at one physics rate, so a peer predicting at a
-                // different tick length is refused before it holds a seat.
-                if tick_ns != rm_simulator_world::tick_ns() {
-                    let mut stream = stream;
-                    write_message(
-                        &mut stream,
-                        &ServerMessage::Rejected {
-                            reason: crate::protocol::rate_mismatch(
-                                rm_simulator_world::tick_ns(),
-                                tick_ns,
-                            ),
-                        },
-                    )?;
-                    return Ok(());
-                }
-                (name, team, role, robot, password)
-            }
-            _ => return Ok(()),
-        };
-    stream.set_read_timeout(None)?;
-    let (sender, inbox) = outbox::channel(OUTBOX_CAPACITY);
-    let writer_stream = stream.try_clone()?;
-    let shutdown_stream = stream.try_clone()?;
-    let peer_stream = stream.try_clone()?;
-    writer_stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
-    let writer = thread::Builder::new()
-        .name("rm-peer-writer".into())
-        .spawn(move || write_loop(writer_stream, inbox))?;
-    let _writer = PeerWriter {
-        stream: shutdown_stream,
-        worker: Some(writer),
-    };
-    let welcome = match handle.join(PeerRegistration {
-        password,
-        name,
-        team: wanted_team,
-        role,
-        robot,
-        owner_spawn,
-        outbox: sender,
-        stream: ConnectionStop::Tcp(peer_stream),
-    }) {
-        Ok(welcome) => welcome,
-        Err(reason) => {
-            write_message(
-                &mut stream.try_clone()?,
-                &ServerMessage::Rejected { reason },
-            )?;
-            return Ok(());
-        }
-    };
-    let id = welcome.client_id;
-    let result = command_loop(handle, id, &mut reader);
-    let _ = handle.leave(id);
-    result
-}
-
-fn command_loop(handle: &HostHandle, id: u32, reader: &mut BufReader<TcpStream>) -> io::Result<()> {
-    while let Some(message) = read_message::<ClientMessage, _>(reader)? {
-        handle
-            .message(id, message)
-            .map_err(|reason| io::Error::new(io::ErrorKind::ConnectionAborted, reason))?;
-    }
-    Ok(())
-}
-
-/// Drain the outbox to the socket; a failed or timed-out write closes the
-/// socket so the reader thread ends too.
-fn write_loop(mut stream: TcpStream, inbox: outbox::Receiver) {
-    let result = write_all_lines(&mut stream, &inbox);
-    if result.is_err() {
-        let _ = stream.shutdown(Shutdown::Both);
-    }
-}
-
-fn write_all_lines(stream: &mut TcpStream, inbox: &outbox::Receiver) -> io::Result<()> {
-    use std::io::Write;
-    let observer =
-        crate::network_trace::Observer::new("tcp-host", crate::clock::TimeSource::system());
-    while let Some(line) = inbox.recv() {
-        let started = Instant::now();
-        let bytes = line.encoded().as_bytes();
-        observer.work("tcp_encode", started.elapsed());
-        stream.write_all(bytes)?;
-        observer.server("tcp_write", line.message());
-        observer.record(crate::network_trace::Event {
-            stage: "tcp_bytes",
-            kind: "json_line",
-            bytes: Some(bytes.len()),
-            ..Default::default()
-        });
-        stream.flush()?;
-    }
-    Ok(())
 }
 
 /// Latest replaceable state and ordered discrete events from the reader.
@@ -546,7 +348,7 @@ impl Default for ClientInbox {
 }
 impl ClientInbox {
     fn with_time(time: crate::clock::TimeSource) -> Self {
-        Self::for_transport("tcp", time)
+        Self::for_transport("local", time)
     }
     fn for_transport(transport: &'static str, time: crate::clock::TimeSource) -> Self {
         Self {
@@ -693,7 +495,7 @@ pub(crate) struct QueuedCommand {
 /// blocking startup operations.
 pub struct Client {
     /// Retained for shutdown only; commands are written by a transport worker.
-    stream: ConnectionStop,
+    stream: Stop,
     timing: ClientTiming,
     transport_stats: Option<crate::network_stats::TransportStats>,
     host_telemetry: Option<crate::network_stats::HostTelemetry>,
@@ -710,115 +512,6 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connect, say hello as the default robot and wait for the welcome. Run
-    /// this off the UI thread.
-    pub fn connect(
-        addr: impl ToSocketAddrs,
-        name: &str,
-        team: Option<Team>,
-        role: Role,
-    ) -> anyhow::Result<Client> {
-        Self::connect_with_password(addr, name, team, role, Robot::default(), "")
-    }
-
-    /// Connect, say hello naming the robot to drive and a lobby password, and
-    /// wait for the welcome. Run this off the UI thread.
-    pub fn connect_with_password(
-        addr: impl ToSocketAddrs,
-        name: &str,
-        team: Option<Team>,
-        role: Role,
-        robot: Robot,
-        password: &str,
-    ) -> anyhow::Result<Client> {
-        let addr = addr
-            .to_socket_addrs()?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("no host address"))?;
-        Self::from_stream_with_password(
-            TcpStream::connect_timeout(&addr, HELLO_TIMEOUT)?,
-            name,
-            team,
-            role,
-            robot,
-            password,
-        )
-    }
-
-    fn from_stream_with_password(
-        stream: TcpStream,
-        name: &str,
-        team: Option<Team>,
-        role: Role,
-        robot: Robot,
-        password: &str,
-    ) -> anyhow::Result<Client> {
-        stream.set_nodelay(true)?;
-        stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
-        let mut writer = stream.try_clone()?;
-        write_message(
-            &mut writer,
-            &ClientMessage::Hello {
-                password: password.into(),
-                protocol: PROTOCOL_VERSION,
-                name: name.to_string(),
-                team,
-                role,
-                robot,
-                tick_ns: rm_simulator_world::tick_ns(),
-            },
-        )?;
-        stream.set_read_timeout(Some(HELLO_TIMEOUT))?;
-        let mut reader = BufReader::new(stream.try_clone()?);
-        let welcome = match read_message::<ServerMessage, _>(&mut reader)? {
-            Some(ServerMessage::Welcome(welcome)) => *welcome,
-            Some(ServerMessage::Rejected { reason }) => anyhow::bail!("host refused: {reason}"),
-            other => anyhow::bail!("host did not answer the hello: {other:?}"),
-        };
-        stream.set_read_timeout(None)?;
-        let (outbox, commands) = mpsc::sync_channel(CLIENT_COMMAND_CAPACITY);
-        let inbox = Arc::new(ClientInbox::default());
-        // Construct the shutdown guard before spawning either worker: a failed
-        // spawn closes the socket and releases any worker already started.
-        let client = Client {
-            stream: ConnectionStop::Tcp(stream),
-            outbox,
-            inbox: inbox.clone(),
-            welcome,
-            latest: None,
-            roster: Vec::new(),
-            disconnected: None,
-            sent_confirmation: 0,
-            timing: ClientTiming::default(),
-            transport_stats: None,
-            host_telemetry: None,
-            delivery_stats: None,
-            owner_anchor: None,
-            acknowledged: 0,
-        };
-        let failures = inbox.clone();
-        thread::Builder::new()
-            .name("rm-client-writer".into())
-            .spawn(move || {
-                if let Err(error) =
-                    write_client_commands(&mut writer, commands, Some(&failures.observer))
-                {
-                    failures.fail(format!("sending commands: {error}"));
-                }
-                let _ = writer.shutdown(Shutdown::Both);
-            })?;
-        let stop_writer = client.outbox.clone();
-        thread::Builder::new()
-            .name("rm-client-reader".into())
-            .spawn(move || {
-                read_loop(&mut reader, &inbox);
-                let _ = reader.get_ref().shutdown(Shutdown::Both);
-                // Wake an idle writer; a full queue means it is already awake
-                // and the closed socket will terminate its next write.
-                let _ = stop_writer.try_send(None);
-            })?;
-        Ok(client)
-    }
     /// The seat the host granted in answer to this client's hello.
     pub fn welcome(&self) -> &Welcome {
         &self.welcome
@@ -898,7 +591,7 @@ impl Client {
             }
         };
         self.disconnected = Some(error.to_string());
-        let _ = self.stream.shutdown(Shutdown::Both);
+        self.stream.request();
         Err(error)
     }
     /// Take the newest snapshot and roster, with bounded work per frame.
@@ -964,7 +657,7 @@ impl Client {
             std::mem::take(&mut data.scheduled_shots)
         })
     }
-    /// Latest host downstream queue report, absent for TCP and embedded peers.
+    /// Latest host downstream queue report, absent for embedded peers.
     pub fn delivery_stats(&self) -> Option<&crate::pacing::QueueStats> {
         self.delivery_stats.as_ref()
     }
@@ -1194,10 +887,9 @@ impl Client {
 }
 
 impl Drop for Client {
-    /// Closing the socket ends the reader and interrupts any blocked write.
-    /// The reader also wakes the writer if it is waiting for commands.
+    /// Cancel the transport worker that carries this connection.
     fn drop(&mut self) {
-        let _ = self.stream.shutdown(Shutdown::Both);
+        self.stream.request();
     }
 }
 
@@ -1337,7 +1029,7 @@ impl Client {
             .take()
             .ok_or_else(|| io::Error::other("this leg already has a client"))?;
         Ok(Client {
-            stream: ConnectionStop::Worker(Stop::default()),
+            stream: Stop::default(),
             timing: ClientTiming::new(time),
             transport_stats: None,
             host_telemetry: None,
@@ -1352,46 +1044,6 @@ impl Client {
             sent_confirmation: 0,
             acknowledged: 0,
         })
-    }
-}
-
-fn write_client_commands(
-    writer: &mut impl io::Write,
-    commands: Receiver<Option<QueuedCommand>>,
-    observer: Option<&crate::network_trace::Observer>,
-) -> io::Result<()> {
-    while let Ok(Some(queued)) = commands.recv() {
-        if let Some(command) = queued.command {
-            let message = ClientMessage::Command(command);
-            if let Some(observer) = observer {
-                observer.client("dequeue", None, &message, None);
-            }
-            write_message(writer, &message)?;
-        }
-        if let Some(nonce) = queued.time_probe {
-            write_message(writer, &ClientMessage::TimeProbe { nonce })?;
-        }
-        if let Some(nonce) = queued.confirmation {
-            write_message(writer, &ClientMessage::Ping { nonce })?;
-        }
-    }
-    Ok(())
-}
-
-fn read_loop(reader: &mut BufReader<TcpStream>, inbox: &ClientInbox) {
-    loop {
-        let result = match read_message::<ServerMessage, _>(reader) {
-            Ok(Some(message)) => inbox.publish(message),
-            Ok(None) => Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "host closed the connection",
-            )),
-            Err(error) => Err(error),
-        };
-        if let Err(error) = result {
-            inbox.fail(error.to_string());
-            return;
-        }
     }
 }
 
@@ -1479,16 +1131,9 @@ mod tests {
         assert!(server.listening_addr().is_none());
         let handle = server.handle();
         let mut client = server
-            .connect_owner(
-                "local",
-                Team::Red,
-                Role::Pilot,
-                Robot::default(),
-                [0., 0., 0.5],
-                0.,
-            )
+            .connect_owner("local", Team::Red, Role::Pilot, Robot::default(), [0., 0., 0.5], 0.)
             .unwrap();
-        assert!(matches!(client.stream, ConnectionStop::Worker(_)));
+        assert!(!client.stream.wait(Duration::ZERO));
         assert_eq!(client.network_stats().transport, "local");
         client.send_confirmed(Command::Step { ticks: 17 }).unwrap();
         wait_until("typed confirmation", || {
@@ -1508,10 +1153,12 @@ mod tests {
 
     #[test]
     fn scheduled_receipt_does_not_confirm_execution_and_batch_keeps_newest() {
+        let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let (server, handle) = host();
         handle.apply(&Command::Pause { paused: false }).unwrap();
         let mut client =
-            Client::connect(server.local_addr(), "pilot", Some(Team::Red), Role::Pilot).unwrap();
+            Client::connect_udp(server.local_addr(), "pilot", Some(Team::Red), Role::Pilot)
+                .unwrap();
         let shooter = client.welcome().chassis.as_ref().unwrap().id;
         let state = handle.state().unwrap();
         let input = crate::input_stream::InputFrame {
@@ -1573,9 +1220,10 @@ mod tests {
 
     #[test]
     fn background_clock_steps_broadcasts_and_stops_without_a_render_loop() {
+        let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let (mut server, simulation) = host();
         let mut client =
-            Client::connect(server.local_addr(), "referee", None, Role::Referee).unwrap();
+            Client::connect_udp(server.local_addr(), "referee", None, Role::Referee).unwrap();
         server.spawn_clock().unwrap();
         assert_eq!(
             server.spawn_clock().unwrap_err().kind(),
@@ -1618,24 +1266,8 @@ mod tests {
     }
 
     #[test]
-    fn dropping_host_disconnects_pilots_releases_port_and_removes_chassis() {
-        let (server, simulation) = host();
-        let address = server.local_addr();
-        let mut client = Client::connect(address, "pilot", None, Role::Pilot).unwrap();
-        let _unfinished_hello = TcpStream::connect(address).unwrap();
-        server.spawn_clock().unwrap();
-        assert!(!simulation.snapshot().unwrap().chassis.is_empty());
-        drop(server);
-        assert!(simulation.snapshot().unwrap().chassis.is_empty());
-        let _rebound = TcpListener::bind(address).expect("listener port was retained");
-        wait_until("pilot stayed connected", || {
-            client.poll();
-            client.disconnected().is_some()
-        });
-    }
-
-    #[test]
     fn blocking_clock_uses_the_same_stop_signal() {
+        let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let (server, simulation) = host();
         simulation.apply(&Command::Pause { paused: false }).unwrap();
         let server = Arc::new(server);
@@ -1651,6 +1283,7 @@ mod tests {
 
     #[test]
     fn clock_failure_is_reported_and_disconnects_clients() {
+        let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let mut field = Field::new(&FieldConfig {
             runes: Vec::new(),
             outposts: Vec::new(),
@@ -1663,7 +1296,7 @@ mod tests {
         let simulation = Simulation::new(field, false);
         let mut server = Server::bind("127.0.0.1:0", simulation).unwrap();
         let mut client =
-            Client::connect(server.local_addr(), "watcher", None, Role::Spectator).unwrap();
+            Client::connect_udp(server.local_addr(), "watcher", None, Role::Spectator).unwrap();
         server.spawn_clock().unwrap();
         wait_until("clock error was not reported", || {
             server.failure().is_some()
@@ -1678,18 +1311,13 @@ mod tests {
 
     #[test]
     fn placement_is_owner_only_and_barriers_confirm_plain_commands() {
+        let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let (server, simulation) = host();
         let mut owner = server
-            .connect_owner(
-                "owner",
-                Team::Red,
-                Role::Pilot,
-                Robot::default(),
-                [2.0, 3.0, 1.0],
-                0.0,
-            )
+            .connect_owner("owner", Team::Red, Role::Pilot, Robot::default(), [2.0, 3.0, 1.0], 0.0)
             .unwrap();
-        let mut guest = Client::connect(server.local_addr(), "guest", None, Role::Pilot).unwrap();
+        let mut guest =
+            Client::connect_udp(server.local_addr(), "guest", None, Role::Pilot).unwrap();
         let own_id = owner.welcome().chassis.as_ref().unwrap().id;
         let guest_id = guest.welcome().chassis.as_ref().unwrap().id;
         guest
@@ -1745,21 +1373,16 @@ mod tests {
         assert_eq!(simulation.snapshot().unwrap().chassis.len(), 2);
     }
     #[test]
-    fn owner_uses_custom_spawn_and_authority_cannot_be_claimed_over_tcp() {
+    fn owner_uses_custom_spawn_and_authority_cannot_be_claimed_over_the_network() {
+        let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let (server, simulation) = host();
         let mut owner = server
-            .connect_owner(
-                "owner",
-                Team::Red,
-                Role::Pilot,
-                Robot::default(),
-                [2.0, 3.0, 1.0],
-                90.0,
-            )
+            .connect_owner("owner", Team::Red, Role::Pilot, Robot::default(), [2.0, 3.0, 1.0], 90.0)
             .unwrap();
         let id = owner.welcome().chassis.as_ref().unwrap().id;
         let mut guest =
-            Client::connect(server.local_addr(), "owner", Some(Team::Red), Role::Pilot).unwrap();
+            Client::connect_udp(server.local_addr(), "owner", Some(Team::Red), Role::Pilot)
+                .unwrap();
         let snapshot = simulation.snapshot().unwrap();
         assert_eq!(snapshot.chassis.len(), 2);
         let chassis = snapshot
@@ -1772,14 +1395,7 @@ mod tests {
         assert!(heading[0].abs() < 1e-9 && (heading[1] - 1.0).abs() < 1e-9);
         assert!(
             server
-                .connect_owner(
-                    "second",
-                    Team::Red,
-                    Role::Pilot,
-                    Robot::default(),
-                    [0.0; 3],
-                    0.0
-                )
+                .connect_owner("second", Team::Red, Role::Pilot, Robot::default(), [0.0; 3], 0.0)
                 .is_err()
         );
         owner.send_confirmed(Command::Step { ticks: 16 }).unwrap();
@@ -1803,6 +1419,7 @@ mod tests {
 
     #[test]
     fn owner_spectator_and_referee_keep_controls_without_getting_a_robot() {
+        let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         for role in [Role::Spectator, Role::Referee] {
             let (server, simulation) = host();
             let mut owner = server
@@ -1824,19 +1441,13 @@ mod tests {
 
     #[test]
     fn only_the_owner_can_fire_from_a_free_camera() {
+        let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let (server, simulation) = host();
         let mut owner = server
-            .connect_owner(
-                "owner",
-                Team::Red,
-                Role::Spectator,
-                Robot::default(),
-                [0.0; 3],
-                0.0,
-            )
+            .connect_owner("owner", Team::Red, Role::Spectator, Robot::default(), [0.0; 3], 0.0)
             .unwrap();
         let mut watcher =
-            Client::connect(server.local_addr(), "watcher", None, Role::Spectator).unwrap();
+            Client::connect_udp(server.local_addr(), "watcher", None, Role::Spectator).unwrap();
         let fire = Command::SpawnProjectile {
             muzzle: rm_simulator_world::Pose::at([0.0, 0.0, 2.0]),
             shot: rm_simulator_world::Shot::at_limit(rm_simulator_world::Caliber::Mm17),
@@ -1861,19 +1472,13 @@ mod tests {
 
     #[test]
     fn suspended_clock_streams_state_but_holds_ticks_until_ready() {
+        let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let field = Field::new(&FieldConfig::default()).unwrap();
         let simulation = Simulation::new(field, false);
         let server = Server::bind_suspended("127.0.0.1:0", simulation).unwrap();
         server.spawn_clock().unwrap();
         let mut owner = server
-            .connect_owner(
-                "owner",
-                Team::Red,
-                Role::Spectator,
-                Robot::default(),
-                [0.0; 3],
-                0.0,
-            )
+            .connect_owner("owner", Team::Red, Role::Spectator, Robot::default(), [0.0; 3], 0.0)
             .unwrap();
         for _ in 0..5 {
             assert_eq!(
@@ -1906,16 +1511,10 @@ mod tests {
 
     #[test]
     fn confirmation_waits_for_a_result_snapshot_without_blocking_the_caller() {
+        let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let (server, simulation) = host();
         let mut owner = server
-            .connect_owner(
-                "owner",
-                Team::Red,
-                Role::Referee,
-                Robot::default(),
-                [0.0; 3],
-                0.0,
-            )
+            .connect_owner("owner", Team::Red, Role::Referee, Robot::default(), [0.0; 3], 0.0)
             .unwrap();
         let guard = simulation.stall();
         owner.send_confirmed(Command::Step { ticks: 16 }).unwrap();
@@ -1947,19 +1546,13 @@ mod tests {
 
     #[test]
     fn frequent_owner_updates_do_not_change_remote_broadcasts() {
+        let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let (server, _) = host();
         let mut owner = server
-            .connect_owner(
-                "owner",
-                Team::Red,
-                Role::Referee,
-                Robot::default(),
-                [0.0; 3],
-                0.0,
-            )
+            .connect_owner("owner", Team::Red, Role::Referee, Robot::default(), [0.0; 3], 0.0)
             .unwrap();
         let mut guest =
-            Client::connect(server.local_addr(), "guest", None, Role::Spectator).unwrap();
+            Client::connect_udp(server.local_addr(), "guest", None, Role::Spectator).unwrap();
         server.handle.broadcast_snapshot(true).unwrap();
         assert!(owner.wait_snapshot(Duration::from_secs(5)).is_some());
         assert!(guest.wait_snapshot(Duration::from_millis(20)).is_none());
@@ -1967,14 +1560,13 @@ mod tests {
         assert!(guest.wait_snapshot(Duration::from_secs(5)).is_some());
     }
 
-    fn queued_client(capacity: usize) -> (Client, Receiver<Option<QueuedCommand>>, TcpStream) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        let (peer, _) = listener.accept().unwrap();
+    /// A socket-free client fixture. Its transport worker never runs, so a test
+    /// can inspect the inbox and the command queue directly.
+    fn test_client(capacity: usize) -> (Client, Receiver<Option<QueuedCommand>>) {
         let (outbox, commands) = mpsc::sync_channel(capacity);
         (
             Client {
-                stream: ConnectionStop::Tcp(stream),
+                stream: Stop::default(),
                 outbox,
                 inbox: Arc::default(),
                 welcome: Welcome {
@@ -2000,96 +1592,12 @@ mod tests {
                 acknowledged: 0,
             },
             commands,
-            peer,
         )
     }
 
     #[test]
-    fn stalled_writer_does_not_block_commands_and_overflow_disconnects() {
-        struct StalledWriter {
-            entered: mpsc::Sender<()>,
-            release: Receiver<()>,
-            bytes: Vec<u8>,
-        }
-        impl io::Write for StalledWriter {
-            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                if self.bytes.is_empty() {
-                    self.entered.send(()).unwrap();
-                    self.release.recv().unwrap();
-                }
-                // Exercise write_all across partial writes too.
-                let count = bytes.len().min(3);
-                self.bytes.extend_from_slice(&bytes[..count]);
-                Ok(count)
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        let (mut client, commands, mut peer) = queued_client(2);
-        let (entered_tx, entered_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel();
-        let worker = thread::spawn(move || {
-            let mut writer = StalledWriter {
-                entered: entered_tx,
-                release: release_rx,
-                bytes: Vec::new(),
-            };
-            write_client_commands(&mut writer, commands, None).unwrap();
-            writer.bytes
-        });
-        let ordered = [
-            Command::Chassis {
-                chassis: 1,
-                command: ChassisCommand::default(),
-            },
-            Command::Fire {
-                shooter: 1,
-                timing: None,
-            },
-            Command::Chassis {
-                chassis: 1,
-                command: ChassisCommand {
-                    aim_yaw_rad: 1.0,
-                    ..Default::default()
-                },
-            },
-        ];
-        client.send(ordered[0]).unwrap();
-        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        client.send(ordered[1]).unwrap();
-        client.send(ordered[2]).unwrap();
-        assert_eq!(
-            client.send(Command::Step { ticks: 1 }).unwrap_err().kind(),
-            io::ErrorKind::WouldBlock
-        );
-        assert!(client.disconnected().unwrap().contains("queue is full"));
-        peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        assert!(
-            read_message::<ClientMessage, _>(&mut BufReader::new(&mut peer))
-                .unwrap()
-                .is_none()
-        );
-        release_tx.send(()).unwrap();
-        drop(client);
-        let bytes = worker.join().unwrap();
-        let mut reader = BufReader::new(bytes.as_slice());
-        for command in ordered {
-            assert_eq!(
-                read_message::<ClientMessage, _>(&mut reader).unwrap(),
-                Some(ClientMessage::Command(command))
-            );
-        }
-        assert!(
-            read_message::<ClientMessage, _>(&mut reader)
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
     fn frame_methods_skip_a_busy_inbox_and_report_worker_failure() {
-        let (mut client, commands, _peer) = queued_client(2);
+        let (mut client, commands) = test_client(2);
         let inbox = client.inbox.clone();
         let guard = inbox.data.lock().unwrap();
         client.poll();
@@ -2113,9 +1621,8 @@ mod tests {
 
     #[test]
     fn incoming_state_is_coalesced_and_notices_keep_their_order() {
-        let (mut client, _commands, _peer) = queued_client(2);
-        let (_, simulation) = host();
-        let mut state = simulation.state().unwrap();
+        let (mut client, _commands) = test_client(2);
+        let mut state = Simulation::new(Field::new(&FieldConfig::default()).unwrap(), true).state();
         for tick in 0..1_000 {
             state.field.tick = tick;
             client
@@ -2181,52 +1688,10 @@ mod tests {
     }
 
     #[test]
-    fn reader_reports_notice_overflow_and_eof() {
-        let (client, _commands, mut peer) = queued_client(2);
-        for _ in 0..CLIENT_NOTICE_CAPACITY {
-            client
-                .inbox
-                .publish(ServerMessage::Notice(String::new()))
-                .unwrap();
-        }
-        write_message(&mut peer, &ServerMessage::Notice("overflow".into())).unwrap();
-        read_loop(
-            &mut BufReader::new(match &client.stream {
-                ConnectionStop::Tcp(stream) => stream.try_clone().unwrap(),
-                ConnectionStop::Worker(_) => unreachable!(),
-            }),
-            &client.inbox,
-        );
-        assert!(
-            client
-                .inbox
-                .data
-                .lock()
-                .unwrap()
-                .failure
-                .as_ref()
-                .unwrap()
-                .contains("too many unread")
-        );
-        let (mut client, _commands, peer) = queued_client(2);
-        drop(peer);
-        read_loop(
-            &mut BufReader::new(match &client.stream {
-                ConnectionStop::Tcp(stream) => stream.try_clone().unwrap(),
-                ConnectionStop::Worker(_) => unreachable!(),
-            }),
-            &client.inbox,
-        );
-        client.poll();
-        assert_eq!(client.disconnected(), Some("host closed the connection"));
-    }
-
-    #[test]
     fn startup_wait_wakes_on_snapshot_and_disconnect() {
-        let (mut client, _commands, _peer) = queued_client(2);
+        let (mut client, _commands) = test_client(2);
         assert!(client.wait_snapshot(Duration::ZERO).is_none());
-        let (_, simulation) = host();
-        let state = simulation.state().unwrap();
+        let state = Simulation::new(Field::new(&FieldConfig::default()).unwrap(), true).state();
         let inbox = client.inbox.clone();
         let publisher = thread::spawn(move || {
             inbox
@@ -2244,17 +1709,20 @@ mod tests {
 
     #[test]
     fn clients_get_chassis_by_team_commands_apply_and_snapshots_arrive() {
+        let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let (server, simulation) = host();
-        let mut pilot = Client::connect(server.local_addr(), "pilot", None, Role::Pilot).unwrap();
+        let mut pilot =
+            Client::connect_udp(server.local_addr(), "pilot", None, Role::Pilot).unwrap();
         let own = pilot.welcome().chassis.clone().expect("a chassis");
         assert_eq!(pilot.welcome().team, Some(Team::Red));
         // The next unassigned pilot balances onto blue; a spectator gets no
         // chassis; the referee gets neither chassis nor team.
-        let mut rival = Client::connect(server.local_addr(), "rival", None, Role::Pilot).unwrap();
+        let mut rival =
+            Client::connect_udp(server.local_addr(), "rival", None, Role::Pilot).unwrap();
         assert_eq!(rival.welcome().team, Some(Team::Blue));
         let rival_chassis = rival.welcome().chassis.as_ref().unwrap().id;
         assert_ne!(rival_chassis, own.id);
-        let mut watcher = Client::connect(
+        let mut watcher = Client::connect_udp(
             server.local_addr(),
             "watcher",
             Some(Team::Red),
@@ -2264,7 +1732,7 @@ mod tests {
         assert!(watcher.welcome().chassis.is_none());
         assert_eq!(watcher.welcome().team, Some(Team::Red));
         assert_ne!(watcher.welcome().client_id, pilot.welcome().client_id);
-        let mut referee = Client::connect(
+        let mut referee = Client::connect_udp(
             server.local_addr(),
             "referee",
             Some(Team::Blue),
@@ -2371,7 +1839,7 @@ mod tests {
         });
         assert!(watcher.take_notices().iter().any(|n| n == "pilot left"));
         // The next red pilot gets a fresh id, never the old one.
-        let next = Client::connect(server.local_addr(), "next", None, Role::Pilot).unwrap();
+        let next = Client::connect_udp(server.local_addr(), "next", None, Role::Pilot).unwrap();
         assert_eq!(next.welcome().team, Some(Team::Red));
         assert!(next.welcome().chassis.as_ref().unwrap().id > rival_chassis);
         wait_until("peers", || server.peer_count() == 4);
@@ -2399,74 +1867,13 @@ mod tests {
         }
     }
     #[test]
-    fn wrong_protocol_versions_are_refused() {
-        let (server, _) = host();
-        let mut stream = TcpStream::connect(server.local_addr()).unwrap();
-        write_message(
-            &mut stream,
-            &ClientMessage::Hello {
-                password: String::new(),
-                protocol: 999,
-                name: "old".into(),
-                team: None,
-                role: Role::Pilot,
-                robot: Robot::default(),
-                tick_ns: rm_simulator_world::tick_ns(),
-            },
-        )
-        .unwrap();
-        let mut reader = BufReader::new(stream);
-        let answer = read_message::<ServerMessage, _>(&mut reader).unwrap();
-        assert!(
-            matches!(answer, Some(ServerMessage::Rejected { .. })),
-            "{answer:?}"
-        );
-        assert!(
-            read_message::<ServerMessage, _>(&mut reader)
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn a_client_that_stops_reading_is_dropped() {
-        let (server, _simulation) = host();
-        let mut stream = TcpStream::connect(server.local_addr()).unwrap();
-        write_message(
-            &mut stream,
-            &ClientMessage::Hello {
-                password: String::new(),
-                protocol: PROTOCOL_VERSION,
-                name: "sloth".into(),
-                team: None,
-                role: Role::Spectator,
-                robot: Robot::default(),
-                tick_ns: rm_simulator_world::tick_ns(),
-            },
-        )
-        .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while server.peer_count() == 0 && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(server.peer_count(), 1);
-        // Give backpressure its own deadline after admission. Yield between
-        // broadcasts so the producer cannot starve the socket writer on CI.
-        let deadline = Instant::now() + Duration::from_secs(20);
-        // Never read: the socket fills, then the outbox, then the peer goes.
-        while server.peer_count() == 1 && Instant::now() < deadline {
-            server.broadcast_snapshot();
-            thread::sleep(Duration::from_millis(1));
-        }
-        assert_eq!(server.peer_count(), 0);
-        drop(stream);
-    }
-    #[test]
     fn resource_and_equipment_edits_are_referee_only() {
+        let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let (server, simulation) = host();
-        let mut pilot = Client::connect(server.local_addr(), "pilot", None, Role::Pilot).unwrap();
+        let mut pilot =
+            Client::connect_udp(server.local_addr(), "pilot", None, Role::Pilot).unwrap();
         let mut referee =
-            Client::connect(server.local_addr(), "referee", None, Role::Referee).unwrap();
+            Client::connect_udp(server.local_addr(), "referee", None, Role::Referee).unwrap();
         for json in [
             r#"{"Referee":{"Gameplay":{"Gold":{"team":"Red","gold":777}}}}"#,
             r#"{"Referee":{"SetOutpostHp":{"outpost":0,"hp":1}}}"#,

@@ -140,8 +140,8 @@ and walls beyond it.
 
 Create a lobby in Multiplayer, then click Refresh LAN on another computer on
 that network. Select the lobby and press Join lobby / address. The creator runs the match and must keep it open. Discovery uses
-UDP port 7792; gameplay uses UDP 7700 by default with GNS, or TCP with
-`--transport tcp`. Allow the app through the firewall on private networks.
+UDP port 7792; gameplay uses GNS over UDP 7700 by default. Allow the app
+through the firewall on private networks.
 Guest Wi-Fi isolation and separate subnets can prevent discovery. Direct
 connections remain available when broadcast discovery is blocked.
 
@@ -150,8 +150,8 @@ or port forwarding. One advertised lobby can run per computer, since the LAN
 responder owns a fixed port. Leaving the match closes its listing. Refresh
 removes departed hosts from the displayed list. Passwords apply to pilots and
 spectators, including direct connections. The current text widget displays
-passwords visibly; they are never saved to `title.json`. TCP carries the game
-handshake without encryption, so use a lobby-specific password.
+passwords visibly; they are never saved to `title.json`. The game handshake
+is unencrypted, so use a lobby-specific password.
 
 Public hosting and joining from the menu are disabled. The directory code and
 Docker setup are in [`services/lobby`](services/lobby/README.md), ready for a
@@ -165,7 +165,7 @@ later deployment. No directory is required or running for this feature.
 | [`rm-simulator-physics`](crates/rm-simulator-physics/README.md) | Reusable Rapier dynamics, chassis, projectiles, raw armor contacts, shared geometry and prescribed armor motion. No gameplay, Bevy, server or CAD-loader dependency. |
 | [`rm-simulator-world`](crates/rm-simulator-world/README.md) | Complete `Field` facade: explicit ticks, activation, detection, damage, referee integration and restore. Coordinates the physics library and preserves existing public world imports. |
 | [`rm-simulator-render`](crates/rm-simulator-render/README.md) | Bevy CAD scenery, lighting, rune and outpost light overlays, projectile spheres, chassis visuals, and pose/visibility/strike synchronization from caller-owned scene state. No world dependency. |
-| [`rm-simulator-server`](crates/rm-simulator-server/README.md) | Bevy-free glue: CAD loading and checksums, collision triangles, field layout, the `Simulation` wrapper, a `Host` worker that owns simulation and command ordering, GNS UDP, TCP and in-process channel transports, the HTTP referee panel, and the headless binary. |
+| [`rm-simulator-server`](crates/rm-simulator-server/README.md) | Bevy-free glue: CAD loading and checksums, collision triangles, field layout, the `Simulation` wrapper, a `Host` worker that owns simulation and command ordering, the GNS UDP transport, the in-process owner channel, the HTTP referee panel, and the headless binary. |
 | [`rm-simulator-bench`](crates/rm-simulator-bench/README.md) | Fixed-camera CAD renderer benchmark, independent of physics, world, server and gameplay. |
 | [`rm-simulator-app`](crates/rm-simulator-app/README.md) | The `rm-simulator` binary: window, chassis driving and gimbal camera (or fly camera), gun, HUD, world-to-scene adaptation, and the local or remote session that turns inputs into protocol commands. |
 
@@ -263,8 +263,7 @@ just run --connect 127.0.0.1:7700 --team blue --name alice
 
 `rm-simulator-server` loads the CAD, builds the same field as the app, steps
 it in real time and serves gameplay over Valve GameNetworkingSockets UDP and an
-HTTP referee panel. Open UDP port 7700 for guests. Both executables retain
-`--transport tcp` for the previous JSON-lines transport.
+HTTP referee panel. Open UDP port 7700 for guests.
 
 ### Transports and roles
 
@@ -318,10 +317,10 @@ Command arrival order still depends on the transports; the host establishes a
 single application order, not a reproducible ordering of simultaneous arrivals.
 
 For Rust callers, `Server::bind` and `bind_suspended` take ownership of a
-`Simulation` and retain TCP. `bind_udp` and `bind_udp_suspended` select GNS.
+`Simulation` and bind the GNS UDP listener. `Server::in_process` and `Host::new`
+support a host without a socket.
 Use `server.handle()` for operator commands and state queries, and
-pass that handle to `HttpServer::bind`. `Host::new` also supports a host without
-TCP. Request handling starts immediately; `spawn_clock` or `run_clock` enables
+pass that handle to `HttpServer::bind`. Request handling starts immediately; `spawn_clock` or `run_clock` enables
 real-time pacing. Operator command receipts contain their application sequence
 and pre-command tick. State queries wait for earlier mailbox requests; after
 shutdown they return the final captured state. Debug capture requests keep the
@@ -368,8 +367,7 @@ identity, caliber and launch time. Vectors use 32-bit floats; server physics sta
 with zero spin at each checkpoint and may correct bounced trajectories later.
 Clients reconstruct rune/outpost armor poses and omit wheel-contact and failed-hit
 diagnostics. HP, registered hits, command/life state and chassis reconciliation
-values are preserved. HTTP referee diagnostics keep full precision and detail;
-TCP sends the same compact checkpoints, each independent of the last.
+values are preserved. HTTP referee diagnostics keep full precision and detail.
 
 Remote pose history holds at most 32 samples. It interpolates translation,
 shortest-path rotation and wheel motion, holds the nearest known pose on underrun,
@@ -381,8 +379,7 @@ received checkpoint. Pauses and screenshots use exact authoritative poses. Clock
 run at most once per second with one outstanding; their replies never confirm
 commands. The estimate assumes roughly symmetric latency and is intended for
 low-latency links. The acknowledged-baseline delta encoder is driven only by the
-UDP/GNS per-peer codec; TCP carries independent compact checkpoints and never
-deltas. The UDP encoder rotates its acknowledged baselines every 32 encoded
+GNS per-peer codec. The UDP encoder rotates its acknowledged baselines every 32 encoded
 frames. Result snapshots
 before Pong are always full. Readers reconstruct deltas before inbox coalescing;
 a missing/invalid baseline closes the connection rather than exposing partial state.
@@ -446,10 +443,9 @@ does not acknowledge its execution by the host.
 The current protocol version is 34, defined by `PROTOCOL_VERSION` in
 `crates/rm-simulator-server/src/protocol.rs`. GNS sends redundant controls
 and retried shot intents unreliably; scheduling receipts and terminal shot results
-remain reliable. There is no shooter-view fire path, ordered TCP snapshot delta
-chain or input-acknowledgement stream. UDP deltas use acknowledged baselines;
-TCP checkpoints remain independent. Server and client
-must use matching protocol versions.
+remain reliable. There is no shooter-view fire path or input-acknowledgement
+stream. UDP deltas use acknowledged baselines. Server and client must use
+matching protocol versions.
 
 ### Compression and environment variables
 

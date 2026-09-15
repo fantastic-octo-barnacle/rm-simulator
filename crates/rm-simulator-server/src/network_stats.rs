@@ -79,7 +79,7 @@ pub struct NetworkStats {
     /// Client id from this session's welcome, monotonically assigned by the
     /// host, so a reconnecting peer reads as a new generation.
     pub connection_generation: u64,
-    /// Transport that produced the sample: `gns`, `tcp`, or in-process `local`.
+    /// Transport that produced the sample: `gns`, or in-process `local`.
     pub transport: String,
     /// Elapsed milliseconds on the reporting side when this report was built.
     pub sampled_elapsed_ms: f64,

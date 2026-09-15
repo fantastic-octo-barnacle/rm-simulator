@@ -34,7 +34,7 @@ RM_NET_TRACE_DIR=/tmp/rm-network-traces just server
 Use a separate terminal for the server when testing remote clients. Environment
 settings apply only to that process and its children. Filenames include the
 process id, role and a unique suffix, and existing files are never overwritten.
-The simulation worker, UDP host reactor and each client/ TCP writer have separate
+The simulation worker, the UDP host reactor and each client worker have separate
 files. Local player files use the `local` role. The environment variable is read
 when an observer is constructed, so restart the session/process to change it.
 
@@ -58,7 +58,6 @@ appear in local console diagnostics only.
 | `host_receive` / `host_accept` / `host_reject` | Host worker receipt and command validation; accepting a scheduled shot is not execution |
 | `host_publish` | Logical snapshot, event or response produced by the host |
 | `publish` / `consume` | Decoded client inbox publication and newest snapshot consumption by the session |
-| `tcp_write` / `tcp_bytes` | TCP host message and its JSON-line bytes written |
 | `work` | Measured transport work duration, including encoding, decoding or typed local publication |
 
 ## Measurement semantics
@@ -129,7 +128,7 @@ retains the same `Client` API, host authorization and confirmation snapshot/Pong
 order as network play. Only unsent periodic snapshots may be replaced. Reliable
 outbox overflow closes the peer explicitly. Dropping the client removes its seat;
 server teardown joins its delivery workers. Standalone sessions create no gameplay
-listener, while listen hosts use channels for their local player and GNS/TCP for
+listener, while listen hosts use channels for their local player and GNS UDP for
 remote players. Snapshot cloning and physics replay still cost time.
 
 ## Packet classification

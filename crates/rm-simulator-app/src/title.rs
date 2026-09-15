@@ -113,8 +113,8 @@ pub enum Choice {
     /// Pick the discovered lobby at this index in the last listing. An entry
     /// that is not on the LAN or not compatible is refused with a status.
     Join(usize),
-    /// Join the address field; a picked lobby whose address matches it also
-    /// supplies the transport.
+    /// Join the address field; a picked lobby prefills the address it
+    /// advertised.
     Connect,
     /// Host a named lobby on the address the fields give.
     Host,
@@ -1694,7 +1694,7 @@ fn title_input(
         }
         return;
     }
-    let mut base = base.0.clone();
+    let base = base.0.clone();
     if let Choice::Join(index) = choice {
         let Some(entry) = state.entries.get(index) else {
             return;
@@ -1730,12 +1730,6 @@ fn title_input(
         ));
         state.selected = Some(index);
         return;
-    }
-    if choice == Choice::Connect
-        && let Some(entry) = state.selected.and_then(|i| state.entries.get(i))
-        && entry.address == fields.address.trim()
-    {
-        base.host.transport = entry.transport().expect("compatible selection");
     }
     match join_args(&base, &fields, choice) {
         Ok(_) if !confirming => {

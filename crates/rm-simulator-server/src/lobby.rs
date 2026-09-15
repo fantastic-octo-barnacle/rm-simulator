@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
 //! Optional directory leases and LAN discovery. Workers own all sockets.
-use crate::{net::Transport, protocol::PROTOCOL_VERSION};
+use crate::protocol::PROTOCOL_VERSION;
 use serde::{Deserialize, Serialize};
 use std::{
     io::{self, Read, Write},
@@ -30,7 +30,8 @@ pub struct Listing {
     /// Host address as HOST:PORT. LAN discovery replaces the host part with the
     /// reply's source address and keeps the advertised port.
     pub address: String,
-    /// Transport name, `gns` or `tcp`.
+    /// Gameplay transport name; always `gns`, kept so the discovery JSON stays
+    /// compatible with earlier releases.
     pub transport: String,
     /// Protocol version the host speaks.
     pub protocol: u32,
@@ -40,18 +41,15 @@ pub struct Listing {
     pub lan: bool,
 }
 impl Listing {
-    /// Map the transport name to a [`Transport`]; an unknown name is rejected.
-    pub fn transport(&self) -> Result<Transport, String> {
-        match self.transport.as_str() {
-            "gns" => Ok(Transport::Gns),
-            "tcp" => Ok(Transport::Tcp),
-            _ => Err("Unsupported lobby transport".into()),
-        }
+    /// Whether the host advertises the only gameplay transport this crate
+    /// speaks. Any other name, including the retired `tcp`, is rejected.
+    pub fn gns_transport(&self) -> bool {
+        self.transport == "gns"
     }
-    /// Whether this crate can join the listing: matching protocol and a known
+    /// Whether this crate can join the listing: matching protocol and the GNS
     /// transport.
     pub fn compatible(&self) -> bool {
-        self.protocol == PROTOCOL_VERSION && self.transport().is_ok()
+        self.protocol == PROTOCOL_VERSION && self.gns_transport()
     }
 }
 
@@ -104,13 +102,13 @@ pub fn public_lobbies(host: &str) -> io::Result<Vec<Listing>> {
     Ok(entries.into_iter().filter(valid_listing).collect())
 }
 /// Whether an entry is worth showing: a short printable name, a parseable
-/// address and a supported transport.
+/// address and the GNS transport.
 fn valid_listing(entry: &Listing) -> bool {
     !entry.name.trim().is_empty()
         && entry.name.len() <= 256
         && !entry.name.chars().any(char::is_control)
         && entry.address.parse::<SocketAddr>().is_ok()
-        && entry.transport().is_ok()
+        && entry.gns_transport()
 }
 
 /// Query the LAN for advertisements and collect the replies for 700 ms. Each
@@ -191,7 +189,6 @@ impl Advertisement {
         host: &str,
         name: &str,
         address: SocketAddr,
-        transport: Transport,
         locked: bool,
         public: bool,
         advertised: &str,
@@ -208,11 +205,7 @@ impl Advertisement {
         let mut listing = Listing {
             name: name.trim().into(),
             address: address.to_string(),
-            transport: match transport {
-                Transport::Gns => "gns",
-                Transport::Tcp => "tcp",
-            }
-            .into(),
+            transport: "gns".into(),
             protocol: PROTOCOL_VERSION,
             locked,
             lan: true,
@@ -301,53 +294,39 @@ mod tests {
     use rm_simulator_world::{Field, FieldConfig, Team};
 
     #[test]
-    fn password_admission_covers_both_transports_and_owner_bypass() {
+    fn password_admission_covers_gns_and_owner_bypass() {
         let _serial = crate::net::NATIVE_TEST
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        for transport in [Transport::Tcp, Transport::Gns] {
-            let simulation = Simulation::new(Field::new(&FieldConfig::default()).unwrap(), true)
-                .with_password("secret".into());
-            let server = match transport {
-                Transport::Tcp => Server::bind("127.0.0.1:0", simulation),
-                Transport::Gns => Server::bind_udp("127.0.0.1:0", simulation),
-            }
+        let simulation = Simulation::new(Field::new(&FieldConfig::default()).unwrap(), true)
+            .with_password("secret".into());
+        let server = Server::bind("127.0.0.1:0", simulation).unwrap();
+        let join = |password: &str| {
+            Client::connect_udp_with_password(
+                server.local_addr(),
+                "guest",
+                None,
+                Role::Spectator,
+                Robot::default(),
+                password,
+            )
+        };
+        assert!(join("").is_err());
+        assert!(join("wrong").is_err());
+        assert_eq!(server.peer_count(), 0);
+        let _guest = join("secret").unwrap();
+        assert_eq!(server.peer_count(), 1);
+        let _owner = server
+            .connect_owner(
+                "owner",
+                Team::Red,
+                Role::Spectator,
+                Robot::default(),
+                [0.; 3],
+                0.,
+            )
             .unwrap();
-            let join = |password: &str| match transport {
-                Transport::Tcp => Client::connect_with_password(
-                    server.local_addr(),
-                    "guest",
-                    None,
-                    Role::Spectator,
-                    Robot::default(),
-                    password,
-                ),
-                Transport::Gns => Client::connect_udp_with_password(
-                    server.local_addr(),
-                    "guest",
-                    None,
-                    Role::Spectator,
-                    Robot::default(),
-                    password,
-                ),
-            };
-            assert!(join("").is_err());
-            assert!(join("wrong").is_err());
-            assert_eq!(server.peer_count(), 0);
-            let _guest = join("secret").unwrap();
-            assert_eq!(server.peer_count(), 1);
-            let _owner = server
-                .connect_owner(
-                    "owner",
-                    Team::Red,
-                    Role::Spectator,
-                    Robot::default(),
-                    [0.; 3],
-                    0.,
-                )
-                .unwrap();
-            assert_eq!(server.peer_count(), 2);
-        }
+        assert_eq!(server.peer_count(), 2);
     }
 
     #[test]
@@ -356,7 +335,6 @@ mod tests {
             "invalid directory",
             "Local test",
             "0.0.0.0:17700".parse().unwrap(),
-            Transport::Gns,
             true,
             false,
             "",

@@ -23,7 +23,7 @@ with you. There is no guaranteed response time or paid bounty program.
 ## Deployment scope
 
 This project is in development, and public lobby discovery is disabled. The
-optional lobby directory uses HTTP, and TCP game handshakes carry lobby
+optional lobby directory uses HTTP, and GNS game handshakes carry lobby
 passwords without encryption. Use a match-specific password rather than one
 reused for another service, and keep referee and console endpoints restricted
 to trusted access.

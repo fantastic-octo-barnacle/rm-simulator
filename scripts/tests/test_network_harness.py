@@ -211,7 +211,7 @@ class UdpTests(unittest.TestCase):
             server.bind(('127.0.0.1',0))
             server.settimeout(.2)
             process = subprocess.Popen([sys.executable,str(SCRIPTS/'network-impairment.py'),
-                '--transport','udp','--listen-port','0','--target-port',str(server.getsockname()[1]),
+                '--listen-port','0','--target-port',str(server.getsockname()[1]),
                 '--delay-ms','0','--jitter-ms','0','--blackout-duration-ms','100',
                 '--blackout-after-ms','0','--blackout-direction','upstream'],
                 stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)

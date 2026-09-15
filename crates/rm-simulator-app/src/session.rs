@@ -204,24 +204,14 @@ impl Session {
         let (client, host) = if let Some(address) = &args.connect {
             progress(0.3, "Connecting to host");
             (
-                match args.host.transport {
-                    rm_simulator_server::net::Transport::Gns => Client::connect_udp_with_password(
-                        address,
-                        &args.name,
-                        Some(args.team.into()),
-                        role,
-                        args.robot,
-                        &args.password,
-                    ),
-                    rm_simulator_server::net::Transport::Tcp => Client::connect_with_password(
-                        address,
-                        &args.name,
-                        Some(args.team.into()),
-                        role,
-                        args.robot,
-                        &args.password,
-                    ),
-                }
+                Client::connect_udp_with_password(
+                    address,
+                    &args.name,
+                    Some(args.team.into()),
+                    role,
+                    args.robot,
+                    &args.password,
+                )
                 .map_err(|e| anyhow::anyhow!("connecting to {address}: {e}"))?,
                 None,
             )
@@ -251,24 +241,13 @@ impl Session {
             let server = if args.host.listen.is_none() && args.lobby_name.is_none() {
                 Server::in_process(simulation, false)
             } else {
-                match args.host.transport {
-                    rm_simulator_server::net::Transport::Gns => {
-                        Server::bind_udp_suspended(address, simulation)
-                    }
-                    rm_simulator_server::net::Transport::Tcp => {
-                        Server::bind_suspended(address, simulation)
-                    }
-                }
+                Server::bind_suspended(address, simulation)
             }?;
             server.spawn_clock()?;
             let client =
                 server.connect_owner(&args.name, team, role, args.robot, spawn, spawn_yaw_deg)?;
             if args.host.listen.is_some() {
-                println!(
-                    "hosting players using {:?} at {}",
-                    args.host.transport,
-                    server.local_addr()
-                );
+                println!("hosting players at {}", server.local_addr());
             }
             let http = if let Some(address) = &args.host.http {
                 let http = rm_simulator_server::http::HttpServer::bind(address, server.handle())
@@ -286,7 +265,6 @@ impl Session {
                         &args.lobby_host,
                         name,
                         server.local_addr(),
-                        args.host.transport,
                         !args.password.is_empty(),
                         args.public_lobby,
                         &args.advertise_address,

@@ -64,9 +64,10 @@ Since then the networking passes have measured high RTT, jitter and packet loss
 under controlled impairment and addressed presentation and input responsiveness:
 clients no longer render received snapshots directly. They interpolate remote
 poses through a delayed view buffer and predict their own chassis locally, and
-the gameplay transport is framed UDP. Each TCP snapshot is now an independent
-compact checkpoint; the ordered delta chain that once bound a peer's bytes to
-its previously transmitted frame has been removed.
+the gameplay transport is framed UDP. Periodic checkpoints are delta-coded
+against acknowledged baselines and confirmation checkpoints stay independent, so
+the ordered delta chain that once bound a peer's bytes to its previously
+transmitted frame has been removed.
 
 ## Performance targets
 

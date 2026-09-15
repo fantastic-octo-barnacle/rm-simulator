@@ -2,7 +2,7 @@
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
 //! Standalone Valve GameNetworkingSockets. Commands share a reliable ordered
 //! lane. Periodic state consists of independently compressed, sequenced frames;
-//! no TCP delta baseline crosses this transport. All native I/O stays on workers.
+//! no shared delta baseline crosses this transport. All native I/O stays on workers.
 use super::*;
 use crate::udp_codec::{ClientCodec, ClientEvent, HostPeer, io_error};
 use gns::sys::{ESteamNetworkingConfigValue as Config, ESteamNetworkingConnectionState as State};
@@ -162,7 +162,7 @@ impl Drop for UdpListener {
     }
 }
 /// Close one peer, naming why. Silent disconnects are the hardest GNS fault to
-/// diagnose, so every reason reaches the operator like the TCP path's.
+/// diagnose, so every reason reaches the operator.
 fn remove(
     socket: &GnsSocket<IsServer>,
     peers: &mut BTreeMap<GnsConnection, HostPeer>,
@@ -304,18 +304,17 @@ fn serve(
 }
 
 impl Server {
-    /// Bind Valve GameNetworkingSockets over UDP, retaining host-owned rules.
-    pub fn bind_udp(addr: impl ToSocketAddrs, simulation: Simulation) -> io::Result<Self> {
+    /// Transfer the simulation to its owner worker and bind Valve
+    /// GameNetworkingSockets over UDP to accept clients.
+    /// Start real-time pacing with [`Server::spawn_clock`] or [`Server::run_clock`].
+    pub fn bind(addr: impl ToSocketAddrs, simulation: Simulation) -> io::Result<Self> {
         Self::udp_with_readiness(addr, simulation, true)
     }
-    /// Bind GNS over UDP with the clock and command handling held, until
+    /// Prepare a host whose clock and command handling stay held until
     /// [`HostHandle::ready`] releases them. The app uses this while it loads
     /// local scenery, so a joining client cannot command a field that is not
     /// built yet.
-    pub fn bind_udp_suspended(
-        addr: impl ToSocketAddrs,
-        simulation: Simulation,
-    ) -> io::Result<Self> {
+    pub fn bind_suspended(addr: impl ToSocketAddrs, simulation: Simulation) -> io::Result<Self> {
         Self::udp_with_readiness(addr, simulation, false)
     }
     /// Build the host, its handle and a GNS listener with the given readiness.
@@ -331,7 +330,6 @@ impl Server {
         Ok(Self {
             host,
             handle,
-            listener: None,
             udp: Some(udp),
             stop,
             owner: Mutex::new(None),
@@ -504,7 +502,7 @@ impl Client {
             }
         };
         Ok(Self {
-            stream: ConnectionStop::Worker(stop),
+            stream: stop,
             timing,
             transport_stats: None,
             host_telemetry: None,
@@ -552,7 +550,7 @@ mod tests {
                 config: Default::default(),
                 terrain: None,
             });
-        let server = Server::bind_udp("127.0.0.1:0", simulation).unwrap();
+        let server = Server::bind("127.0.0.1:0", simulation).unwrap();
         server.spawn_clock().unwrap();
         let mut client =
             Client::connect_udp(server.local_addr(), "pilot", None, Role::Pilot).unwrap();
@@ -610,7 +608,7 @@ mod tests {
     fn udp_commands_confirm_state_and_local_owner_works_offline() {
         let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let simulation = Simulation::new(Field::new(&FieldConfig::default()).unwrap(), true);
-        let mut server = Server::bind_udp("127.0.0.1:0", simulation).unwrap();
+        let mut server = Server::bind("127.0.0.1:0", simulation).unwrap();
         let address = server.local_addr();
         let mut owner = server
             .connect_owner(
@@ -656,7 +654,7 @@ mod tests {
     fn reliable_commands_survive_native_packet_loss_and_lag() {
         let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let simulation = Simulation::new(Field::new(&FieldConfig::default()).unwrap(), true);
-        let server = Server::bind_udp("127.0.0.1:0", simulation).unwrap();
+        let server = Server::bind("127.0.0.1:0", simulation).unwrap();
         let global = GnsGlobal::get().unwrap();
         let address = server.local_addr();
         let socket = GnsSocket::new(global)
@@ -745,7 +743,7 @@ mod tests {
     fn udp_referee_confirmation_precedes_pong_and_shutdown_disconnects() {
         let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
         let simulation = Simulation::new(Field::new(&FieldConfig::default()).unwrap(), true);
-        let mut server = Server::bind_udp("127.0.0.1:0", simulation).unwrap();
+        let mut server = Server::bind("127.0.0.1:0", simulation).unwrap();
         let mut client =
             Client::connect_udp(server.local_addr(), "referee", None, Role::Referee).unwrap();
         client.send_confirmed(Command::Step { ticks: 33 }).unwrap();

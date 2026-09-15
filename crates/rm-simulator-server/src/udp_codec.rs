@@ -10,7 +10,7 @@
 //! link. Every deadline is an explicit `now: Instant`, so neither side reads
 //! the host clock on its own.
 use crate::host::{HostHandle, Outbound, PeerRegistration};
-use crate::lifecycle::{ConnectionStop, Stop};
+use crate::lifecycle::Stop;
 use crate::net::QueuedCommand;
 use crate::net::outbox;
 use crate::pacing::{Datagram, Pacer};
@@ -1001,7 +1001,7 @@ impl HostPeer {
                 robot,
                 owner_spawn: None,
                 outbox: sender,
-                stream: ConnectionStop::Worker(self.stop.clone()),
+                stream: self.stop.clone(),
             })
             .map_err(io_error)?;
         self.codec
