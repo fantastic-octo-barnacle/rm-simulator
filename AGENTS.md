@@ -71,7 +71,8 @@ two disagree, this file wins.
   so peers see where each pilot points. The
   referee (`referee.rs`) runs the match clock, rune opportunities and
   stages, rune buffs and a robot HP record per chassis (opened when the
-  chassis joins, all of one configured kind); four small armor modules on
+  chassis joins with the kind its `ChassisPlacement` names, all with the one
+  configured HP); four small armor modules on
   the chassis body score like outpost armor and a defeated robot cannot
   drive, aim or fire. Live bases have HP, shield, outpost protection and
   projectile-scoring plates; destruction ends a running match. Only the defense

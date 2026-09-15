@@ -88,6 +88,10 @@ pub struct ChassisPlacement {
     pub spawn: Pose,
     /// Team whose referee record, base and buffs this chassis belongs to.
     pub team: Team,
+    /// Robot class the referee records for it; a placement that names none
+    /// is an infantry, which is what older serialized layouts hold.
+    #[serde(default)]
+    pub kind: RobotKind,
 }
 
 /// Static field layout. Everything here is placed once; motion comes from the clock.
@@ -592,7 +596,7 @@ impl Field {
     ///
     /// ```rust
     /// use rm_simulator_world::{
-    ///     ChassisConfig, ChassisPlacement, Field, FieldConfig, Pose, Team,
+    ///     ChassisConfig, ChassisPlacement, Field, FieldConfig, Pose, RobotKind, Team,
     /// };
     ///
     /// let mut field = Field::new(&FieldConfig {
@@ -605,6 +609,7 @@ impl Field {
     ///     config: ChassisConfig::default(),
     ///     spawn: Pose::at([x_m, 0.0, ChassisConfig::default().rest_height_m()]),
     ///     team: Team::Blue,
+    /// kind: RobotKind::Infantry,
     /// };
     /// assert_eq!(field.add_chassis(&placement(0.0)).unwrap(), 0);
     /// assert_eq!(field.add_chassis(&placement(1.0)).unwrap(), 1);
@@ -620,7 +625,7 @@ impl Field {
             .map_err(FieldError::Chassis)?;
         if let Some(referee) = &mut self.referee {
             referee
-                .add_robot(id, placement.team)
+                .add_robot(id, placement.team, placement.kind)
                 .map_err(FieldError::Referee)?;
         }
         Ok(id)
@@ -667,7 +672,8 @@ impl Field {
     ///
     /// ```rust
     /// use rm_simulator_world::{
-    ///     ChassisCommand, ChassisConfig, ChassisPlacement, Field, FieldConfig, Pose, Team,
+    ///     ChassisCommand, ChassisConfig, ChassisPlacement, Field, FieldConfig, Pose, RobotKind,
+    ///     Team,
     /// };
     ///
     /// let config = FieldConfig {
@@ -675,6 +681,7 @@ impl Field {
     ///         config: ChassisConfig::default(),
     ///         spawn: Pose::at([0.0, 0.0, ChassisConfig::default().rest_height_m()]),
     ///         team: Team::Red,
+    /// kind: RobotKind::Infantry,
     ///     }],
     ///     runes: vec![],
     ///     outposts: vec![],
@@ -1204,11 +1211,13 @@ mod tests {
                 ChassisPlacement {
                     config: ChassisConfig::default(),
                     team: Team::Red,
+                    kind: RobotKind::Infantry,
                     spawn: Pose::at([0.0, 0.0, spawn]),
                 },
                 ChassisPlacement {
                     config: ChassisConfig::default(),
                     team: Team::Blue,
+                    kind: RobotKind::Infantry,
                     spawn: Pose::at([1.5, 0.6, spawn]),
                 },
             ],
@@ -1856,6 +1865,7 @@ mod tests {
                 config: chassis.clone(),
                 spawn: Pose::at([-10.0, -5.0, chassis.rest_height_m()]),
                 team: Team::Red,
+                kind: RobotKind::Infantry,
             }],
             ..FieldConfig::default()
         })
@@ -1973,6 +1983,7 @@ mod tests {
                 config: ChassisConfig::default(),
                 spawn: Pose::at([0.0, 0.0, ChassisConfig::default().rest_height_m()]),
                 team: Team::Red,
+                kind: RobotKind::Infantry,
             }],
         }
     }
@@ -2112,6 +2123,7 @@ mod tests {
             config: ChassisConfig::default(),
             spawn: Pose::at([x, 0.0, ChassisConfig::default().rest_height_m()]),
             team,
+            kind: RobotKind::Infantry,
         };
         let red = field.add_chassis(&placement(-2.0, Team::Red)).unwrap();
         let blue = field.add_chassis(&placement(-4.0, Team::Blue)).unwrap();
@@ -2169,6 +2181,7 @@ mod tests {
             config: chassis.clone(),
             spawn: Pose::at([x, 0.0, chassis.rest_height_m()]),
             team,
+            kind: RobotKind::Infantry,
         };
         let red = field.add_chassis(&placement(0.0, Team::Red)).unwrap();
         let blue = field.add_chassis(&placement(-2.0, Team::Blue)).unwrap();
@@ -2342,6 +2355,7 @@ mod tests {
         let id = field
             .add_chassis(&ChassisPlacement {
                 team: Team::Red,
+                kind: RobotKind::Infantry,
                 config: Default::default(),
                 spawn: Pose::at([0., 0., 2.]),
             })
@@ -2493,6 +2507,7 @@ mod tests {
                     },
                     spawn: Pose::default(),
                     team: Team::Red,
+                    kind: RobotKind::Infantry,
                 }],
                 ..FieldConfig::default()
             }),
@@ -2580,6 +2595,7 @@ mod tests {
             config: ChassisConfig::default(),
             spawn: Pose::at([0.0, 0.0, 1.0]),
             team: Team::Red,
+            kind: RobotKind::Infantry,
         };
         let id = field.add_chassis(&placement).unwrap();
         let shot = Shot::at_limit(Caliber::Mm17);

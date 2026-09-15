@@ -14,7 +14,7 @@ use crate::lifecycle::{ConnectionStop, Stop};
 use crate::net::QueuedCommand;
 use crate::net::outbox;
 use crate::pacing::{Datagram, Pacer};
-use crate::protocol::{ClientMessage, Command, Role, ServerMessage, Welcome};
+use crate::protocol::{ClientMessage, Command, Robot, Role, ServerMessage, Welcome};
 use crate::udp_snapshot::Feedback;
 use rm_simulator_world::{ChassisConfig, Team};
 use std::collections::VecDeque;
@@ -964,6 +964,7 @@ impl HostPeer {
                     name,
                     team,
                     role,
+                    robot,
                     tick_ns,
                 } = message
                 else {
@@ -983,7 +984,7 @@ impl HostPeer {
                         tick_ns,
                     )));
                 }
-                self.join(name, team, role, password)
+                self.join(name, team, role, robot, password)
             }
         }
     }
@@ -994,6 +995,7 @@ impl HostPeer {
         name: String,
         team: Option<Team>,
         role: Role,
+        robot: Robot,
         password: String,
     ) -> io::Result<()> {
         let (sender, receiver) = outbox::channel(crate::net::OUTBOX_CAPACITY);
@@ -1004,6 +1006,7 @@ impl HostPeer {
                 name,
                 team,
                 role,
+                robot,
                 owner_spawn: None,
                 outbox: sender,
                 stream: ConnectionStop::Worker(self.stop.clone()),
@@ -1110,9 +1113,10 @@ impl ClientCodec {
             config_feedback: VecDeque::new(),
         }
     }
-    /// The opening datagram. It travels on the reliable lane, like every command.
+    /// The opening datagram, as the default robot. It travels on the reliable
+    /// lane, like every command.
     pub(crate) fn hello(name: &str, team: Option<Team>, role: Role) -> io::Result<Vec<u8>> {
-        Self::hello_with_password(name, team, role, "")
+        Self::hello_with_password(name, team, role, Robot::default(), "")
     }
     /// The opening datagram with a password. It travels on the reliable lane,
     /// like every command.
@@ -1120,6 +1124,7 @@ impl ClientCodec {
         name: &str,
         team: Option<Team>,
         role: Role,
+        robot: Robot,
         password: &str,
     ) -> io::Result<Vec<u8>> {
         serde_json::to_vec(&ClientMessage::Hello {
@@ -1128,6 +1133,7 @@ impl ClientCodec {
             name: name.to_string(),
             team,
             role,
+            robot,
             tick_ns: rm_simulator_world::tick_ns(),
         })
         .map_err(io_error)
@@ -1369,6 +1375,7 @@ mod tests {
         field
             .add_chassis(&ChassisPlacement {
                 team: Team::Red,
+                kind: rm_simulator_world::RobotKind::Infantry,
                 spawn: Pose::at([0., 0., 0.3]),
                 config: ChassisConfig::default(),
             })

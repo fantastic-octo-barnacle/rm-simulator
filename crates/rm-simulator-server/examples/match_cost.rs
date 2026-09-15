@@ -52,6 +52,7 @@ fn main() -> anyhow::Result<()> {
         let (point, yaw) = layout::spawn_slot(team, index / 2);
         let id = template.add_chassis(&layout::chassis_placement(
             ChassisConfig::default(),
+            rm_simulator_world::RobotKind::Infantry,
             Some(&terrain),
             team,
             point,

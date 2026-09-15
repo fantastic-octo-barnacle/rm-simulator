@@ -143,9 +143,11 @@ reports `OutpostDestroyed` when HP reaches zero.
 
 Every chassis on the field is a robot: the referee opens an HP record under
 the chassis id and team when the field adds it (`RobotJoined`) and drops it
-when the chassis leaves. All robots are the one `RobotConfig { kind, max_hp
-}` of the configuration, by default a level-1 HP-focused infantry with
-200 HP (Table 5-13); no levelling is modelled.
+when the chassis leaves. Each `ChassisPlacement` names its `RobotKind`
+(Infantry or Hero, from the robot the pilot picked); all robots share the
+one `RobotConfig { max_hp }` of the configuration, by default the level-1
+HP-focused infantry's 200 HP (Table 5-13); no levelling and no per-kind HP
+is modelled.
 
 A chassis carries four small armor modules (front, left, back, right) on its
 body sides, leaning back 15° (an assumption; the manual gives no single

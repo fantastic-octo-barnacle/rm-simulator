@@ -4,6 +4,23 @@
 
 ## Unreleased
 
+- Add a robot page to the title screen: Single Player, Join lobby / address
+  and Create lobby open it before the match starts, with blue seats on the
+  left, red on the right (Hero, Infantry 3, Infantry 4 or a spectating
+  camera) and the referee seat below. The robot is remembered; Enter confirms
+  and Escape goes back. The team and spectator checkboxes are gone.
+
+- Let every pilot name its robot (protocol 33): `Hello` and the chassis
+  assignment carry it, the roster announces it, and the host builds that
+  chassis and fixes its caliber, 42 mm for the mecanum Hero and 17 mm for the
+  omni infantries; a weapon update naming another caliber is refused. The
+  two infantries differ only in the painted number, which every client shows
+  and repaints once the roster arrives. `--robot` takes
+  `hero|infantry-3|infantry-4` (`infantry` still means the Infantry 3), works
+  with `--connect`, and `--projectile-mm` is gone from the app, the server
+  and the host weapon settings. The server's `--robot` is gone too. Both
+  peers must update.
+
 - Reject binary checkpoints that exceed the decoder’s traversal or frame-size
   limits before transmission.
 

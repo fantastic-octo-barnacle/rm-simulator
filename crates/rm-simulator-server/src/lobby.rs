@@ -295,7 +295,7 @@ mod tests {
     use super::*;
     use crate::{
         net::{Client, Server},
-        protocol::Role,
+        protocol::{Robot, Role},
         simulation::Simulation,
     };
     use rm_simulator_world::{Field, FieldConfig, Team};
@@ -319,6 +319,7 @@ mod tests {
                     "guest",
                     None,
                     Role::Spectator,
+                    Robot::default(),
                     password,
                 ),
                 Transport::Gns => Client::connect_udp_with_password(
@@ -326,6 +327,7 @@ mod tests {
                     "guest",
                     None,
                     Role::Spectator,
+                    Robot::default(),
                     password,
                 ),
             };
@@ -335,7 +337,14 @@ mod tests {
             let _guest = join("secret").unwrap();
             assert_eq!(server.peer_count(), 1);
             let _owner = server
-                .connect_owner("owner", Team::Red, Role::Spectator, [0.; 3], 0.)
+                .connect_owner(
+                    "owner",
+                    Team::Red,
+                    Role::Spectator,
+                    Robot::default(),
+                    [0.; 3],
+                    0.,
+                )
                 .unwrap();
             assert_eq!(server.peer_count(), 2);
         }

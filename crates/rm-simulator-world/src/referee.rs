@@ -49,15 +49,18 @@ const EVENT_MEMORY: usize = 48;
 
 pub use rm_simulator_physics::Team;
 
-/// The robot classes a chassis can be recorded as. The live referee models no
-/// difference between them beyond the configured HP.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The robot classes a chassis can be recorded as. Every chassis names its
+/// class in its [`crate::ChassisPlacement`]; the live referee models no
+/// difference between the classes beyond what the record says, and gives
+/// each the one configured HP.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RobotKind {
     /// Hero: 42 mm gun.
     Hero,
     /// Engineer.
     Engineer,
-    /// Infantry: 17 mm gun.
+    /// Infantry: 17 mm gun. The default class of a placement that names none.
+    #[default]
     Infantry,
     /// Sentry.
     Sentry,
@@ -65,23 +68,19 @@ pub enum RobotKind {
     Drone,
 }
 
-/// What every robot that joins the field is: the referee gives each chassis
-/// a robot of this kind with this HP when the field adds it, under the
-/// chassis' id and team.
+/// The HP every robot that joins the field starts with: the referee opens a
+/// record of the placement's [`RobotKind`] with this HP when the field adds a
+/// chassis, under the chassis' id and team. One value serves every class; no
+/// per-class HP table is modelled.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RobotConfig {
-    /// Robot class recorded in the snapshot.
-    pub kind: RobotKind,
     /// Table 5-12/5-13 level-1 values are typical; no levelling is modelled.
     pub max_hp: u32,
 }
 impl Default for RobotConfig {
-    /// An HP-focused level-1 infantry (Table 5-13: 200 HP).
+    /// The HP-focused level-1 infantry value (Table 5-13: 200 HP).
     fn default() -> Self {
-        Self {
-            kind: RobotKind::Infantry,
-            max_hp: 200,
-        }
+        Self { max_hp: 200 }
     }
 }
 
@@ -93,7 +92,8 @@ pub struct RefereeConfig {
     pub rune_teams: Vec<Team>,
     /// Owner of each field outpost, by outpost index.
     pub outpost_teams: Vec<Team>,
-    /// The robot every chassis becomes.
+    /// The HP every chassis' robot starts with; its class comes from the
+    /// placement.
     pub robot: RobotConfig,
     /// Round length in ns. Section 6.6 gives 7 min; the constructor accepts at
     /// most one day and refuses zero.
@@ -1252,13 +1252,18 @@ impl Referee {
             .position(|r| r.id == robot)
             .ok_or("unknown robot id")
     }
-    /// Give a chassis its robot record at full HP. An id already present is
-    /// an error; the field never reuses one.
-    pub fn add_robot(&mut self, robot: u32, team: Team) -> Result<(), &'static str> {
+    /// Give a chassis its robot record of class `kind` at full HP. An id
+    /// already present is an error; the field never reuses one.
+    pub fn add_robot(
+        &mut self,
+        robot: u32,
+        team: Team,
+        kind: RobotKind,
+    ) -> Result<(), &'static str> {
         if self.robot_index(robot).is_ok() {
             return Err("a robot with that id already exists");
         }
-        let RobotConfig { kind, max_hp } = self.config.robot;
+        let RobotConfig { max_hp } = self.config.robot;
         self.gameplay.add_robot(
             robot,
             match team {
@@ -1399,9 +1404,16 @@ mod tests {
             2,
         )
         .unwrap();
-        referee.add_robot(0, Team::Red).unwrap();
-        referee.add_robot(1, Team::Blue).unwrap();
+        referee
+            .add_robot(0, Team::Red, RobotKind::Infantry)
+            .unwrap();
+        referee.add_robot(1, Team::Blue, RobotKind::Hero).unwrap();
         referee.events.clear();
+        // Each record carries the class its placement named, at the one
+        // configured HP.
+        assert_eq!(referee.robots()[0].kind, RobotKind::Infantry);
+        assert_eq!(referee.robots()[1].kind, RobotKind::Hero);
+        assert_eq!(referee.robots()[1].max_hp, referee.robots()[0].max_hp);
         referee
     }
     /// Hit every lit blade of `rune` once per 100 ms from `t`, at `offset`
@@ -1495,7 +1507,7 @@ mod tests {
         lifeless.robot.max_hp = 0;
         assert!(Referee::new(lifeless, vec![RuneKind::Small; 2], 2).is_err());
         let mut twice = referee();
-        assert!(twice.add_robot(0, Team::Red).is_err());
+        assert!(twice.add_robot(0, Team::Red, RobotKind::Infantry).is_err());
         assert!(twice.remove_robot(0).is_ok() && twice.remove_robot(0).is_err());
         let mut long = RefereeConfig::alternating(2, 2);
         long.round_ns = 0;

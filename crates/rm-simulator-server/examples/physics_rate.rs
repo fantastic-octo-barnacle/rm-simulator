@@ -72,6 +72,7 @@ fn spawn(
 ) -> anyhow::Result<u32> {
     Ok(field.add_chassis(&layout::chassis_placement(
         ChassisConfig::default(),
+        rm_simulator_world::RobotKind::Infantry,
         Some(&loaded.terrain),
         team,
         point,

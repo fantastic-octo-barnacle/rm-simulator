@@ -7,8 +7,10 @@ use crate::cad_assets::CadAssets;
 use crate::layout::{
     ChassisSpawner, LayoutOptions, SPAWN_SLOT_SPACING_M, add_terrain, field_config, load_terrain,
 };
-use crate::protocol::{Command, WeaponConfig};
-use rm_simulator_world::{ChassisConfig, Field, FieldError, FieldSnapshot, Team, tick_ns};
+use crate::protocol::{Command, Robot, WeaponConfig};
+use rm_simulator_world::{
+    ChassisConfig, Field, FieldError, FieldSnapshot, RobotKind, Team, tick_ns,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -110,6 +112,9 @@ pub struct Simulation {
     weapon: WeaponConfig,
     weapon_limits: crate::protocol::WeaponLimits,
     pilot_weapons: BTreeMap<u32, WeaponConfig>,
+    /// The robot each pilot's chassis was spawned as; a bot or a chassis
+    /// spawned by configuration alone has no entry.
+    robots: BTreeMap<u32, Robot>,
     /// Intended times of each shooter's recent shots, on the pilot's timeline.
     fired_ns: BTreeMap<u32, VecDeque<u64>>,
     pilot_spawns: BTreeMap<u32, rm_simulator_world::Pose>,
@@ -135,11 +140,6 @@ impl Simulation {
         progress(BuildProgress::BuildingPhysics);
         let mut config = field_config(cad, options);
         config.bases = crate::base_layout::load(cad)?;
-        if chassis.as_ref().is_some_and(|c| c.mecanum)
-            && let Some(referee) = &mut config.referee
-        {
-            referee.robot.kind = rm_simulator_world::referee::RobotKind::Hero;
-        }
         let mut field = Field::new(&config)?;
         if let Some(terrain) = &terrain {
             add_terrain(&mut field, terrain)?;
@@ -174,6 +174,7 @@ impl Simulation {
             weapon: WeaponConfig::default(),
             weapon_limits: Default::default(),
             pilot_weapons: BTreeMap::new(),
+            robots: BTreeMap::new(),
             fired_ns: BTreeMap::new(),
             pilot_spawns: Default::default(),
             fire_records: VecDeque::new(),
@@ -295,20 +296,45 @@ impl Simulation {
         }
         self.paused = paused;
     }
-    /// The chassis configuration new players get, when they get one.
+    /// The chassis configuration a chassis gets when no robot is named for
+    /// it, when the field offers chassis at all.
     pub fn spawner_config(&self) -> Option<&ChassisConfig> {
         self.spawner.as_ref().map(|spawner| &spawner.config)
     }
-    /// Give a player of `team` a chassis in the team's first spawn slot
-    /// that no chassis is standing in.
+    /// Give a player of `team` a chassis of the spawner's default
+    /// configuration in the team's first spawn slot that no chassis is
+    /// standing in. It is no particular robot, so its gun fires the host's
+    /// default caliber; training bots take this path.
     pub fn spawn_chassis(&mut self, team: Team) -> Result<u32, String> {
+        let config = self.spawner_config().cloned();
+        self.spawn_in_slot(team, config, RobotKind::Infantry, None)
+    }
+    /// Give a pilot of `team` the chassis of `robot` in the team's first spawn
+    /// slot that no chassis is standing in. The robot fixes the chassis
+    /// preset, the class the referee records and the caliber its gun fires.
+    pub fn spawn_robot(&mut self, team: Team, robot: Robot) -> Result<u32, String> {
+        self.spawn_in_slot(
+            team,
+            Some(robot.chassis_config()),
+            robot.kind(),
+            Some(robot),
+        )
+    }
+    fn spawn_in_slot(
+        &mut self,
+        team: Team,
+        config: Option<ChassisConfig>,
+        kind: RobotKind,
+        robot: Option<Robot>,
+    ) -> Result<u32, String> {
         let spawner = self
             .spawner
             .as_ref()
             .ok_or("this field offers no chassis")?;
+        let config = config.unwrap_or_else(|| spawner.config.clone());
         let clear = SPAWN_SLOT_SPACING_M / 2.0;
         let placement = (0..)
-            .map(|slot| spawner.slot(team, slot))
+            .map(|slot| spawner.slot_with(config.clone(), kind, team, slot))
             .find(|placement| {
                 let [x, y, _] = placement.spawn.translation_m;
                 self.field
@@ -316,15 +342,11 @@ impl Simulation {
                     .all(|[px, py, _]| (px - x).hypot(py - y) > clear)
             })
             .expect("spawn slots go on forever");
-        let id = self
-            .field
-            .add_chassis(&placement)
-            .map_err(|e| e.to_string())?;
-        self.pilot_spawns.insert(id, placement.spawn);
-        Ok(id)
+        self.place(placement, robot)
     }
-    /// Place a local pilot at a requested FLU position and heading, using the
-    /// same chassis configuration and ground lookup as joining network pilots.
+    /// Place a local pilot at a requested FLU position and heading in the
+    /// spawner's default configuration, using the same ground lookup as
+    /// joining network pilots. Like `spawn_chassis` it is no particular robot.
     pub fn spawn_chassis_at(
         &mut self,
         team: Team,
@@ -336,12 +358,62 @@ impl Simulation {
             .as_ref()
             .ok_or("this field offers no chassis")?;
         let placement = spawner.at(team, spawn_m, yaw_deg);
+        self.place(placement, None)
+    }
+    /// Place a local pilot's `robot` at a requested FLU position and heading,
+    /// using the same chassis preset and ground lookup as a joining network
+    /// pilot who chose it.
+    pub fn spawn_robot_at(
+        &mut self,
+        team: Team,
+        robot: Robot,
+        spawn_m: [f64; 3],
+        yaw_deg: f64,
+    ) -> Result<u32, String> {
+        let spawner = self
+            .spawner
+            .as_ref()
+            .ok_or("this field offers no chassis")?;
+        let placement =
+            spawner.at_with(robot.chassis_config(), robot.kind(), team, spawn_m, yaw_deg);
+        self.place(placement, Some(robot))
+    }
+    fn place(
+        &mut self,
+        placement: rm_simulator_world::ChassisPlacement,
+        robot: Option<Robot>,
+    ) -> Result<u32, String> {
         let id = self
             .field
             .add_chassis(&placement)
             .map_err(|e| e.to_string())?;
         self.pilot_spawns.insert(id, placement.spawn);
+        if let Some(robot) = robot {
+            self.robots.insert(id, robot);
+        }
         Ok(id)
+    }
+    /// The robot a chassis was spawned as; `None` for a bot or a chassis
+    /// spawned by configuration alone.
+    pub fn robot(&self, chassis: u32) -> Option<Robot> {
+        self.robots.get(&chassis).copied()
+    }
+    /// The caliber a chassis' gun fires: its robot's, or the host default
+    /// weapon's for a chassis that is no particular robot.
+    pub fn caliber(&self, chassis: u32) -> rm_simulator_world::Caliber {
+        self.robot(chassis)
+            .map_or(self.weapon.shot.caliber, Robot::caliber)
+    }
+    /// The weapon a chassis fires with: the pilot's admitted settings, else
+    /// the host defaults, always at the chassis' own caliber.
+    pub fn weapon_for(&self, chassis: u32) -> WeaponConfig {
+        let mut weapon = self
+            .pilot_weapons
+            .get(&chassis)
+            .copied()
+            .unwrap_or(self.weapon);
+        weapon.shot.caliber = self.caliber(chassis);
+        weapon
     }
 
     /// Remove a chassis with its input stream, pending shots, results, bot mark
@@ -355,6 +427,7 @@ impl Simulation {
         self.pilot_spawns.remove(&id);
         self.fired_ns.remove(&id);
         self.pilot_weapons.remove(&id);
+        self.robots.remove(&id);
         self.field.remove_chassis(id).map_err(|e| e.to_string())
     }
     /// A copy of the accepted shot journal, oldest first, at most 256 records.
@@ -659,11 +732,7 @@ impl Simulation {
         timing: Option<crate::protocol::FireTiming>,
         intended_ns: u64,
     ) -> Result<u64, String> {
-        let weapon = self
-            .pilot_weapons
-            .get(&shooter)
-            .copied()
-            .unwrap_or(self.weapon);
+        let weapon = self.weapon_for(shooter);
         let fired = self.fired_ns.entry(shooter).or_default();
         if fired
             .iter()
@@ -716,7 +785,7 @@ impl Simulation {
                 }
                 let weapon = self
                     .weapon_limits
-                    .admit(self.weapon.shot.caliber, *weapon)
+                    .admit(self.caliber(*chassis), *weapon)
                     .map_err(str::to_string)?;
                 self.pilot_weapons.insert(*chassis, weapon);
                 Ok(())
@@ -1137,6 +1206,74 @@ mod tests {
         assert_eq!(sim.pilot_weapons[&shooter], weapon);
         sim.remove_chassis(shooter).unwrap();
         assert!(!sim.pilot_weapons.contains_key(&shooter));
+    }
+
+    #[test]
+    fn a_hero_fires_42_mm_and_an_infantry_17_mm_whatever_the_host_default_says() {
+        let mut sim = simulation().with_spawner(ChassisSpawner {
+            config: ChassisConfig::default(),
+            terrain: None,
+        });
+        let hero = sim.spawn_robot(Team::Red, Robot::Hero).unwrap();
+        let infantry = sim.spawn_robot(Team::Blue, Robot::Infantry4).unwrap();
+        assert_eq!(sim.robot(hero), Some(Robot::Hero));
+        assert_eq!(sim.robot(infantry), Some(Robot::Infantry4));
+        assert_eq!(sim.weapon().shot.caliber, rm_simulator_world::Caliber::Mm17);
+        assert_eq!(sim.caliber(hero), rm_simulator_world::Caliber::Mm42);
+        assert_eq!(sim.caliber(infantry), rm_simulator_world::Caliber::Mm17);
+        assert_eq!(
+            sim.weapon_for(hero).shot.caliber,
+            rm_simulator_world::Caliber::Mm42
+        );
+        let placed = sim.field().chassis_config(hero).unwrap();
+        assert!(placed.mecanum);
+        assert!(!sim.field().chassis_config(infantry).unwrap().mecanum);
+        let referee = sim.field().referee().unwrap();
+        let kind = |id| referee.robots().iter().find(|r| r.id == id).unwrap().kind;
+        assert_eq!(kind(hero), RobotKind::Hero);
+        assert_eq!(kind(infantry), RobotKind::Infantry);
+
+        let mut weapon = sim.weapon();
+        weapon.shot = rm_simulator_world::Shot::at_limit(rm_simulator_world::Caliber::Mm17);
+        assert_eq!(
+            sim.apply(&Command::ConfigureWeapon {
+                chassis: hero,
+                weapon
+            })
+            .unwrap_err(),
+            "caliber follows the robot"
+        );
+        weapon.shot = rm_simulator_world::Shot::at_limit(rm_simulator_world::Caliber::Mm42);
+        sim.apply(&Command::ConfigureWeapon {
+            chassis: hero,
+            weapon,
+        })
+        .unwrap();
+        assert_eq!(sim.weapon_for(hero), weapon);
+
+        for shooter in [hero, infantry] {
+            sim.apply(&Command::Fire {
+                shooter,
+                timing: None,
+            })
+            .unwrap();
+        }
+        let calibers: Vec<_> = sim
+            .snapshot()
+            .projectiles
+            .iter()
+            .map(|p| p.caliber)
+            .collect();
+        assert_eq!(
+            calibers,
+            [
+                rm_simulator_world::Caliber::Mm42,
+                rm_simulator_world::Caliber::Mm17
+            ]
+        );
+        sim.remove_chassis(hero).unwrap();
+        assert_eq!(sim.robot(hero), None);
+        assert_eq!(sim.caliber(hero), rm_simulator_world::Caliber::Mm17);
     }
 
     #[test]
