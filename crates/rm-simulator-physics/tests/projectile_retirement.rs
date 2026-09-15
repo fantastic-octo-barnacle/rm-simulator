@@ -132,7 +132,7 @@ fn retirement_waits_for_the_dwell_and_spares_balls_in_flight() {
     for tick in 0..4_000 {
         physics.step(tick * tick_ns(), &frames).unwrap();
         let alive = !physics.snapshot().is_empty();
-        if tick < 60 {
+        if tick * tick_ns() < 60_000_000 {
             // Climbing, at the apex or falling, never touching anything.
             assert!(alive, "a ball in free flight was retired at tick {tick}");
         }
@@ -165,7 +165,9 @@ fn retirement_waits_for_the_dwell_and_spares_balls_in_flight() {
             None,
         )
         .unwrap();
-    for tick in 0..2_000 {
+    // Halfway to its hard flight limit the ball must still be held, whatever
+    // the tick length.
+    for tick in 0..MAX_FLIGHT_NS / 2 / tick_ns() {
         control.step(tick * tick_ns(), &frames).unwrap();
     }
     assert_eq!(control.snapshot().len(), 1);

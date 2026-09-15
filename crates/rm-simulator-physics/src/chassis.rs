@@ -20,7 +20,6 @@
 use crate::{
     Pose, Team,
     projectile::{FRICTION, SMALL_ARMOR_HOUSING_HALF_M},
-    tick_ns,
 };
 use rapier3d_f64::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -743,10 +742,11 @@ impl Chassis {
         }
         Ok(())
     }
-    /// Cast the wheel rays and load the body with this tick's suspension and
-    /// tyre forces. Call once per tick before the world steps.
-    pub(crate) fn apply_forces(&mut self, world: &mut PhysicsWorld) {
-        let dt_s = tick_ns() as f64 * 1e-9;
+    /// Cast the wheel rays and load the body with this slice's suspension and
+    /// tyre forces, integrating the gimbal and wheel spin by `dt_s`. Call once
+    /// per solver slice before the world steps; forces are replaced, not
+    /// accumulated, so repeated calls over one tick are safe.
+    pub(crate) fn apply_forces(&mut self, world: &mut PhysicsWorld, dt_s: f64) {
         self.step_gimbal(dt_s);
         let cfg = &self.config;
         let (pose, linvel, angvel, com) = {
