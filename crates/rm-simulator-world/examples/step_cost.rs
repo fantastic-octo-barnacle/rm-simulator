@@ -48,6 +48,7 @@ fn main() {
                 spawn: rm_simulator_world::Pose::at([0.0, 0.0, config.rest_height_m()]),
                 config,
                 team: Team::Red,
+                kind: rm_simulator_world::RobotKind::Infantry,
             }],
             ..FieldConfig::default()
         })

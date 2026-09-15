@@ -10,7 +10,7 @@ use crate::math::{gltf_child, quat_axis_angle, rotate};
 use anyhow::ensure;
 use rm_simulator_world::{
     ChassisConfig, ChassisPlacement, Field, FieldConfig, OutpostConfig, Pose, RefereeConfig,
-    RuneConfig, RuneKind, Team, set_tick_ns, tick_ns_for_hz,
+    RobotKind, RuneConfig, RuneKind, Team, set_tick_ns, tick_ns_for_hz,
 };
 
 /// Rune face pivots inside the extracted rune asset (glTF axes, metres).
@@ -435,6 +435,7 @@ pub fn add_terrain(field: &mut Field, terrain: &Terrain) -> anyhow::Result<()> {
 /// flat floor without terrain), heading `yaw_deg` from FLU forward.
 pub fn chassis_placement(
     config: ChassisConfig,
+    kind: RobotKind,
     terrain: Option<&Terrain>,
     team: Team,
     spawn: [f64; 3],
@@ -455,6 +456,7 @@ pub fn chassis_placement(
         config,
         spawn,
         team,
+        kind,
     }
 }
 
@@ -473,27 +475,53 @@ pub fn spawn_slot(team: Team, slot: usize) -> ([f64; 3], f64) {
 /// Places chassis for players as they arrive: one configuration, the
 /// ground to set them down on, and the team spawn slots.
 pub struct ChassisSpawner {
-    /// Chassis configuration every player gets.
+    /// Chassis configuration a chassis gets when no robot is named for it:
+    /// training bots and the plain `slot` and `at` placements.
     pub config: ChassisConfig,
     /// Ground to set chassis down on; `None` uses the flat floor at height
     /// zero.
     pub terrain: Option<Terrain>,
 }
 impl ChassisSpawner {
-    /// The placement for a team's `slot`th chassis.
+    /// The placement for a team's `slot`th chassis, in the default
+    /// configuration as an infantry.
     pub fn slot(&self, team: Team, slot: usize) -> ChassisPlacement {
-        let (spawn, yaw_deg) = spawn_slot(team, slot);
-        self.at(team, spawn, yaw_deg)
+        self.slot_with(self.config.clone(), RobotKind::Infantry, team, slot)
     }
-    /// A placement at an explicit point, set down on the ground below it.
+    /// A placement at an explicit point, set down on the ground below it, in
+    /// the default configuration as an infantry.
     pub fn at(&self, team: Team, spawn: [f64; 3], yaw_deg: f64) -> ChassisPlacement {
-        chassis_placement(
+        self.at_with(
             self.config.clone(),
-            self.terrain.as_ref(),
+            RobotKind::Infantry,
             team,
             spawn,
             yaw_deg,
         )
+    }
+    /// The placement for a team's `slot`th chassis with an explicit
+    /// configuration and robot class, for a pilot who chose a robot.
+    pub fn slot_with(
+        &self,
+        config: ChassisConfig,
+        kind: RobotKind,
+        team: Team,
+        slot: usize,
+    ) -> ChassisPlacement {
+        let (spawn, yaw_deg) = spawn_slot(team, slot);
+        self.at_with(config, kind, team, spawn, yaw_deg)
+    }
+    /// A placement at an explicit point with an explicit configuration and
+    /// robot class, set down on the ground below it.
+    pub fn at_with(
+        &self,
+        config: ChassisConfig,
+        kind: RobotKind,
+        team: Team,
+        spawn: [f64; 3],
+        yaw_deg: f64,
+    ) -> ChassisPlacement {
+        chassis_placement(config, kind, self.terrain.as_ref(), team, spawn, yaw_deg)
     }
 }
 
@@ -702,6 +730,7 @@ mod tests {
             let id = field
                 .add_chassis(&ChassisPlacement {
                     team: Team::Red,
+                    kind: rm_simulator_world::RobotKind::Infantry,
                     spawn: Pose::at([start[0], start[1], config.rest_height_m()]),
                     config,
                 })
@@ -838,11 +867,13 @@ mod tests {
         };
         let placement = chassis_placement(
             config.clone(),
+            RobotKind::Hero,
             Some(&terrain),
             Team::Red,
             [1.0, 2.0, 1.0],
             90.0,
         );
+        assert_eq!(placement.kind, RobotKind::Hero);
         assert!(close(
             placement.spawn.translation_m,
             [1.0, 2.0, 0.3 + config.rest_height_m() + 0.01]
@@ -852,7 +883,14 @@ mod tests {
             [0.0, 1.0, 0.0]
         ));
         // Without terrain the flat floor at zero is the ground.
-        let flat = chassis_placement(config.clone(), None, Team::Red, [1.0, 2.0, 1.0], 0.0);
+        let flat = chassis_placement(
+            config.clone(),
+            RobotKind::Infantry,
+            None,
+            Team::Red,
+            [1.0, 2.0, 1.0],
+            0.0,
+        );
         assert!(close(
             flat.spawn.translation_m,
             [1.0, 2.0, config.rest_height_m() + 0.01]
@@ -860,6 +898,7 @@ mod tests {
         // Above the mesh footprint there is no ground: the flat floor applies.
         let outside = chassis_placement(
             config.clone(),
+            RobotKind::Infantry,
             Some(&terrain),
             Team::Blue,
             [9.0, 9.0, 1.0],

@@ -50,6 +50,7 @@ fn fixture() -> (Host, Client, outbox::Receiver) {
             name: "impaired referee".into(),
             team: None,
             role: Role::Referee,
+            robot: Default::default(),
             owner_spawn: None,
             outbox: sender,
             stream: ConnectionStop::Tcp(peer),

@@ -128,7 +128,7 @@ pub fn panel_input(
         } else if title.is_some() {
             if !title_state
                 .as_mut()
-                .is_some_and(|state| state.back_to_main_menu())
+                .is_some_and(|state| state.escape_back())
             {
                 ui.quit_confirm = true;
             }
@@ -625,7 +625,10 @@ pub fn update_panel_rows(
                     ),
                     robot.map_or_else(
                         || p.role.name().to_owned(),
-                        |r| format!("#{} {:?}", r.id, r.kind),
+                        |r| match p.robot {
+                            Some(robot) => format!("#{} {}", r.id, robot.name()),
+                            None => format!("#{} {:?}", r.id, r.kind),
+                        },
                     ),
                     robot.map_or_else(|| "--".into(), |r| format!("{} / {} HP", r.hp, r.max_hp)),
                 ]);

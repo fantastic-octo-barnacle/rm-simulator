@@ -383,8 +383,14 @@ fn run_arm(
     let mut ids = Vec::new();
     for team in Team::BOTH {
         let (spawn, yaw) = layout::spawn_slot(team, 0);
-        let placement =
-            layout::chassis_placement(chassis_config.clone(), Some(terrain), team, spawn, yaw);
+        let placement = layout::chassis_placement(
+            chassis_config.clone(),
+            rm_simulator_world::RobotKind::Infantry,
+            Some(terrain),
+            team,
+            spawn,
+            yaw,
+        );
         ids.push(field.add_chassis(&placement)?);
     }
     for (index, id) in ids.iter().enumerate() {

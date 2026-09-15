@@ -18,7 +18,7 @@ joined with `--connect` takes those from the server.
 | `--play` | Skip the title screen and start a local practice match at once |
 | `--console [ADDR]` | App automation console on localhost, default `127.0.0.1:7790`; see [console commands](console.md) |
 | `--window-mode normal\|unfocused\|headless` | Normal visible window, visible without requesting focus, or GPU rendering without an OS window |
-| `--robot infantry\|hero` | Local/host chassis preset: omni Infantry by default, or mecanum Hero. The server binary accepts the same option; remote clients receive the host preset. |
+| `--robot hero\|infantry-3\|infantry-4` | Robot you drive, on any host: the mecanum Hero fires 42 mm, the omni Infantry 3 (default; `infantry` is accepted) and Infantry 4 fire 17 mm. The two infantries differ only in the painted number |
 | `--cad-assets DIR` | Extracted RMUC CAD directory; relative paths start at the working directory for both manifests and meshes |
 | `--big-rune` / `--no-rune` | Big Rune motion and two-target groups for training (a match always starts with the Small Rune and converts at 3:00), or no rune rules |
 | `--outpost-speed-rad-s R` | Armor ring rotation rate |
@@ -30,8 +30,7 @@ joined with `--connect` takes those from the server.
 | `--collision-view hidden\|overlay\|alone` | Start with the physics geometry drawn as a green wireframe over the scenery or on its own (F3 panel; built in the background on first use; default hidden) |
 | `--start-paused` | Open with the world clock paused |
 | `--screenshot PATH` | Capture the window or headless camera to a PNG once loaded and settled, then exit |
-| `--projectile-mm 17\|42` | Host projectile caliber (default 17; 42 with `--robot hero`; unavailable with `--connect`) |
-| `--muzzle-speed-m-s V` | Starting muzzle speed, default 25 m/s for either caliber; unavailable with `--connect` |
+| `--muzzle-speed-m-s V` | Starting muzzle speed, default 25 m/s for either caliber (the caliber follows each pilot's robot); unavailable with `--connect` |
 | `--physics-rate-hz R` | Shared physics rate: 1000 (default), 500, 250 or 128 Hz; 128 Hz is exactly 7,812,500 ns per tick. Every peer in a match must use the same rate, and a host refuses a client that does not |
 | `--fire-rate-hz R` | Starting firing rate in simulation time, default 20 Hz; unavailable with `--connect` |
 | `--max-fire-rate-hz R` | Host firing-rate cap, default 30 Hz; unavailable with `--connect` |
@@ -65,6 +64,18 @@ joined with `--connect` takes those from the server.
 screen and enter a match at once; the remaining options are the defaults every
 join from the title screen starts from.
 
+## Robot page
+
+Single Player, Join lobby / address and Create lobby all open the robot page
+before the match starts. The blue column is on the left and the red column on
+the right; each offers the Hero (42 mm), Infantry 3 (17 mm), Infantry 4
+(17 mm) and a spectating free camera. The Referee seat sits below them with
+Back and the Start match or Join lobby button. The chosen frame is lit and a
+line below names the seat. Enter confirms, Escape goes back to the page the
+choice came from. The robot is remembered with the other fields; the referee
+seat is not. Two pilots may drive the same robot: a host has no seat list to
+show before the connection is made.
+
 ## Weapon settings
 
 Weapon settings can be changed during a match under **Settings > Weapon**.
@@ -91,8 +102,10 @@ confirmation before sending new shots. A seed, chassis id and intended launch
 time determine the spread sample, so prediction can reproduce it.
 
 Expand **Host weapon settings** on the title screen to set the rate and speed
-limits, caliber, and default spread before practice or creating a lobby. These
-fields are remembered. Remote joins use the host's defaults; in-game adjustments
+limits and default spread before practice or creating a lobby. These
+fields are remembered. The caliber is not a setting: each pilot's robot fixes
+it, 42 mm for the Hero and 17 mm for the infantries, and the host refuses a
+weapon update that names another. Remote joins use the host's defaults; in-game adjustments
 last for the current session. The server binary accepts the same weapon flags.
 
 ## Interface and HUD
@@ -177,4 +190,4 @@ an NVIDIA laptop GPU; Mac performance still needs separate measurements.
 | M | Toggle the large team map |
 | F12 (hold) | Show controls |
 | Toolbar | Mouse-driven Settings, Map, Team, Help, Close and Leave match; appears with the cursor released |
-| Escape | Close the current panel or open Pause; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |
+| Escape | Close the current panel or open Pause; on the robot page, return to the page its choice came from; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |

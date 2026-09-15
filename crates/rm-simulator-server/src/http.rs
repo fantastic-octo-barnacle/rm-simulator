@@ -426,6 +426,7 @@ mod tests {
                 config: Default::default(),
                 spawn: rm_simulator_world::Pose::at([0.0, 0.0, 1.0]),
                 team: rm_simulator_world::Team::Red,
+                kind: rm_simulator_world::RobotKind::Infantry,
             })
             .unwrap();
         let host = Host::new(Simulation::new(field, true), true).unwrap();

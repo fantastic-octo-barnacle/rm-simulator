@@ -3,7 +3,7 @@
 //! Command-line arguments.
 use bevy::prelude::Resource;
 use clap::Parser;
-use rm_simulator_server::protocol::{Role, WeaponConfig};
+use rm_simulator_server::protocol::{Robot, Role, WeaponConfig};
 use rm_simulator_world::{Caliber, Shot, Team, outpost as outpost_rules};
 
 use crate::debug::CollisionView;
@@ -57,9 +57,10 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = WindowMode::Normal)]
     pub window_mode: WindowMode,
 
-    /// Chassis prototype offered by the local host. Remote hosts choose the robot.
-    #[arg(long, value_parser = ["infantry", "hero"], default_value = "infantry", conflicts_with = "connect")]
-    pub robot: String,
+    /// Robot this pilot drives: the mecanum Hero fires 42 mm, the omni
+    /// infantries fire 17 mm. Every host, local or remote, honours the pick.
+    #[arg(long, value_enum, default_value_t = Robot::default())]
+    pub robot: Robot,
     /// Directory holding the extracted RMUC2026 CAD (`manifest.json`, `*.glb`, `equipment/`).
     #[arg(long, default_value_os_t = default_cad_assets())]
     pub cad_assets: std::path::PathBuf,
@@ -102,9 +103,6 @@ pub struct Args {
     /// Draw visual meshes with wireframe lines when supported by the GPU.
     #[arg(long)]
     pub wireframe: bool,
-    /// Projectile caliber fired by the left mouse button: 17 or 42 (mm).
-    #[arg(long, default_value = "17", default_value_if("robot", "hero", "42"), value_parser = parse_caliber, conflicts_with = "connect")]
-    pub projectile_mm: u32,
     /// Starting muzzle speed; defaults to 25 m/s.
     #[arg(long, conflicts_with = "connect")]
     pub muzzle_speed_m_s: Option<f64>,
@@ -252,13 +250,6 @@ fn parse_physics_rate_hz(text: &str) -> Result<u32, String> {
     }
 }
 
-fn parse_caliber(text: &str) -> Result<u32, String> {
-    match text.trim() {
-        "17" => Ok(17),
-        "42" => Ok(42),
-        other => Err(format!("unsupported caliber `{other}`; use 17 or 42")),
-    }
-}
 impl Args {
     /// Whether the command line already names a match to enter. Bare launches
     /// show the title screen; automation (a screenshot, the console) and any
@@ -288,13 +279,9 @@ impl Args {
             Role::Pilot
         }
     }
-    /// The caliber named by `--projectile-mm`: 42 for a Hero, else 17.
+    /// The caliber the chosen robot fires: 42 mm for a Hero, else 17 mm.
     pub fn caliber(&self) -> Caliber {
-        if self.projectile_mm == 42 {
-            Caliber::Mm42
-        } else {
-            Caliber::Mm17
-        }
+        self.robot.caliber()
     }
     /// The round this player fires. The default starting speed is 25 m/s for
     /// either caliber; `--muzzle-speed-m-s` overrides it.
@@ -434,23 +421,33 @@ mod tests {
     }
 
     #[test]
-    fn hero_defaults_to_42_mm_but_explicit_weapon_override_wins() {
+    fn the_robot_fixes_the_caliber_and_travels_to_remote_hosts_too() {
+        let args = Args::parse_from(["rm-simulator"]);
+        assert_eq!(args.robot, Robot::Infantry3);
+        assert_eq!(args.caliber(), Caliber::Mm17);
         let hero = Args::parse_from(["rm-simulator", "--robot", "hero"]);
+        assert_eq!(hero.robot, Robot::Hero);
         assert_eq!(hero.caliber(), Caliber::Mm42);
-        let custom = Args::parse_from(["rm-simulator", "--robot", "hero", "--projectile-mm", "17"]);
-        assert_eq!(custom.caliber(), Caliber::Mm17);
-        assert!(
-            Args::try_parse_from([
-                "rm-simulator",
-                "--connect",
-                "localhost:7700",
-                "--robot",
-                "hero"
-            ])
-            .is_err()
+        assert_eq!(hero.shot().caliber, Caliber::Mm42);
+        assert_eq!(hero.weapon().shot.caliber, Caliber::Mm42);
+        let four = Args::parse_from(["rm-simulator", "--robot", "infantry-4"]);
+        assert_eq!(four.robot, Robot::Infantry4);
+        assert_eq!(four.caliber(), Caliber::Mm17);
+        assert_eq!(
+            Args::parse_from(["rm-simulator", "--robot", "infantry"]).robot,
+            Robot::Infantry3
         );
-        assert!(Args::try_parse_from(["rm-simulator", "--connect", "localhost:7700"]).is_ok());
-        for option in ["--projectile-mm", "--muzzle-speed-m-s", "--fire-rate-hz"] {
+        let remote = Args::parse_from([
+            "rm-simulator",
+            "--connect",
+            "localhost:7700",
+            "--robot",
+            "hero",
+        ]);
+        assert_eq!(remote.robot, Robot::Hero);
+        assert!(Args::try_parse_from(["rm-simulator", "--projectile-mm", "42"]).is_err());
+        assert!(Args::try_parse_from(["rm-simulator", "--robot", "sentry"]).is_err());
+        for option in ["--muzzle-speed-m-s", "--fire-rate-hz"] {
             assert!(
                 Args::try_parse_from(["rm-simulator", "--connect", "localhost:7700", option, "17"])
                     .is_err()
@@ -475,8 +472,8 @@ mod tests {
         );
         let args = Args::parse_from([
             "rm-simulator",
-            "--projectile-mm",
-            "42",
+            "--robot",
+            "hero",
             "--muzzle-speed-m-s",
             "10",
             "--fire-rate-hz",
@@ -490,7 +487,6 @@ mod tests {
             }
         );
         assert_eq!(args.fire_interval_ns(), 500_000_000);
-        assert!(Args::try_parse_from(["rm-simulator", "--projectile-mm", "19"]).is_err());
     }
     #[test]
     fn spawn_argument_parses_three_finite_numbers() {

@@ -103,7 +103,7 @@ The essentials, for driving and for match control:
 | P | Toggle settings; 1 toggles reticle, 2 toggles minimap, - / = adjusts mouse sensitivity |
 | M | Toggle the large team map |
 | F12 (hold) | Show controls |
-| Escape | Close the current panel or open Pause; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |
+| Escape | Close the current panel or open Pause; on the robot page, return to the page its choice came from; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |
 
 The complete command-line reference for both binaries, the weapon settings, the
 HUD and interface behavior, the graphics presets and the full controls table are
@@ -113,10 +113,14 @@ and graphics choices are edited from **Settings** or the toolbar and saved in
 
 ## Title screen and LAN lobbies
 
-A bare launch opens Single Player and Multiplayer choices, with a player name,
-team and spectator options. Single Player starts a local practice field.
+A bare launch opens Single Player and Multiplayer choices with a player name.
+Single Player starts a local practice field.
 Multiplayer lists LAN lobbies on the left and creates a named, optionally
 password-protected lobby on the right. Select a listing, enter its password if needed, and press Join lobby / address.
+Every way in then opens the robot page: blue seats on the left, red on the
+right, each offering the Hero (42 mm), Infantry 3 or Infantry 4 (17 mm) or a
+spectating camera, with the referee seat below. Confirm with Start match or
+Join lobby, or press Enter.
 You can also enter a direct address. The page and lobby list scroll with the
 mouse wheel, trackpad or scrollbar; narrow windows stack the two columns. Public is greyed out pending public connectivity support.
 The firewall tip recommends allowing the app on private networks. Lobby names
@@ -698,15 +702,16 @@ shots near cover. No Vision2027 dependency or copied implementation is required.
 ## Robot equipment
 
 `just run --robot hero --third-person` drives the mecanum Hero; omit `--robot`
-for the omni Infantry. Both carry approximate AM02 armor, LI01 HP lights,
+for the omni Infantry 3, or pick it on the robot page of the title screen. Both carry approximate AM02 armor, LI01 HP lights,
 FI02 underbody RFID hardware, VT03 camera and a muzzle speed monitor. Hero uses
 an SM11-sized housing; Infantry uses SM01. HP segments and defeat state follow
 the referee. FI02 detection and speed-monitor LED sequences are not simulated.
 
-The host offers one chassis and weapon preset to all pilots. A Hero host defaults
-to 42 mm; connected clients use the announced weapon. Configure projectile
-caliber, muzzle speed and firing rate on the host. The chassis preset does not
-change HP, heat or power policies. The visible equipment is decorative;
+Every pilot names its robot when it joins, and the host builds that chassis
+and fixes its caliber: the Hero fires 42 mm, the Infantry 3 and Infantry 4
+fire 17 mm. Muzzle speed and firing rate defaults come from the host. The
+robot does not change HP, heat or power policies, and two pilots may pick the
+same robot. The visible equipment is decorative;
 armor scoring keeps its existing dimensions. [Reference measurements and
 limitations](docs/robot-equipment.md) distinguish modeled details from assumptions.
 

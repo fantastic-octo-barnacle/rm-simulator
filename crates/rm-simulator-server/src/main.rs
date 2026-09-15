@@ -21,13 +21,8 @@ use rm_simulator_world::{
     about = "Headless RoboMaster field host with a referee panel"
 )]
 struct Args {
-    /// Chassis prototype offered to pilots.
-    #[arg(long, value_parser = ["infantry", "hero"], default_value = "infantry")]
-    robot: String,
-    /// Projectile caliber offered to every pilot.
-    #[arg(long, default_value = "17", default_value_if("robot", "hero", "42"), value_parser = parse_caliber)]
-    projectile_mm: u32,
-    /// Starting muzzle speed; defaults to 25 m/s.
+    /// Starting muzzle speed; defaults to 25 m/s. Each pilot's caliber follows
+    /// the robot it chose: 42 mm for the Hero, 17 mm for an infantry.
     #[arg(long)]
     muzzle_speed_m_s: Option<f64>,
     /// Shared physics rate in Hz: 1000 (the default), 500, 250 or 128. It sets
@@ -124,14 +119,6 @@ fn parse_physics_rate_hz(text: &str) -> Result<u32, String> {
     }
 }
 
-fn parse_caliber(text: &str) -> Result<u32, String> {
-    match text.trim() {
-        "17" => Ok(17),
-        "42" => Ok(42),
-        other => Err(format!("unsupported caliber `{other}`; use 17 or 42")),
-    }
-}
-
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let cad = cad_assets::load(&args.cad_assets)?;
@@ -154,13 +141,7 @@ fn main() -> anyhow::Result<()> {
     let simulation = Simulation::from_cad(
         &cad,
         &options,
-        (!args.no_chassis).then(|| {
-            if args.robot == "hero" {
-                ChassisConfig::hero()
-            } else {
-                ChassisConfig::default()
-            }
-        }),
+        (!args.no_chassis).then(ChassisConfig::default),
         args.start_paused,
         |stage| {
             if let BuildProgress::TerrainReady(description) = stage {
@@ -202,15 +183,12 @@ fn main() -> anyhow::Result<()> {
     server.run_clock()
 }
 
+/// The host's starting weapon: 17 mm defaults that every pilot's caliber
+/// overrides with its robot's own.
 fn weapon(args: &Args) -> WeaponConfig {
-    let caliber = if args.projectile_mm == 42 {
-        Caliber::Mm42
-    } else {
-        Caliber::Mm17
-    };
     WeaponConfig {
         shot: Shot {
-            caliber,
+            caliber: Caliber::Mm17,
             speed_m_s: args.muzzle_speed_m_s.unwrap_or(25.0),
         },
         interval_ns: (1e9 / args.fire_rate_hz.clamp(0.1, 1000.0)).ceil() as u64,
@@ -238,14 +216,10 @@ mod tests {
         assert_eq!(args.http, "none");
         assert!(args.no_chassis);
         assert!(Args::try_parse_from(["rm-simulator-server", "--big-rune", "--no-rune"]).is_err());
-        assert_eq!(args.projectile_mm, 17);
         assert_eq!(weapon(&args), WeaponConfig::default());
-        let hero = Args::try_parse_from(["rm-simulator-server", "--robot", "hero"]).unwrap();
-        assert_eq!(hero.projectile_mm, 42);
+        assert!(Args::try_parse_from(["rm-simulator-server", "--robot", "hero"]).is_err());
         let custom = Args::try_parse_from([
             "rm-simulator-server",
-            "--projectile-mm",
-            "42",
             "--muzzle-speed-m-s",
             "30",
             "--fire-rate-hz",
@@ -254,6 +228,6 @@ mod tests {
         .unwrap();
         assert_eq!(weapon(&custom).shot.speed_m_s, 30.0);
         assert_eq!(weapon(&custom).interval_ns, 200_000_000);
-        assert!(Args::try_parse_from(["rm-simulator-server", "--projectile-mm", "19"]).is_err());
+        assert!(Args::try_parse_from(["rm-simulator-server", "--projectile-mm", "42"]).is_err());
     }
 }

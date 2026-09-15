@@ -26,7 +26,10 @@ use std::io::{self, BufRead, Read, Write};
 /// so a host refuses a client that predicts at another rate.
 /// Version 32 defaults periodic UDP checkpoints to packed fine fixed point
 /// with its own embedded trained dictionary. Full confirmations stay exact.
-pub const PROTOCOL_VERSION: u32 = 32;
+/// Version 33 lets each pilot name the [`Robot`] it drives in Hello; the
+/// chassis assignment and the roster repeat it, and the gun caliber follows
+/// the robot instead of one host setting.
+pub const PROTOCOL_VERSION: u32 = 33;
 
 /// The refusal a host sends a client whose physics rate differs from its own.
 /// Both are stated in Hz where the rate is one that is offered, and otherwise
@@ -111,7 +114,7 @@ impl WeaponLimits {
         }
         requested.validate()?;
         if requested.shot.caliber != caliber {
-            return Err("caliber is selected by the host");
+            return Err("caliber follows the robot");
         }
         if requested.shot.speed_m_s > self.max_speed_m_s {
             return Err("muzzle speed exceeds the host limit");
@@ -361,16 +364,135 @@ impl Role {
     }
 }
 
-/// One seat as a short phrase for a join or leave notice: "red driving
-/// chassis 3", "blue, spectating" or "referee".
+/// The robot a pilot asks to drive. Each robot fixes its chassis preset, its
+/// gun caliber and the number printed on its armor, so a host never offers a
+/// caliber of its own: the Hero fires 42 mm rounds from the mecanum chassis
+/// and every infantry fires 17 mm rounds from the omni chassis. The two
+/// infantry differ only in their number.
+///
+/// ```
+/// use rm_simulator_server::protocol::Robot;
+/// use rm_simulator_world::{Caliber, RobotKind};
+///
+/// assert_eq!(Robot::default(), Robot::Infantry3);
+/// assert_eq!(Robot::Hero.caliber(), Caliber::Mm42);
+/// assert_eq!(Robot::Infantry4.caliber(), Caliber::Mm17);
+/// assert!(Robot::Hero.chassis_config().mecanum);
+/// assert!(!Robot::Infantry3.chassis_config().mecanum);
+/// assert_eq!(Robot::Infantry4.kind(), RobotKind::Infantry);
+/// assert_eq!(Robot::Infantry4.number(), 4);
+/// assert_eq!(Robot::parse("infantry-4"), Some(Robot::Infantry4));
+/// assert_eq!(Robot::parse("infantry"), Some(Robot::Infantry3));
+/// assert_eq!(Robot::parse(Robot::Hero.id()), Some(Robot::Hero));
+/// assert_eq!(Robot::Hero.name(), "Hero");
+/// ```
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum,
+)]
+pub enum Robot {
+    /// Mecanum Hero with the 42 mm gun, armor number 1.
+    Hero,
+    /// Omni infantry number 3 with the 17 mm gun. The default for a Hello
+    /// that names no robot.
+    #[default]
+    #[value(name = "infantry-3", alias = "infantry")]
+    Infantry3,
+    /// Omni infantry number 4 with the 17 mm gun, otherwise the same robot.
+    #[value(name = "infantry-4")]
+    Infantry4,
+}
+impl Robot {
+    /// Every robot a pilot can choose, in menu order.
+    pub const ALL: [Robot; 3] = [Robot::Hero, Robot::Infantry3, Robot::Infantry4];
+    /// Display name for menus, notices and the roster.
+    pub fn name(self) -> &'static str {
+        match self {
+            Robot::Hero => "Hero",
+            Robot::Infantry3 => "Infantry 3",
+            Robot::Infantry4 => "Infantry 4",
+        }
+    }
+    /// The command-line and remembered-settings spelling: `hero`,
+    /// `infantry-3` or `infantry-4`. [`Robot::parse`] reads it back.
+    pub fn id(self) -> &'static str {
+        match self {
+            Robot::Hero => "hero",
+            Robot::Infantry3 => "infantry-3",
+            Robot::Infantry4 => "infantry-4",
+        }
+    }
+    /// Read an [`Robot::id`] spelling; `infantry` alone means infantry 3.
+    pub fn parse(text: &str) -> Option<Robot> {
+        match text.trim() {
+            "hero" => Some(Robot::Hero),
+            "infantry" | "infantry-3" => Some(Robot::Infantry3),
+            "infantry-4" => Some(Robot::Infantry4),
+            _ => None,
+        }
+    }
+    /// The caliber this robot's gun fires: 42 mm for the Hero, 17 mm for an
+    /// infantry.
+    pub fn caliber(self) -> rm_simulator_world::Caliber {
+        match self {
+            Robot::Hero => rm_simulator_world::Caliber::Mm42,
+            Robot::Infantry3 | Robot::Infantry4 => rm_simulator_world::Caliber::Mm17,
+        }
+    }
+    /// The robot class the referee records for it.
+    pub fn kind(self) -> rm_simulator_world::RobotKind {
+        match self {
+            Robot::Hero => rm_simulator_world::RobotKind::Hero,
+            Robot::Infantry3 | Robot::Infantry4 => rm_simulator_world::RobotKind::Infantry,
+        }
+    }
+    /// The number printed on its armor: 1 for the Hero, 3 or 4 for an infantry.
+    pub fn number(self) -> u8 {
+        match self {
+            Robot::Hero => 1,
+            Robot::Infantry3 => 3,
+            Robot::Infantry4 => 4,
+        }
+    }
+    /// The chassis preset it drives: the mecanum Hero or the omni infantry.
+    pub fn chassis_config(self) -> rm_simulator_world::ChassisConfig {
+        match self {
+            Robot::Hero => rm_simulator_world::ChassisConfig::hero(),
+            Robot::Infantry3 | Robot::Infantry4 => rm_simulator_world::ChassisConfig::default(),
+        }
+    }
+}
+
+/// One seat as a short phrase for a join or leave notice: "red driving Hero
+/// (chassis 3)", "blue, spectating" or "referee".
 ///
 /// A chassis takes precedence over the role label, so a pilot is named by the
 /// robot it drives. Without a team the role name stands alone, which is how
-/// the referee reads. `team` and `chassis` come from the roster entry, so the
-/// text matches what [`PlayerInfo`] reports for the same seat.
-pub fn describe_seat(team: Option<Team>, role: Role, chassis: Option<u32>) -> String {
+/// the referee reads. `team`, `chassis` and `robot` come from the roster
+/// entry, so the text matches what [`PlayerInfo`] reports for the same seat.
+///
+/// ```
+/// use rm_simulator_server::protocol::{Robot, Role, describe_seat};
+/// use rm_simulator_world::Team;
+///
+/// assert_eq!(
+///     describe_seat(Some(Team::Red), Role::Pilot, Some(3), Some(Robot::Hero)),
+///     "red driving Hero (chassis 3)"
+/// );
+/// assert_eq!(describe_seat(Some(Team::Blue), Role::Spectator, None, None), "blue, spectating");
+/// assert_eq!(describe_seat(None, Role::Referee, None, None), "referee");
+/// ```
+pub fn describe_seat(
+    team: Option<Team>,
+    role: Role,
+    chassis: Option<u32>,
+    robot: Option<Robot>,
+) -> String {
     match (team, role, chassis) {
-        (Some(team), _, Some(chassis)) => format!("{} driving chassis {chassis}", team.name()),
+        (Some(team), _, Some(chassis)) => format!(
+            "{} driving {} (chassis {chassis})",
+            team.name(),
+            robot.map_or("a robot", Robot::name)
+        ),
         (Some(team), _, None) => format!("{}, spectating", team.name()),
         (None, role, _) => role.name().to_string(),
     }
@@ -605,6 +727,7 @@ pub struct FireTiming {
 ///     name: "pilot".into(),
 ///     team: None,
 ///     role: Role::Pilot,
+///     robot: Default::default(),
 ///     tick_ns: rm_simulator_world::tick_ns(),
 /// };
 /// let start = ClientMessage::Command(Command::Referee(
@@ -637,13 +760,15 @@ pub struct FireTiming {
 /// assert_eq!(read_message::<ClientMessage, _>(&mut reader).unwrap(), None);
 /// assert!(read_message::<ClientMessage, _>(&mut BufReader::new(&b"{nope}\n"[..])).is_err());
 ///
-/// // A Hello that omits the newer fields still decodes and is a pilot.
+/// // A Hello that omits the newer fields still decodes and is a pilot in
+/// // infantry 3.
 /// let old: ClientMessage =
 ///     serde_json::from_str(r#"{"Hello":{"protocol":3,"name":"old","team":null}}"#).unwrap();
 /// assert!(matches!(
 ///     old,
 ///     ClientMessage::Hello {
 ///         role: Role::Pilot,
+///         robot: rm_simulator_server::protocol::Robot::Infantry3,
 ///         ..
 ///     }
 /// ));
@@ -686,6 +811,11 @@ pub enum ClientMessage {
         /// operator, so this is a request rather than an assignment.
         #[serde(default)]
         role: Role,
+        /// The robot a pilot asks to drive, which fixes its chassis preset
+        /// and gun caliber. Ignored for a spectator or the referee; a Hello
+        /// that omits it drives infantry 3.
+        #[serde(default)]
+        robot: Robot,
         /// Tick length in nanoseconds this client predicts at, from its own
         /// `--physics-rate-hz`. The whole match must share one rate, so a host
         /// refuses a client whose value differs from its own. An omitted field
@@ -712,6 +842,9 @@ pub struct ChassisAssignment {
     pub id: u32,
     /// Its configuration, for the client's visuals and camera.
     pub config: ChassisConfig,
+    /// The robot it is, which the caliber in the Welcome's weapon follows.
+    #[serde(default)]
+    pub robot: Robot,
 }
 /// The host's answer to [`ClientMessage::Hello`].
 ///
@@ -733,7 +866,8 @@ pub struct Welcome {
     pub role: Role,
     /// Absent unless a pilot, or when the host offers no chassis.
     pub chassis: Option<ChassisAssignment>,
-    /// Host starting settings for each pilot.
+    /// Host starting settings for this pilot, with the caliber of its robot;
+    /// a spectator sees the host's 17 mm defaults.
     pub weapon: WeaponConfig,
     /// Host caps, independent of the starting settings.
     pub weapon_limits: WeaponLimits,
@@ -760,6 +894,9 @@ pub struct PlayerInfo {
     pub role: Role,
     /// The chassis this player drives; only a pilot has one.
     pub chassis: Option<u32>,
+    /// The robot that chassis is; `Some` exactly when `chassis` is.
+    #[serde(default)]
+    pub robot: Option<Robot>,
 }
 
 /// The host's verdict on one deduplicated shot, keyed by shooter and shot id.
@@ -801,6 +938,7 @@ pub struct ShotResult {
 ///     team: None,
 ///     role: Role::Pilot,
 ///     chassis: None,
+///     robot: None,
 /// }]);
 /// let rejected = ServerMessage::Rejected {
 ///     reason: "that chassis is not yours".into(),
@@ -963,6 +1101,7 @@ mod tests {
             name: "pilot".into(),
             team: Some(Team::Blue),
             role: Role::Pilot,
+            robot: Robot::Hero,
             tick_ns: rm_simulator_world::tick_ns(),
         };
         let fire = ClientMessage::Command(Command::Fire {
@@ -1044,6 +1183,7 @@ mod tests {
             hello,
             ClientMessage::Hello {
                 role: Role::Pilot,
+                robot: Robot::Infantry3,
                 ..
             }
         ));
