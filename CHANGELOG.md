@@ -4,6 +4,16 @@
 
 ## Unreleased
 
+- Stop carrying the field package's pure build reports in the repository. The
+  upstream zip's `build-provenance.json`, `deployment.json`,
+  `mesh-simplification.json`, `road-marking-composition.json`,
+  `asset-refresh.json`, `asset-refresh-simplify.json` and
+  `ground-validation.json` are read by no simulator code, script or manifest
+  descriptor, so they are listed under `excluded_build_reports` in
+  `scripts/release-field.json` instead of being tracked through Git LFS. The
+  runtime manifests, both `articulation.json` sidecars, `field-detail-build.json`
+  and the minimap stay.
+
 - Remove the wire-development selectors. Periodic checkpoints are always packed
   fine fixed point with the embedded trained dictionary, and every other message
   is always plain ZSTD; the DEFLATE codec, the JSON checkpoint path and the

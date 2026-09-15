@@ -22,6 +22,17 @@ directory, the build checkout's `local-assets/field`, the checkout's LFS
 [field package](field-package.md). New exports may declare the
 `source-tessellation-v1` collision contract, also described there.
 
+The checked-in `field/` package keeps only what the loader, the minimap and the
+field-detail installer read: the two manifests, `articulation.json` in both
+scopes, `field-detail-build.json`, `minimap.json` and the manifest-referenced
+provenance sidecars. The upstream zip's pure build reports (`build-provenance.json`,
+`deployment.json`, `mesh-simplification.json`, `road-marking-composition.json`,
+`asset-refresh*.json`, `ground-validation.json`) are recorded under
+`excluded_build_reports` in
+[`../scripts/release-field.json`](../scripts/release-field.json) instead of being
+carried in the checkout and the LFS store; the zip and its `sha256` remain the
+record, and re-importing it restores them.
+
 A development installation can place built executables at `local-assets/bin/rm-simulator` and
 `local-assets/bin/rm-simulator-server`. They find the package at `../field` relative to their `bin` directory, so a
 worktree build can be installed without depending on its source checkout. Run:
@@ -47,6 +58,8 @@ python3 scripts/build-semantic-assets.py \
 ```
 
 The compositor verifies input hashes and records them in `build-provenance.json`.
+That report and the other build records stay in the build output (or the upstream
+zip); the checked-in `field/` carries only the runtime metadata listed above.
 It uses optimized scenery and the reference's semantic rune, outpost, base,
 tech-core and
 dart station. The gate selection uses exact triangle ranges, so the compositor
