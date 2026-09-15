@@ -1401,13 +1401,13 @@ mod tests {
         };
         // Elapsed readings, not the number of checks, decide how far rules run.
         for _ in 0..10 {
-            time.advance_ms(1);
+            time.advance(Duration::from_nanos(rm_simulator_world::tick_ns()));
         }
         sending.store(false, Ordering::Relaxed);
         flood.join().unwrap();
         settle(&handle);
         assert_eq!(handle.snapshot().unwrap().tick, 10);
-        time.advance_ms(7);
+        time.advance(Duration::from_nanos(7 * rm_simulator_world::tick_ns()));
         settle(&handle);
         assert_eq!(handle.snapshot().unwrap().tick, 17);
     }
@@ -1421,15 +1421,19 @@ mod tests {
         handle.start_clock().unwrap();
         settle(&handle);
         assert_eq!(handle.snapshot().unwrap().tick, 0);
-        // The clock is checked every 2 ms and runs whole ticks only; the
-        // remainder of a reading carries into the next advance.
-        time.advance(Duration::from_micros(2_500));
+        // The clock is checked on a fixed 2 ms grid and runs whole ticks only;
+        // a partial tick at the end of a reading is dropped, never banked.
+        let tick = rm_simulator_world::tick_ns();
+        let period = CLOCK_PERIOD.as_nanos() as u64;
+        time.advance(Duration::from_nanos(period + 2 * tick));
         settle(&handle);
         assert_eq!(handle.snapshot().unwrap().tick, 2);
-        time.advance(Duration::from_micros(1_000));
+        // A small reading inside the next check window runs nothing.
+        time.advance(Duration::from_nanos(tick / 4));
         settle(&handle);
         assert_eq!(handle.snapshot().unwrap().tick, 2);
-        time.advance(Duration::from_micros(1_000));
+        // Crossing the deadline runs the accumulated whole ticks.
+        time.advance(Duration::from_nanos(period + 2 * tick));
         settle(&handle);
         assert_eq!(handle.snapshot().unwrap().tick, 4);
     }

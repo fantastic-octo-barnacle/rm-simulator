@@ -302,6 +302,10 @@ mod tests {
     };
     #[test]
     fn moving_shot_capture_uses_its_exact_tick_even_after_prediction_passes_it() {
+        let tick = rm_simulator_world::tick_ns();
+        // Times named in world time, aligned to whole ticks.
+        let shot_time = 232_000_000 / tick * tick;
+        let target = 264_000_000 / tick * tick;
         let mut field = Field::new(&FieldConfig {
             chassis: vec![ChassisPlacement {
                 config: ChassisConfig::default(),
@@ -312,7 +316,7 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        field.step(200).unwrap();
+        field.step(200_000_000 / tick).unwrap();
         let baseline = field.snapshot();
         let worker = PredictionWorker::new(field.static_geometry_snapshot(), 0.).unwrap();
         let command = ChassisCommand {
@@ -321,7 +325,7 @@ mod tests {
             ..Default::default()
         };
         field.command_chassis(0, command).unwrap();
-        field.step(32).unwrap();
+        field.step(shot_time / tick - 200_000_000 / tick).unwrap();
         let expected =
             rm_simulator_server::prediction::muzzle_for(&field.snapshot().chassis[0], command);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -330,7 +334,7 @@ mod tests {
             if advanced {
                 let captures = worker.shot_samples(vec![ShotSample {
                     id: 1,
-                    time_ns: 232_000_000,
+                    time_ns: shot_time,
                     aim: command,
                 }]);
                 if let Some((_, _, muzzle)) = captures.first() {
@@ -354,7 +358,7 @@ mod tests {
                     chassis: 0,
                     states: baseline.chassis.clone(),
                     snapshot_time_ns: baseline.time_ns,
-                    target_time_ns: 264_000_000,
+                    target_time_ns: target,
                     inputs: vec![PendingInput {
                         sequence: 1,
                         time_ns: baseline.time_ns,
@@ -362,7 +366,7 @@ mod tests {
                     }],
                 },
             ) {
-                advanced |= proof.target_time_ns == 264_000_000;
+                advanced |= proof.target_time_ns == target;
             }
             assert!(std::time::Instant::now() < deadline);
             std::thread::sleep(std::time::Duration::from_millis(1));
@@ -371,6 +375,7 @@ mod tests {
 
     #[test]
     fn snapshot_gap_keeps_physics_running_then_discards_finalized_movement() {
+        let tick = rm_simulator_world::tick_ns();
         let mut field = Field::new(&FieldConfig {
             chassis: vec![ChassisPlacement {
                 config: ChassisConfig::default(),
@@ -381,7 +386,7 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        field.step(200).unwrap();
+        field.step(200_000_000 / tick).unwrap();
         let baseline = field.snapshot();
         let worker = PredictionWorker::new(field.static_geometry_snapshot(), 0.).unwrap();
         let input = PendingInput {
@@ -417,10 +422,11 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         };
-        let first = wait(1, baseline.time_ns, 400_000_000);
-        let continued = wait(1, baseline.time_ns, 800_000_000);
+        let aligned = |ns: u64| ns / tick * tick;
+        let first = wait(1, baseline.time_ns, aligned(400_000_000));
+        let continued = wait(1, baseline.time_ns, aligned(800_000_000));
         assert!(continued.pose.translation_m[0] > first.pose.translation_m[0] + 0.3);
-        let corrected = wait(2, 800_000_000, 850_000_000);
+        let corrected = wait(2, aligned(800_000_000), aligned(850_000_000));
         assert!(corrected.pose.translation_m[0].abs() < 0.01);
         assert_eq!(field.snapshot(), baseline);
     }

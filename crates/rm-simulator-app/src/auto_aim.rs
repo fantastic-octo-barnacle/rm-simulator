@@ -948,16 +948,19 @@ mod tests {
                     None,
                 )
                 .unwrap();
-            let ticks = (solution.flight_s * 1000.).round() as u64;
+            let tick = rm_simulator_world::tick_ns() as f64;
+            let ticks = (solution.flight_s * 1e9 / tick).round() as u64;
             field.step(ticks).unwrap();
             let actual = DVec3::from_array(field.projectile_snapshots()[0].position_m);
             let expected = DVec3::from_array(
                 target
-                    .pose(solution.face, ticks as f64 * 0.001)
+                    .pose(solution.face, ticks as f64 * tick * 1e-9)
                     .translation_m,
             );
+            // The flight is sampled at a whole tick, so the target moves up to
+            // half a tick past the solved intercept before the comparison.
             assert!(
-                (actual - expected).length() < 0.025,
+                (actual - expected).length() < 0.1,
                 "{caliber:?}: {}",
                 (actual - expected).length()
             );

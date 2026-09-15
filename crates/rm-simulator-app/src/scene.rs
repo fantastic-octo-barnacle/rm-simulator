@@ -726,7 +726,7 @@ fn scene_state_with_hits(
 mod tests {
     use super::*;
     use bevy::math::DVec3;
-    use rm_simulator_world::{Caliber, ChassisConfig, Field, Pose, Shot};
+    use rm_simulator_world::{Caliber, ChassisConfig, Field, Pose, Shot, tick_ns};
 
     fn close(a: [f64; 3], b: [f64; 3]) -> bool {
         a.iter().zip(&b).all(|(a, b)| (a - b).abs() < 1e-4)
@@ -745,8 +745,9 @@ mod tests {
             rune_flash_hz: 2.0,
             rune_flashes: 3,
         };
-        let presented = scene_state_at(&checkpoint, flash, 123_000_000);
-        field.step(123).unwrap();
+        let at = 123_000_000 / tick_ns() * tick_ns();
+        let presented = scene_state_at(&checkpoint, flash, at);
+        field.step(at / tick_ns()).unwrap();
         let actual = scene_state(&field.snapshot(), flash);
         assert!((presented.runes[0].angle_rad - actual.runes[0].angle_rad).abs() < 1e-12);
         assert_eq!(
@@ -777,12 +778,13 @@ mod tests {
         field.rune_mut(0).unwrap().hit(0, 0).unwrap();
         assert_eq!(view(&field).activated_blades, [false; 5]);
         field.rune_mut(0).unwrap().hit(0, 0).unwrap();
-        field.step(2501).unwrap();
+        let deactivate_at = 2_501_000_000_u64.div_ceil(tick_ns()) * tick_ns();
+        field.step(deactivate_at / tick_ns()).unwrap();
         assert_eq!(view(&field).activated_blades, [false; 5]);
         field
             .rune_mut(0)
             .unwrap()
-            .deactivate(2_501_000_000)
+            .deactivate(deactivate_at)
             .unwrap();
         assert_eq!(view(&field).active_blades, [false; 5]);
         assert_eq!(view(&field).progress_stages, [false; 5]);
@@ -863,20 +865,15 @@ mod tests {
         assert!(rune_lit(5_000_000_000, 1_000_000_000, 2.0, 3));
         // The scene adaptation applies it to the activated arms only.
         let mut field = Field::new(&rm_simulator_world::FieldConfig::default()).unwrap();
-        let mut t = 0;
         loop {
-            t += 100;
             field.step(100).unwrap();
             let rune = field.snapshot().runes[0].clone();
             if rune.state == RuneState::Activated {
                 break;
             }
             let blade = rune.active_blade.unwrap();
-            field
-                .rune_mut(0)
-                .unwrap()
-                .hit(t * 1_000_000, blade)
-                .unwrap();
+            let now = field.time_ns();
+            field.rune_mut(0).unwrap().hit(now, blade).unwrap();
         }
         let snapshot = field.snapshot();
         let since = snapshot.runes[0].state_since_ns;
@@ -887,8 +884,11 @@ mod tests {
         };
         let lit = scene_state(&snapshot, flash(0.0));
         assert_eq!(lit.runes[0].activated_blades, [true; 5]);
-        // Step into the dark half of a 2 Hz blink.
-        let dark_at = since + 300_000_000;
+        // Step into the dark half of a 2 Hz blink: the first dark moment at
+        // least one step past the snapshot, wrapped forward by blink periods.
+        let period = 500_000_000;
+        let mut dark_at = since + 300_000_000;
+        dark_at += (snapshot.time_ns.saturating_sub(dark_at) / period + 1) * period;
         field
             .step((dark_at - snapshot.time_ns) / rm_simulator_world::tick_ns())
             .unwrap();
@@ -922,7 +922,7 @@ mod tests {
         field
             .fire(muzzle, Shot::at_limit(Caliber::Mm17), None)
             .unwrap();
-        field.step(300).unwrap();
+        field.step(300_000_000 / tick_ns()).unwrap();
         let snapshot = field.snapshot();
         let hit = snapshot.hits.iter().find(|hit| hit.detected).unwrap();
         let age_ns = snapshot.time_ns - hit.time_ns;

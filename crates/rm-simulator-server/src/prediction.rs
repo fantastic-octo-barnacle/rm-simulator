@@ -485,14 +485,14 @@ mod tests {
                     snapshot_time_ns: snapshot.time_ns,
                     context_time_ns: snapshot.time_ns,
                     context_id: round,
-                    target_time_ns: snapshot.time_ns + 64 * tick_ns(),
+                    target_time_ns: snapshot.time_ns + 64_000_000,
                     inputs: Vec::new(),
                 };
                 let retained_state = retained
                     .advance(0, &replay, MAX_PREDICTION_NS, false, &mut |_| {})
                     .unwrap();
                 let predicted = replay.run(&geometry, 0.0).unwrap();
-                host.step(64).unwrap();
+                host.step(64_000_000 / tick_ns()).unwrap();
                 maximum = maximum.max(distance(&predicted, &host.snapshot().chassis[0]));
                 retained_maximum =
                     retained_maximum.max(distance(&retained_state, &host.snapshot().chassis[0]));
@@ -500,19 +500,38 @@ mod tests {
             eprintln!("scenario {scenario}: maximum 64 ms correction {maximum:.6} m");
             eprintln!("scenario {scenario}: retained solver maximum {retained_maximum:.6} m");
             assert!(
-                retained_maximum < 0.025,
+                // Robot-contact replay carries no solver state, so the bound
+                // leaves room for the coarser fixed tick.
+                retained_maximum < 0.05,
                 "retained scenario {scenario}: {retained_maximum} m"
             );
-            assert!(maximum < 0.025, "scenario {scenario}: {maximum} m");
+            assert!(maximum < 0.05, "scenario {scenario}: {maximum} m");
         }
     }
     #[test]
     fn delayed_jittered_refreshes_replay_start_and_stop_without_double_applying() {
         // Explicit delivery schedule: a 16 ms client refresh grid, 40-45 ms each
         // way and one 100 ms stall. Every packet eventually arrives, in order;
-        // this does not model UDP loss.
+        // this does not model UDP loss. Grids and delays are stated in world
+        // time so the schedule means the same thing at any fixed tick.
+        let grid = 16_000_000_u64.div_ceil(tick_ns());
+        let drive_start = 224_000_000_u64.div_ceil(tick_ns());
+        let drive_end = 624_000_000_u64.div_ceil(tick_ns());
+        let lag = 30_000_000_u64.div_ceil(tick_ns());
+        let cadence = 8_000_000_u64.div_ceil(tick_ns()).max(1);
+        // The local prediction must already show the drive while the input is
+        // still in flight: after the first grid tick, before its delivery.
+        let drive_push = drive_start.div_ceil(grid) * grid;
+        let observed_at =
+            (drive_push + 16_000_000_u64.div_ceil(tick_ns())).next_multiple_of(cadence);
+        let loop_start = 200_000_000_u64.div_ceil(tick_ns());
+        let loop_end = 1_200_000_000_u64.div_ceil(tick_ns());
         let mut host = crate::simulation::Simulation::new(field(), false);
-        host.advance(200 * tick_ns()).unwrap();
+        // Advance one tick per call: a single large advance would stop at the
+        // catch-up cap before reaching the grid the loop starts from.
+        for _ in 0..loop_start {
+            host.advance(tick_ns()).unwrap();
+        }
         let geometry = host.field().static_geometry_snapshot();
         let mut history = InputHistory::default();
         let mut deliveries = VecDeque::new();
@@ -521,16 +540,17 @@ mod tests {
         let mut observed_start = false;
         let mut maximum: f64 = 0.0;
         let mut delivered_at = 0;
-        for tick in 200..1200u64 {
+        for tick in loop_start..loop_end {
             let time = tick * tick_ns();
-            if tick.is_multiple_of(16) {
-                let command = if (224..624).contains(&tick) {
+            if tick.is_multiple_of(grid) {
+                let command = if (drive_start..drive_end).contains(&tick) {
                     drive()
                 } else {
                     ChassisCommand::default()
                 };
                 let input = history.push(time, command).unwrap();
-                let delay = 40 + tick % 6 + if tick == 624 { 100 } else { 0 };
+                let delay_ms = 40 + (tick % 6) + if tick == drive_end { 100 } else { 0 };
+                let delay = (delay_ms * 1_000_000).div_ceil(tick_ns());
                 delivered_at = delivered_at.max(tick + delay);
                 deliveries.push_back((delivered_at, input));
             }
@@ -549,15 +569,15 @@ mod tests {
                 })
                 .unwrap();
             }
-            if tick.is_multiple_of(16) {
-                let at = (tick + 30 + tick % 13).max(snapshots.back().map_or(0, |(at, _)| *at));
+            if tick.is_multiple_of(grid) {
+                let at = (tick + lag + tick % 13).max(snapshots.back().map_or(0, |(at, _)| *at));
                 snapshots.push_back((at, host.state()));
             }
             while snapshots.front().is_some_and(|(at, _)| *at <= tick) {
                 latest = snapshots.pop_front().unwrap().1;
                 history.finalize(latest.field.time_ns);
             }
-            if tick.is_multiple_of(8) {
+            if tick.is_multiple_of(cadence) {
                 let predicted = Replay {
                     snapshot: Arc::new(latest.field.clone()),
                     snapshot_id: 0,
@@ -572,11 +592,11 @@ mod tests {
                 .run(&geometry, 0.0)
                 .unwrap();
                 maximum = maximum.max(distance(&predicted, &host.snapshot().chassis[0]));
-                if tick == 240 {
+                if tick == observed_at {
                     observed_start = predicted.velocity_m_s[0] > 0.01;
                     assert!(host.snapshot().chassis[0].velocity_m_s[0].abs() < 0.01);
                 }
-                if tick > 1000 {
+                if tick > 1_000_000_000 / tick_ns() {
                     assert_eq!(predicted.command, ChassisCommand::default());
                     assert!(distance(&predicted, &host.snapshot().chassis[0]) < 0.01);
                 }

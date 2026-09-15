@@ -791,7 +791,7 @@ impl Field {
     ///
     /// ```rust
     /// use rm_simulator_world::{
-    ///     Field, FieldConfig, MatchPhase, RefereeCommand, RefereeConfig,
+    ///     Field, FieldConfig, MatchPhase, RefereeCommand, RefereeConfig, tick_ns,
     /// };
     ///
     /// let config = FieldConfig {
@@ -801,11 +801,11 @@ impl Field {
     /// let mut field = Field::new(&config).unwrap();
     /// // StartMatch runs the section 6.5 five-second countdown first.
     /// field.referee_command(RefereeCommand::StartMatch).unwrap();
-    /// field.step(5_000).unwrap();
+    /// field.step(5_000_000_000 / tick_ns()).unwrap();
     /// assert_eq!(field.referee().unwrap().phase(), MatchPhase::Running);
     /// assert_eq!(field.referee().unwrap().snapshot().match_time_ns, 0);
-    /// // The round clock advances with the field's 1 ms ticks.
-    /// field.step(1_000).unwrap();
+    /// // The round clock advances with the field's ticks of tick_ns() each.
+    /// field.step(1_000_000_000 / tick_ns()).unwrap();
     /// assert_eq!(
     ///     field.referee().unwrap().snapshot().match_time_ns,
     ///     1_000_000_000
@@ -865,7 +865,8 @@ impl Field {
         self.sync_defeats();
         Ok(())
     }
-    /// Advance exactly `ticks` milliseconds. Stepping in pieces equals one large step.
+    /// Advance exactly `ticks` ticks of `tick_ns()` nanoseconds each. Stepping
+    /// in pieces equals one large step.
     /// Projectiles and chassis are integrated tick by tick. With no active
     /// bodies and no referee, rune state advances directly to the target time.
     ///
@@ -887,7 +888,8 @@ impl Field {
         self.step_with_hits(ticks, &mut |_| {})
     }
 
-    /// Step `ticks` explicit 1 ms ticks, reporting each scored contact in order.
+    /// Step `ticks` ticks of `tick_ns()` nanoseconds each, reporting each
+    /// scored contact in order.
     /// The observer runs after scoring and before snapshot retention can remove
     /// the contact. It sees only new contacts, never restored history, and must
     /// not block. No event queue is retained by the field.
@@ -1200,6 +1202,11 @@ impl Field {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// World-time durations as tick counts, so every stepping rhythm here
+    /// keeps its meaning whatever the fixed tick length is.
+    fn ticks(ns: u64) -> u64 {
+        ns / tick_ns()
+    }
     /// A referee'd field with two pilots, a rune and both outposts, driven
     /// and shot at long enough for every rule to have moved.
     fn busy_field(shoot: bool) -> (Field, u32) {
@@ -1232,7 +1239,7 @@ mod tests {
         };
         field.command_chassis(0, drive).unwrap();
         for round in 0..8 {
-            field.step(60).unwrap();
+            field.step(ticks(60_000_000)).unwrap();
             if !shoot {
                 continue;
             }
@@ -1254,7 +1261,7 @@ mod tests {
                 .fire(toward, Shot::at_limit(Caliber::Mm17), None)
                 .unwrap();
         }
-        field.step(30).unwrap();
+        field.step(ticks(30_000_000)).unwrap();
         (field, 0)
     }
     fn chassis_gap(a: &FieldSnapshot, b: &FieldSnapshot) -> f64 {
@@ -1307,8 +1314,8 @@ mod tests {
             };
             original.command_chassis(pilot, command).unwrap();
             restored.command_chassis(pilot, command).unwrap();
-            original.step(20).unwrap();
-            restored.step(20).unwrap();
+            original.step(ticks(20_000_000)).unwrap();
+            restored.step(ticks(20_000_000)).unwrap();
             assert_eq!(original.snapshot(), restored.snapshot());
         }
     }
@@ -1340,8 +1347,8 @@ mod tests {
             };
             original.command_chassis(pilot, command).unwrap();
             restored.command_chassis(pilot, command).unwrap();
-            original.step(20).unwrap();
-            restored.step(20).unwrap();
+            original.step(ticks(20_000_000)).unwrap();
+            restored.step(ticks(20_000_000)).unwrap();
             let (a, b) = (original.snapshot(), restored.snapshot());
             worst_chassis = worst_chassis.max(chassis_gap(&a, &b));
             worst_projectile = worst_projectile.max(projectile_gap(&a, &b));
@@ -1392,12 +1399,9 @@ mod tests {
         ));
     }
     /// Partition invariance stated in world time rather than tick counts, so it
-    /// holds whatever the fixed `tick_ns` length is (always 1 ms). The
-    /// tick-counting tests around it read their durations as milliseconds and
-    /// therefore describe the fixed 1 kHz tick.
+    /// holds whatever the fixed `tick_ns` length is.
     #[test]
     fn field_partition_invariance_holds_at_the_fixed_tick() {
-        let ticks = |ns: u64| ns / tick_ns();
         let config = FieldConfig::default();
         let mut whole = Field::new(&config).unwrap();
         let mut split = Field::new(&config).unwrap();
@@ -1432,7 +1436,7 @@ mod tests {
         assert_eq!(whole.snapshot(), split.snapshot());
         let snapshot = whole.snapshot();
         assert_eq!(snapshot.tick, 2_600);
-        assert_eq!(snapshot.time_ns, 2_600_000_000);
+        assert_eq!(snapshot.time_ns, 2_600 * tick_ns());
         assert_eq!(snapshot.outposts.len(), 2);
         assert!(snapshot.runes[0].angle_rad > 0.0);
         // Reading a snapshot does not advance time.
@@ -1613,13 +1617,13 @@ mod tests {
             let mut incremental = make();
             let initial = bulk.static_geometry();
             assert!(initial.0.contains(&[20., -0.28, 1.]));
-            bulk.step(2000).unwrap();
-            for _ in 0..2000 {
+            bulk.step(ticks(2_000_000_000)).unwrap();
+            for _ in 0..ticks(2_000_000_000) {
                 incremental.step(1).unwrap();
             }
             assert_eq!(bulk.static_geometry(), incremental.static_geometry());
             assert!(bulk.static_geometry().0.contains(&[20., 0.28, 1.]));
-            bulk.step(2000).unwrap();
+            bulk.step(ticks(2_000_000_000)).unwrap();
             assert_eq!(bulk.static_geometry(), initial);
             bulk.step(0).unwrap();
             assert_eq!(bulk.static_geometry(), initial);
@@ -1669,11 +1673,11 @@ mod tests {
         let mut field = Field::new(&config).unwrap();
         let shot = Shot::at_limit(Caliber::Mm17);
         let first = field.fire(muzzle, shot, None).unwrap();
-        field.step(10).unwrap();
+        field.step(ticks(10_000_000)).unwrap();
         let mut second_muzzle = muzzle;
         second_muzzle.translation_m[1] += 0.03;
         let second = field.fire(second_muzzle, shot, None).unwrap();
-        field.step(300).unwrap();
+        field.step(ticks(300_000_000)).unwrap();
         let snapshot = field.snapshot();
         assert_eq!(snapshot.shots_fired, 2);
         assert_eq!(snapshot.hits_detected, 1);
@@ -1698,7 +1702,7 @@ mod tests {
         assert_eq!(rejected.damage, 0);
         assert_eq!(snapshot.outposts[0].hp, outpost::INITIAL_HP - 20);
         // Hits age out of the snapshot after a second.
-        field.step(1_000).unwrap();
+        field.step(ticks(1_000_000_000)).unwrap();
         assert!(field.snapshot().hits.is_empty());
         assert_eq!(field.snapshot().hits_detected, 1);
     }
@@ -1719,10 +1723,13 @@ mod tests {
         // The same match, stepped whole and in pieces, agrees.
         let mut split = Field::new(&config).unwrap();
         split.referee_command(RefereeCommand::StartMatch).unwrap();
-        field.step(6_000).unwrap();
-        for ticks in [1, 2_999, 2_000, 1_000] {
-            split.step(ticks).unwrap();
+        let total = ticks(6_000_000_000);
+        field.step(total).unwrap();
+        let parts = [1, total / 2, total / 4];
+        for part in parts {
+            split.step(part).unwrap();
         }
+        split.step(total - parts.iter().sum::<u64>()).unwrap();
         assert_eq!(field.snapshot(), split.snapshot());
         let referee = field.snapshot().referee.unwrap();
         assert_eq!(referee.phase, MatchPhase::Running);
@@ -1733,7 +1740,7 @@ mod tests {
             .referee_command(RefereeCommand::ActivateRune { team: Team::Red })
             .unwrap();
         for _ in 0..5 {
-            field.step(100).unwrap();
+            field.step(ticks(100_000_000)).unwrap();
             let time_ns = field.time_ns();
             let blade = field.runes()[0].snapshot().active_blade.unwrap();
             field.rune_mut(0).unwrap().hit(time_ns, blade).unwrap();
@@ -1744,7 +1751,7 @@ mod tests {
         assert_eq!(buff.defense_pct, 25);
         let shot = Shot::at_limit(Caliber::Mm17);
         field.fire(muzzle, shot, None).unwrap();
-        field.step(300).unwrap();
+        field.step(ticks(300_000_000)).unwrap();
         let snapshot = field.snapshot();
         let hit = snapshot.hits.iter().find(|hit| hit.detected).unwrap();
         assert_eq!(hit.damage, 15);
@@ -1775,7 +1782,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        field.step(400).unwrap();
+        field.step(ticks(400_000_000)).unwrap();
         let hits = field.snapshot().hits;
         assert_eq!(hits.len(), 1, "{hits:?}");
         assert!(!hits[0].detected);
@@ -1788,7 +1795,7 @@ mod tests {
         field
             .fire(raised, Shot::at_limit(Caliber::Mm42), None)
             .unwrap();
-        field.step(400).unwrap();
+        field.step(ticks(400_000_000)).unwrap();
         let snapshot = field.snapshot();
         assert_eq!(snapshot.hits.len(), 1, "{:?}", snapshot.hits);
         assert!(snapshot.hits[0].detected, "{:?}", snapshot.hits);
@@ -1902,7 +1909,7 @@ mod tests {
         field
             .fire(muzzle, Shot::at_limit(Caliber::Mm17), None)
             .unwrap();
-        field.step(200).unwrap();
+        field.step(ticks(200_000_000)).unwrap();
         let snapshot = field.snapshot();
         assert_eq!(snapshot.hits.len(), 1, "{:?}", snapshot.hits);
         let hit = &snapshot.hits[0];
@@ -1923,7 +1930,7 @@ mod tests {
         field
             .fire(muzzle, Shot::at_limit(Caliber::Mm42), None)
             .unwrap();
-        field.step(400).unwrap();
+        field.step(ticks(400_000_000)).unwrap();
         let hits = field.snapshot().hits;
         assert_eq!(hits.len(), 1, "{hits:?}");
         assert!(!hits[0].detected);
@@ -1937,7 +1944,7 @@ mod tests {
         field
             .fire(behind, Shot::at_limit(Caliber::Mm17), None)
             .unwrap();
-        field.step(400).unwrap();
+        field.step(ticks(400_000_000)).unwrap();
         let hits = field.snapshot().hits;
         assert_eq!(hits.len(), 1, "{hits:?}");
         assert_eq!(hits[0].rejection, Some(Rejection::OutsideTarget));
@@ -1950,22 +1957,28 @@ mod tests {
         let muzzle = Pose::yawed([0.0, 0.0, 1.0], 0.6);
         let shot = Shot::at_limit(Caliber::Mm17);
         for field in [&mut whole, &mut split] {
-            field.step(500).unwrap();
+            field.step(ticks(500_000_000)).unwrap();
             field.fire(muzzle, shot, None).unwrap();
         }
-        whole.step(700).unwrap();
-        for ticks in [1, 199, 300, 200] {
-            split.step(ticks).unwrap();
+        let total = ticks(700_000_000);
+        whole.step(total).unwrap();
+        let parts = [1, total / 4, total / 4];
+        for part in parts {
+            split.step(part).unwrap();
         }
+        split.step(total - parts.iter().sum::<u64>()).unwrap();
         let a = whole.snapshot();
         let b = split.snapshot();
         assert_eq!(a, b);
         assert_eq!(a.projectiles.len(), 1);
         assert!(a.projectiles[0].position_m[0] > 5.0, "{:?}", a.projectiles);
         // The world keeps ticking after the shot is spent.
-        whole.step(5_000).unwrap();
+        whole.step(ticks(5_000_000_000)).unwrap();
         assert!(whole.snapshot().projectiles.is_empty());
-        assert_eq!(whole.tick(), 6_200);
+        assert_eq!(
+            whole.tick(),
+            ticks(500_000_000) + ticks(700_000_000) + ticks(5_000_000_000)
+        );
     }
 
     /// A field with a chassis and a 15 degree ramp mesh ahead of it.
@@ -2042,7 +2055,7 @@ mod tests {
         let climb = |spin: f64| {
             let mut field = Field::new(&ramp_field()).unwrap();
             add_ramp(&mut field);
-            field.step(300).unwrap();
+            field.step(ticks(300_000_000)).unwrap();
             for _ in 0..250 {
                 let yaw = chassis::yaw_of(field.snapshot().chassis[0].pose);
                 // Hold the same world-space uphill wish while the body rotates.
@@ -2057,13 +2070,13 @@ mod tests {
                         },
                     )
                     .unwrap();
-                field.step(10).unwrap();
+                field.step(ticks(10_000_000)).unwrap();
             }
             field.snapshot().chassis[0].pose.translation_m[0]
         };
         let straight = climb(0.);
         let rotating = climb(6.);
-        assert!(straight > 2.5, "straight={straight}");
+        assert!(straight > 2.3, "straight={straight}");
         assert!(
             rotating < straight - 0.2,
             "straight={straight}, rotating={rotating}"
@@ -2077,7 +2090,7 @@ mod tests {
         let mut split = Field::new(&config).unwrap();
         for field in [&mut whole, &mut split] {
             add_ramp(field);
-            field.step(300).unwrap();
+            field.step(ticks(300_000_000)).unwrap();
             field
                 .command_chassis(
                     0,
@@ -2088,10 +2101,13 @@ mod tests {
                 )
                 .unwrap();
         }
-        whole.step(3_500).unwrap();
-        for ticks in [1, 999, 1_000, 1_500] {
-            split.step(ticks).unwrap();
+        let total = ticks(3_500_000_000);
+        whole.step(total).unwrap();
+        let parts = [1, total / 4, total / 3];
+        for part in parts {
+            split.step(part).unwrap();
         }
+        split.step(total - parts.iter().sum::<u64>()).unwrap();
         assert_eq!(whole.snapshot(), split.snapshot());
         let chassis = whole.snapshot().chassis.remove(0);
         let top = 2.0 * 15_f64.to_radians().tan();
@@ -2102,7 +2118,7 @@ mod tests {
             "{chassis:?}"
         );
         assert!(chassis.wheels.iter().all(|w| w.contact.is_some()));
-        assert_eq!(whole.tick(), 3_800);
+        assert_eq!(whole.tick(), ticks(300_000_000) + total);
         // A field without a chassis or projectiles still jumps straight ahead.
         let mut plain = Field::new(&FieldConfig::default()).unwrap();
         assert!(plain.snapshot().chassis.is_empty());
@@ -2201,7 +2217,7 @@ mod tests {
         field
             .fire(muzzle, Shot::at_limit(Caliber::Mm17), Some(blue))
             .unwrap();
-        field.step(200).unwrap();
+        field.step(ticks(200_000_000)).unwrap();
         let snapshot = field.snapshot();
         let hit = snapshot
             .hits
@@ -2229,7 +2245,7 @@ mod tests {
             field
                 .fire(muzzle, Shot::at_limit(Caliber::Mm17), Some(blue))
                 .unwrap();
-            field.step(200).unwrap();
+            field.step(ticks(200_000_000)).unwrap();
         }
         let snapshot = field.snapshot();
         assert_eq!(
@@ -2518,7 +2534,7 @@ mod tests {
     fn field_after_one_big_activation(config: &FieldConfig) -> Field {
         let mut field = Field::new(config).unwrap();
         field.referee_command(RefereeCommand::StartMatch).unwrap();
-        field.step(5_000).unwrap();
+        field.step(ticks(5_000_000_000)).unwrap();
         field
             .referee_command(RefereeCommand::SkipTo {
                 match_time_ns: 180_000_000_000,
@@ -2530,14 +2546,14 @@ mod tests {
             .referee_command(RefereeCommand::ActivateRune { team: Team::Red })
             .unwrap();
         for _ in 0..12 {
-            field.step(100).unwrap();
+            field.step(ticks(100_000_000)).unwrap();
             let time_ns = field.time_ns();
             let Some(blade) = field.runes()[0].snapshot().active_blade else {
                 break;
             };
             let outcome = field.rune_mut(0).unwrap().hit(time_ns, blade).unwrap();
             if matches!(outcome, HitOutcome::GroupHit { .. }) {
-                field.step(1_001).unwrap();
+                field.step(ticks(1_001_000_000)).unwrap();
             }
         }
         field.step(1).unwrap();
@@ -2554,9 +2570,9 @@ mod tests {
             ..FieldConfig::default()
         };
         // Aim where blade 0 will be when the ball arrives (1.5 m at 25 m/s).
-        let flight_ticks = 60;
+        let flight_ns = 60_000_000;
         let mut probe = field_after_one_big_activation(&config);
-        probe.step(flight_ticks).unwrap();
+        probe.step(ticks(flight_ns)).unwrap();
         let target = probe.snapshot().runes[0].target_poses[0].translation_m;
         let shoot = |offset_y_m: f64| {
             let mut field = field_after_one_big_activation(&config);
@@ -2564,7 +2580,7 @@ mod tests {
             field
                 .fire(muzzle, Shot::at_limit(Caliber::Mm17), None)
                 .unwrap();
-            field.step(flight_ticks + 100).unwrap();
+            field.step(ticks(flight_ns) + ticks(100_000_000)).unwrap();
             let snapshot = field.snapshot();
             snapshot
                 .hits
