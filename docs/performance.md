@@ -43,7 +43,7 @@ cargo run --release -p rm-simulator-server --example match_cost -- local-assets/
 ```
 
 Arguments are CAD path, concurrent matches, pilots per match, and sample count.
-Each sample advances 16 ordinary 1 ms ticks; pilots drive and rotate, and fire
+Each sample advances 16 ordinary ticks; pilots drive and rotate, and fire
 17 mm shots every 128 ms. The probe reports median, p95, p99 and maximum step,
 snapshot and restore time, plus step batches exceeding 16 ms. Loading and startup
 settling happen before sampling. Snapshot/restore measurements are separate from

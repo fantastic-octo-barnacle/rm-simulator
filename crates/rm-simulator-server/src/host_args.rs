@@ -52,12 +52,6 @@ pub struct HostArgs {
     /// the robot it chose: 42 mm for the Hero, 17 mm for an infantry.
     #[arg(long)]
     pub muzzle_speed_m_s: Option<f64>,
-    /// Shared physics rate in Hz: 1000 (the default), 500, 250 or 128. It sets
-    /// the tick length the whole process integrates at, 128 Hz meaning exactly
-    /// 7,812,500 ns, and any other value is refused. On a remote host it states
-    /// the rate this client predicts at, and the host refuses a mismatch.
-    #[arg(long, default_value_t = 1000, value_parser = parse_physics_rate_hz)]
-    pub physics_rate_hz: u32,
     /// Starting shots per second while the trigger is held.
     #[arg(long, default_value_t = 20.0)]
     pub fire_rate_hz: f64,
@@ -98,30 +92,6 @@ pub struct HostArgs {
     pub http: Option<String>,
 }
 
-/// Accept only a measured physics rate. 128 Hz must mean exactly 7,812,500 ns
-/// per tick, so a rate that does not divide one second exactly is refused
-/// rather than rounded into a clock nobody asked for.
-fn parse_physics_rate_hz(text: &str) -> Result<u32, String> {
-    let offered = || {
-        rm_simulator_world::OFFERED_RATES_HZ
-            .iter()
-            .map(|(hz, _)| hz.to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let hz: u32 = text
-        .trim()
-        .parse()
-        .map_err(|_| format!("`{text}` is not a physics rate in Hz; use {}", offered()))?;
-    if rm_simulator_world::tick_ns_for_hz(hz).is_some() {
-        Ok(hz)
-    } else {
-        Err(format!(
-            "unsupported physics rate `{hz}` Hz; use {}",
-            offered()
-        ))
-    }
-}
 
 impl HostArgs {
     /// The host's default caliber: 17 mm. Every pilot's own robot overrides it
@@ -181,7 +151,6 @@ impl HostArgs {
             outpost_speed_rad_s: self.outpost_speed_rad_s,
             terrain: !self.no_field_collision,
             referee: !self.no_referee,
-            physics_rate_hz: self.physics_rate_hz,
             projectile_policy: if self.no_projectile_retirement {
                 ProjectilePolicy::default().without_retirement()
             } else {
@@ -231,7 +200,6 @@ mod tests {
     #[test]
     fn defaults_match_both_binaries() {
         let host = parse(&[]).unwrap().host;
-        assert_eq!(host.physics_rate_hz, 1000);
         assert_eq!(
             host.spread_distribution,
             crate::protocol::SpreadDistribution::Gaussian
@@ -245,7 +213,6 @@ mod tests {
         assert_eq!(options.rune, Some(RuneKind::Small));
         assert_eq!(options.outpost_speed_rad_s, outpost::DEFAULT_SPEED_RAD_S);
         assert!(options.terrain && options.referee);
-        assert_eq!(options.physics_rate_hz, 1000);
     }
 
     #[test]
@@ -309,25 +276,6 @@ mod tests {
             .host;
         assert_eq!(tuned.shot().speed_m_s, 10.0);
         assert_eq!(tuned.fire_interval_ns(), 500_000_000);
-    }
-
-    #[test]
-    fn only_the_measured_physics_rates_parse() {
-        for hz in [1000, 500, 250, 128] {
-            let host = parse(&["--physics-rate-hz", &hz.to_string()]).unwrap().host;
-            assert_eq!(host.physics_rate_hz, hz);
-            // 128 Hz must mean exactly 7,812,500 ns, not a rounded division.
-            assert_eq!(
-                rm_simulator_world::tick_ns_for_hz(host.physics_rate_hz).unwrap() * u64::from(hz),
-                1_000_000_000
-            );
-        }
-        for bad in ["0", "60", "333", "1001", "128.0", "many"] {
-            let error = parse(&["--physics-rate-hz", bad])
-                .expect_err(bad)
-                .to_string();
-            assert!(error.contains("1000, 500, 250, 128"), "{bad}: {error}");
-        }
     }
 
     #[test]

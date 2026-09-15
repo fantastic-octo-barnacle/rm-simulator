@@ -18,12 +18,11 @@ other simulator crate.
 | `src/geometry.rs` | Shared collision captures and read-only clearance queries consumed by the world facade. |
 | `src/motion.rs` | Prescribed rotor and rail motion (`RotorMotion`, `SinusoidalMotion`, `MechanismState`) and fitted armor geometry; rune pose helpers live under `motion::rune`. |
 
-`lib.rs` also holds the clock contract: `DEFAULT_TICK_NS`, `tick_ns()`,
-`valid_tick_ns`, `set_tick_ns`, `OFFERED_RATES_HZ` (1000, 500, 250 and 128 Hz)
-and `tick_ns_for_hz`/`hz_for_tick_ns`, plus the FLU `Pose` and `Team`. Time
-arguments count ticks of `tick_ns()`, and the value freezes on first read so that
-no two parts of one process disagree. The step applies no HP, buffs, activation
-or detection intervals; the world crate owns those decisions.
+`lib.rs` also holds the clock contract: `DEFAULT_TICK_NS` and the `const fn`
+`tick_ns()`, plus the FLU `Pose` and `Team`. Time arguments count ticks of
+`tick_ns()`, which is fixed at 128 Hz (7.8125 ms per tick) with no selector,
+environment override or per-match rate. The step applies no HP, buffs, activation or
+detection intervals; the world crate owns those decisions.
 
 ## Dependencies
 

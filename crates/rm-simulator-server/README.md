@@ -28,7 +28,7 @@ the app is one client of this crate, whether it hosts in-process or connects her
 | `src/network_stats.rs`, `src/network_trace.rs` | Local diagnostics, and bounded transport metadata tracing that never records payloads. |
 | `src/http.rs`, `src/panel.html` | The HTTP/1.1 referee panel and JSON API: `GET /`, `GET /api/state`, `POST /api/referee` and `POST /api/command`. |
 | `src/lobby.rs`, `src/lifecycle.rs`, `src/math.rs`, `src/semantics.rs` | LAN directory leases, the shared worker shutdown flag, wxyz quaternion and matrix helpers, and checksum-bound semantic articulation data. |
-| `src/main.rs` | The headless binary: `--physics-rate-hz`, `--listen`, `--http` and the rune, referee, chassis and collision toggles. |
+| `src/main.rs` | The headless binary: `--listen`, `--http` and the rune, referee, chassis and collision toggles. |
 
 ## Dependencies
 
@@ -56,7 +56,7 @@ Many modules carry doctests, among them `protocol.rs`, `compression.rs`,
 `math.rs`, `cad_assets.rs`, `collision_mesh.rs` and `scripted_link.rs`.
 
 Examples cover the operational checks. `inspect_assets` verifies a package and
-reports semantic bindings and collider counts; `physics_rate`, `match_cost`,
+reports semantic bindings and collider counts; `match_cost`,
 `prediction_replay` and `projectile_retirement` probe the loaded field;
 `network_bandwidth` measures the wire; `train_binary_dictionaries` regenerates
 the embedded checkpoint dictionary.

@@ -37,7 +37,6 @@ fn main() -> anyhow::Result<()> {
             outpost_speed_rad_s: 0.4,
             terrain: true,
             referee: true,
-            physics_rate_hz: 1000,
             projectile_policy: Default::default(),
         },
     );
