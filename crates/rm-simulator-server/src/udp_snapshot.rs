@@ -124,7 +124,14 @@ pub fn envelope_bytes(wire: &Wire) -> Vec<u8> {
 /// process-wide codec. Only the reliable [`Wire::Retire`] request travels this
 /// way; checkpoints carry their own packed framing.
 pub fn encode(wire: Wire) -> Vec<u8> {
-    crate::compression::compress(&envelope_bytes(&wire))
+    encode_with(false, wire)
+}
+/// The [`encode`] framing with an explicit compression flag: `raw = true` writes
+/// the envelope behind [`crate::compression::RAW_MAGIC`] instead of ZSTD, which
+/// is what the loopback transport uses so a local session runs the same frames
+/// without paying for compression.
+pub fn encode_with(raw: bool, wire: Wire) -> Vec<u8> {
+    crate::compression::encode(raw, &envelope_bytes(&wire))
 }
 /// Reads an inflated packed checkpoint or a `Retire` envelope. `Ok(None)` means
 /// the JSON carried no `UdpSnapshot`
@@ -141,7 +148,7 @@ pub fn encode(wire: Wire) -> Vec<u8> {
 /// assert!(parse(br#"{"Pong":{"nonce":1}}"#).unwrap().is_none());
 /// ```
 pub fn parse(bytes: &[u8]) -> io::Result<Option<Wire>> {
-    if bytes.starts_with(b"RMB0") {
+    if bytes.starts_with(crate::binary_snapshot::bitpack::MAGIC) {
         let (delta, epoch, id) = crate::binary_snapshot::bitpack::header(bytes)?;
         return Ok(Some(Wire::Packed {
             epoch,
@@ -163,7 +170,9 @@ pub fn parse(bytes: &[u8]) -> io::Result<Option<Wire>> {
 /// also carries an independent encoding of the same state, and the encoder falls
 /// back to it whenever the delta would be larger, which keeps a single lost
 /// baseline from stalling delivery. States are packed as fine fixed point and
-/// compressed with the embedded checkpoint dictionary.
+/// compressed with the embedded checkpoint dictionary; in raw mode the packed
+/// frame is emitted unchanged, so a loopback peer runs the same baseline
+/// rotation without the dictionary.
 pub struct Encoder {
     epoch: Option<u64>,
     next_id: u64,
@@ -174,6 +183,8 @@ pub struct Encoder {
     retire_age: u64,
     count: u64,
     recover: bool,
+    /// Emit packed frames unchanged instead of dictionary-compressing them.
+    raw: bool,
     compressor: crate::binary_snapshot::Compressor,
     /// Bytes the same states would have taken as independent frames.
     pub full_bytes: u64,
@@ -191,8 +202,19 @@ impl Default for Encoder {
 /// period that is roughly half a second between attempts.
 const RETIRE_RESEND_FRAMES: u64 = 16;
 impl Encoder {
-    /// The packed fine fixed-point encoder with its trained dictionary.
+    /// The packed fine fixed-point encoder with its trained dictionary, which is
+    /// the network default.
     pub fn new() -> Self {
+        Self::with_raw(false)
+    }
+    /// The packed fine fixed-point encoder that emits its `RMB0` frames
+    /// unchanged, for the loopback transport.
+    pub fn new_raw() -> Self {
+        Self::with_raw(true)
+    }
+    /// The packed fine fixed-point encoder with or without dictionary
+    /// compression.
+    fn with_raw(raw: bool) -> Self {
         Self {
             epoch: None,
             next_id: 0,
@@ -202,6 +224,7 @@ impl Encoder {
             retire_age: 0,
             count: 0,
             recover: false,
+            raw,
             compressor: crate::binary_snapshot::Compressor::new(),
             full_bytes: 0,
             sent_bytes: 0,
@@ -219,8 +242,8 @@ impl Encoder {
         self.retire_age = 0;
         Some(Wire::Retire { epoch, id: *id })
     }
-    /// Encodes one frame from an independent player checkpoint, compressed for
-    /// the wire. `epoch` selects the state generation: a change discards every
+    /// Encodes one frame from an independent player checkpoint, framed for the
+    /// wire. `epoch` selects the state generation: a change discards every
     /// baseline and restarts the rotation. Binary traversal and frame-size
     /// violations return an error before transmission.
     ///
@@ -274,7 +297,7 @@ impl Encoder {
         if self.retiring.is_some() {
             self.retire_age += 1;
         }
-        let independent = full_frame(&mut self.compressor, epoch, None, &state)?;
+        let independent = full_frame(&mut self.compressor, self.raw, epoch, None, &state)?;
         self.full_bytes += independent.len() as u64;
         if bytes.len() > BASE_LIMIT {
             self.sent_bytes += independent.len() as u64;
@@ -295,22 +318,25 @@ impl Encoder {
             && let Some((id, baseline)) = self.active.as_ref()
         {
             self.recover = false;
-            full_frame(&mut self.compressor, epoch, Some(*id), baseline)?
+            full_frame(&mut self.compressor, self.raw, epoch, Some(*id), baseline)?
         } else if let Some((id, baseline)) = &self.pending
             && self.count.is_multiple_of(8)
         {
-            full_frame(&mut self.compressor, epoch, Some(*id), baseline)?
+            full_frame(&mut self.compressor, self.raw, epoch, Some(*id), baseline)?
         } else if let Some((id, baseline)) = &self.active {
-            let delta = self
-                .compressor
-                .compress(&crate::binary_snapshot::bitpack::encode(
-                    &state,
-                    Some(baseline),
-                    epoch,
-                    *id,
-                    true,
-                    true,
-                )?);
+            let packed = crate::binary_snapshot::bitpack::encode(
+                &state,
+                Some(baseline),
+                epoch,
+                *id,
+                true,
+                true,
+            )?;
+            let delta = if self.raw {
+                packed
+            } else {
+                self.compressor.compress(&packed)
+            };
             if delta.len() < independent.len() {
                 self.deltas += 1;
                 delta
@@ -361,23 +387,22 @@ impl Encoder {
     }
 }
 /// One packed full frame for `state`, tagged as baseline `id` when the encoder
-/// proposes or refreshes one.
+/// proposes or refreshes one. A raw encoder returns the `RMB0` frame unchanged;
+/// otherwise the checkpoint dictionary compresses it.
 fn full_frame(
     compressor: &mut crate::binary_snapshot::Compressor,
+    raw: bool,
     epoch: u64,
     id: Option<u64>,
     state: &Value,
 ) -> io::Result<Vec<u8>> {
-    Ok(
-        compressor.compress(&crate::binary_snapshot::bitpack::encode(
-            state,
-            None,
-            epoch,
-            id.unwrap_or(0),
-            true,
-            true,
-        )?),
-    )
+    let packed =
+        crate::binary_snapshot::bitpack::encode(state, None, epoch, id.unwrap_or(0), true, true)?;
+    Ok(if raw {
+        packed
+    } else {
+        compressor.compress(&packed)
+    })
 }
 
 /// Client-side delta decoder for one connection.
@@ -784,6 +809,41 @@ mod tests {
         assert!(decoder.receive(wire(&first)).unwrap().0.is_none());
         assert_eq!(decoder.baselines.len(), 1);
     }
+    #[test]
+    fn raw_encoder_emits_packed_frames_and_keeps_the_baseline_rotation() {
+        let mut encoder = Encoder::new_raw();
+        let mut decoder = Decoder::default();
+        for tick in 0..160 {
+            let bytes = encoder.snapshot(0, &source(tick, 0)).unwrap();
+            assert!(
+                bytes.starts_with(crate::binary_snapshot::bitpack::MAGIC),
+                "a raw checkpoint is the packed RMB0 frame itself"
+            );
+            assert!(!bytes.starts_with(crate::binary_snapshot::MAGIC));
+            let (_, ack) = decoder.receive(wire(&bytes)).unwrap();
+            if let Some(ack) = ack
+                && let Some(retire) = encoder.feedback(ack)
+            {
+                let (_, ack) = decoder.receive(retire).unwrap();
+                encoder.feedback(ack.unwrap());
+            }
+            assert!(decoder.baselines.len() <= 2);
+        }
+        assert!(
+            encoder.deltas > 100,
+            "the raw rotation still selects deltas"
+        );
+        // The reliable Retire envelope uses the same raw framing.
+        let retire = encode_with(true, Wire::Retire { epoch: 0, id: 1 });
+        assert!(retire.starts_with(crate::compression::RAW_MAGIC));
+        assert!(matches!(
+            parse(&crate::compression::decompress(&retire, 1 << 20).unwrap())
+                .unwrap()
+                .unwrap(),
+            Wire::Retire { epoch: 0, id: 1 }
+        ));
+    }
+
     #[test]
     fn sustained_updates_save_encoded_bytes_and_caches_stay_bounded() {
         let mut encoder = Encoder::default();

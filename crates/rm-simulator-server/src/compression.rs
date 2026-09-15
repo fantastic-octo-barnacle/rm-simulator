@@ -1,24 +1,35 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
-//! ZSTD wire compression for every message that is not a periodic checkpoint.
+//! Self-identifying wire framing for every message that is not a periodic
+//! checkpoint.
 //!
 //! This module is the one place that knows how a wire frame becomes bytes. The
 //! UDP codec, the owner configuration, the confirmation snapshots and the
-//! client's input batches all call [`compress`] and [`decompress`], so the
-//! framing above them never names an algorithm.
+//! client's input batches all call [`encode`], [`compress`] and [`decompress`],
+//! so the framing above them never names an algorithm.
 //!
-//! Periodic checkpoints do not use this codec: they are bitpacked and compressed
-//! with the checkpoint dictionary in [`crate::binary_snapshot`], whose frames
-//! carry their own [`crate::binary_snapshot::MAGIC`].
+//! Periodic checkpoints do not use this module's ZSTD path: they are bitpacked
+//! and compressed with the checkpoint dictionary in
+//! [`crate::binary_snapshot`], whose frames carry their own
+//! [`crate::binary_snapshot::MAGIC`]. An *uncompressed* periodic checkpoint is
+//! simply the packed `RMB0` frame itself.
 //!
-//! Every frame this module writes is self-describing: it carries [`MAGIC`] in
-//! front of the ZSTD body, so a decoder can tell it from a packed checkpoint and
-//! from a frame that was never compressed. [`decompress`] reads all three, which
-//! is what lets one decoder serve a whole connection.
+//! Every frame this module writes is self-describing: [`compress`] and
+//! [`encode(false, _)`][encode] carry [`MAGIC`] in front of the ZSTD body, while
+//! [`encode(true, _)`][encode] carries [`RAW_MAGIC`] in front of the unchanged
+//! body. [`decompress`] auto-detects all of them plus a bare packed `RMB0`
+//! frame, which is what lets one decoder serve a whole connection without a
+//! decode-side flag: the loopback transport sets `raw` so a local session runs
+//! the same framing without paying for ZSTD.
 use std::{cell::RefCell, io};
 
 /// First four bytes of every frame [`compress`] writes.
 pub const MAGIC: &[u8; 4] = b"RMZ1";
+/// First four bytes of every frame [`encode`] writes with `raw = true`: the
+/// payload follows unchanged. The loopback transport sets it so a local session
+/// keeps the whole codec — framing, delta baselines and input batches — while
+/// skipping ZSTD entirely.
+pub const RAW_MAGIC: &[u8; 4] = b"RMRW";
 /// Compression effort. ZSTD's own default, and the only level the wire uses; a
 /// caller that wants less CPU for a frame does not compress it at all.
 pub const LEVEL: i32 = 3;
@@ -34,8 +45,8 @@ thread_local! {
 }
 
 /// One reusable decompressor for every frame kind this module's `decompress`
-/// accepts. The frame's prefix picks the context, so one decoder serves both a
-/// plain ZSTD message and a dictionary-compressed checkpoint.
+/// accepts. The frame's prefix picks the context: a plain ZSTD message, a
+/// dictionary-compressed checkpoint, a raw body or a bare packed checkpoint.
 struct Decompressor {
     zstd: zstd::bulk::Decompressor<'static>,
     binary_dictionary: zstd::bulk::Decompressor<'static>,
@@ -55,16 +66,58 @@ impl Decompressor {
 
     /// Inflates one frame, refusing to produce more than `limit` bytes. Every
     /// decoder stops at the limit instead of allocating, so the bound protects
-    /// the process from a hostile peer as well as from a decoding bug.
+    /// the process from a hostile peer as well as from a decoding bug. The
+    /// prefix picks the kind: a dictionary checkpoint, a plain ZSTD frame, an
+    /// uncompressed [`RAW_MAGIC`] body or a bare packed `RMB0` frame, which is
+    /// already the inflated checkpoint and passes through unchanged.
     fn decompress(&mut self, bytes: &[u8], limit: usize) -> io::Result<Vec<u8>> {
         if let Some(body) = bytes.strip_prefix(crate::binary_snapshot::MAGIC) {
             return self.binary_dictionary.decompress(body, limit);
         }
-        let body = bytes
-            .strip_prefix(MAGIC)
-            .ok_or_else(|| invalid("not a compressed frame"))?;
-        self.zstd.decompress(body, limit)
+        if let Some(body) = bytes.strip_prefix(MAGIC) {
+            return self.zstd.decompress(body, limit);
+        }
+        if let Some(body) = bytes.strip_prefix(RAW_MAGIC) {
+            return bounded(body, limit);
+        }
+        if bytes.starts_with(crate::binary_snapshot::bitpack::MAGIC) {
+            return bounded(bytes, limit);
+        }
+        Err(invalid("not a compressed frame"))
     }
+}
+
+/// A frame that arrived already inflated: return it unchanged, refusing one past
+/// `limit` instead of truncating it.
+fn bounded(bytes: &[u8], limit: usize) -> io::Result<Vec<u8>> {
+    if bytes.len() > limit {
+        return Err(invalid("inflated frame exceeds limit"));
+    }
+    Ok(bytes.to_vec())
+}
+
+/// Frames one application payload. When `raw` is true the body follows
+/// [`RAW_MAGIC`] unchanged, so a local session keeps every framing decision
+/// above this module while skipping ZSTD; otherwise the body is
+/// [`compress`]ed under [`MAGIC`].
+///
+/// ```
+/// use rm_simulator_server::compression::{RAW_MAGIC, decompress, encode};
+///
+/// let frame = encode(true, b"{\"tick\":7}");
+/// assert!(frame.starts_with(RAW_MAGIC));
+/// assert_eq!(decompress(&frame, 64).unwrap(), b"{\"tick\":7}");
+/// // The compressed form stays exactly `compress`.
+/// assert!(encode(false, b"{\"tick\":7}").starts_with(b"RMZ1"));
+/// ```
+pub fn encode(raw: bool, bytes: &[u8]) -> Vec<u8> {
+    if !raw {
+        return compress(bytes);
+    }
+    let mut frame = Vec::with_capacity(RAW_MAGIC.len() + bytes.len());
+    frame.extend_from_slice(RAW_MAGIC);
+    frame.extend_from_slice(bytes);
+    frame
 }
 
 /// Compresses one frame with the process-wide effort level.
@@ -82,14 +135,18 @@ pub fn compress(bytes: &[u8]) -> Vec<u8> {
 }
 
 /// Decompresses one frame of any kind this module or the checkpoint codec
-/// writes, producing at most `limit` bytes.
+/// writes, producing at most `limit` bytes: a dictionary checkpoint, a plain
+/// ZSTD frame, an uncompressed [`RAW_MAGIC`] body, or a bare packed `RMB0`
+/// frame, which is returned unchanged because it is already inflated.
 ///
 /// ```
-/// use rm_simulator_server::compression::{compress, decompress};
+/// use rm_simulator_server::compression::{compress, decompress, encode};
 ///
 /// let frame = compress(b"{\"tick\":7}");
 /// assert_eq!(decompress(&frame, 64).unwrap(), b"{\"tick\":7}");
-/// // A frame that was never compressed is refused rather than guessed at.
+/// let raw = encode(true, b"{\"tick\":7}");
+/// assert_eq!(decompress(&raw, 64).unwrap(), b"{\"tick\":7}");
+/// // A frame that was never framed is refused rather than guessed at.
 /// assert!(decompress(b"{\"tick\":7}", 64).is_err());
 /// ```
 pub fn decompress(bytes: &[u8], limit: usize) -> io::Result<Vec<u8>> {
@@ -178,6 +235,34 @@ mod tests {
         assert!(decompress(b"", 64).is_err());
         assert!(decompress(b"{\"tick\":1}", 64).is_err());
         assert!(decompress(b"RMBXnonsense", 64).is_err());
+        assert!(
+            decompress(b"RMRW", 64).is_ok(),
+            "an empty raw body is legal"
+        );
+    }
+
+    #[test]
+    fn a_raw_frame_round_trips_and_respects_the_limit() {
+        let source = frame();
+        let raw = encode(true, &source);
+        assert!(raw.starts_with(RAW_MAGIC));
+        assert_eq!(raw.len(), RAW_MAGIC.len() + source.len());
+        assert_eq!(decompress(&raw, source.len()).unwrap(), source);
+        // One byte past the limit fails rather than truncating.
+        assert!(decompress(&raw, source.len() - 1).is_err());
+        // The compressed form is exactly `compress`, so the flag is the only
+        // difference between the two framings.
+        assert_eq!(encode(false, &source), compress(&source));
+    }
+
+    #[test]
+    fn a_bare_packed_checkpoint_passes_through_unchanged() {
+        // A packed `RMB0` frame is already the inflated checkpoint, so the
+        // decoder returns it whole for `udp_snapshot::parse` to inspect.
+        let mut packed = crate::binary_snapshot::bitpack::MAGIC.to_vec();
+        packed.extend_from_slice(&[1u8; 64]);
+        assert_eq!(decompress(&packed, 128).unwrap(), packed);
+        assert!(decompress(&packed, packed.len() - 1).is_err());
     }
 
     #[test]

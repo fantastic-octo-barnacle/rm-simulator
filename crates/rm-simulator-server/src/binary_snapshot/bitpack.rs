@@ -6,6 +6,10 @@
 use serde_json::{Map, Number, Value};
 use std::io;
 
+/// First four bytes of every packed checkpoint [`encode`] writes. A frame that
+/// starts with it is already the inflated checkpoint, so the wire framing above
+/// it passes it through unchanged.
+pub const MAGIC: &[u8; 4] = b"RMB0";
 const LIMIT: usize = 4 << 20;
 // Application assumptions, not rulebook constants. Fixed-point escapes retain
 // exact f64 values when a number is outside these ranges or off these grids.
@@ -416,7 +420,7 @@ pub fn encode(
         return Err(invalid());
     }
     let mut w = Writer {
-        bytes: b"RMB0".to_vec(),
+        bytes: MAGIC.to_vec(),
         bit: 32,
         packed,
         fixed,
@@ -441,7 +445,7 @@ pub fn encode(
 /// does not validate the body; callers must still call `decode` with a pinned
 /// baseline before delivering any state.
 pub fn header(bytes: &[u8]) -> io::Result<(bool, u64, u64)> {
-    if bytes.len() > LIMIT || !bytes.starts_with(b"RMB0") || bytes.get(4).is_none_or(|b| *b > 3) {
+    if bytes.len() > LIMIT || !bytes.starts_with(MAGIC) || bytes.get(4).is_none_or(|b| *b > 3) {
         return Err(invalid());
     }
     let mut r = Reader {
@@ -461,7 +465,7 @@ pub fn decode(
     baseline: Option<(&Value, u64)>,
     epoch: u64,
 ) -> io::Result<(Value, u64)> {
-    if bytes.len() > LIMIT || !bytes.starts_with(b"RMB0") || bytes.get(4).is_none_or(|b| *b > 3) {
+    if bytes.len() > LIMIT || !bytes.starts_with(MAGIC) || bytes.get(4).is_none_or(|b| *b > 3) {
         return Err(invalid());
     }
     let mut r = Reader {
@@ -538,7 +542,7 @@ mod tests {
             for delta in [false, true] {
                 for len in 0..256 {
                     let mut writer = Writer {
-                        bytes: b"RMB0".to_vec(),
+                        bytes: MAGIC.to_vec(),
                         bit: 32,
                         packed,
                         fixed: flags & 2 != 0,

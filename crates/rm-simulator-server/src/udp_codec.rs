@@ -9,6 +9,12 @@
 //! socket and these structs; a test drives the same structs over a scripted
 //! link. Every deadline is an explicit `now: Instant`, so neither side reads
 //! the host clock on its own.
+//!
+//! A codec is created either compressed, for a real UDP peer, or uncompressed
+//! (`raw`), for the in-process owner link. Decoding never needs the flag:
+//! [`crate::compression::decompress`] recognizes both framings, so a raw peer
+//! runs the same baseline rotation, input batches and owner handshake without
+//! paying for ZSTD.
 use crate::host::{HostHandle, Outbound, PeerRegistration};
 use crate::lifecycle::Stop;
 use crate::net::QueuedCommand;
@@ -26,7 +32,7 @@ use std::time::{Duration, Instant};
 const CHUNK: usize = 1000;
 /// Bytes of RMG1 header before each fragment: magic, lane byte, revision, total
 /// application length and fragment index.
-const HEADER: usize = 21;
+pub(crate) const HEADER: usize = 21;
 /// Largest application frame any transport may carry, taken from the protocol's
 /// line cap.
 const MAX_WIRE: usize = crate::protocol::MAX_LINE_BYTES;
@@ -106,11 +112,12 @@ impl OwnerConfigSender {
         self.acked == Some(revision) && self.pending.is_none()
     }
     /// The framed owner-configuration message for `config`.
-    fn frame(config: &ChassisConfig) -> io::Result<Vec<u8>> {
+    fn frame(config: &ChassisConfig, raw: bool) -> io::Result<Vec<u8>> {
         let message = ServerMessage::OwnerConfig(Box::new(crate::owner_stream::OwnerConfig::new(
             config.clone(),
         )));
-        Ok(crate::compression::compress(
+        Ok(crate::compression::encode(
+            raw,
             &crate::snapshot_codec::encode_player_message(&message),
         ))
     }
@@ -121,6 +128,7 @@ impl OwnerConfigSender {
         &mut self,
         revision: crate::owner_stream::ConfigRevision,
         config: &ChassisConfig,
+        raw: bool,
     ) -> io::Result<Option<Vec<u8>>> {
         match &self.pending {
             Some((pending, _)) if *pending == revision => {
@@ -132,7 +140,7 @@ impl OwnerConfigSender {
                 Ok(self.pending.as_ref().map(|(_, bytes)| bytes.clone()))
             }
             _ => {
-                let bytes = Self::frame(config)?;
+                let bytes = Self::frame(config, raw)?;
                 self.pending = Some((revision, bytes.clone()));
                 self.age = 0;
                 Ok(Some(bytes))
@@ -331,8 +339,9 @@ fn decode_fixed_frame(frame: &[u8]) -> io::Result<Command> {
 ///
 /// Refuses an empty batch, more than [`MAX_INPUT_FRAMES`] frames, any command
 /// that is not pilot input and any packet that would need more than the
-/// 1,000-byte single-datagram budget.
-fn input_batch(inputs: &VecDeque<Command>) -> io::Result<Vec<u8>> {
+/// 1,000-byte single-datagram budget. `raw` selects the uncompressed framing the
+/// loopback transport uses; the decoder auto-detects it.
+fn input_batch(inputs: &VecDeque<Command>, raw: bool) -> io::Result<Vec<u8>> {
     if inputs.is_empty() || inputs.len() > MAX_INPUT_FRAMES {
         return Err(io_error("invalid input count"));
     }
@@ -407,7 +416,7 @@ fn input_batch(inputs: &VecDeque<Command>) -> io::Result<Vec<u8>> {
         previous_bits = Some(command_bits(&frame.command));
     }
     let mut packet = INPUT_BATCH_MAGIC.to_vec();
-    packet.extend(crate::compression::compress(&bytes));
+    packet.extend(crate::compression::encode(raw, &bytes));
     if packet.len() > CHUNK {
         return Err(io_error("input batch exceeds one datagram"));
     }
@@ -731,20 +740,28 @@ pub(crate) struct PeerCodec {
     encoder: crate::udp_snapshot::Encoder,
     encoding: crate::network_stats::EncodingStats,
     owner_config: OwnerConfigSender,
+    /// Emit uncompressed frames, for the in-process owner link.
+    raw: bool,
 }
 impl PeerCodec {
     /// Creates the host codec for a peer the carrier admitted at `admitted`.
-    /// `rate_bytes_per_s` is the pacing budget.
-    pub(crate) fn new(admitted: Instant, rate_bytes_per_s: u32) -> Self {
+    /// `rate_bytes_per_s` is the pacing budget; `raw` selects the uncompressed
+    /// framing the loopback transport uses.
+    pub(crate) fn new(admitted: Instant, rate_bytes_per_s: u32, raw: bool) -> Self {
         Self {
             admitted,
             chassis: None,
             joined: false,
             revision: 0,
             pacer: Pacer::new(rate_bytes_per_s),
-            encoder: crate::udp_snapshot::Encoder::default(),
+            encoder: if raw {
+                crate::udp_snapshot::Encoder::new_raw()
+            } else {
+                crate::udp_snapshot::Encoder::default()
+            },
             encoding: Default::default(),
             owner_config: OwnerConfigSender::default(),
+            raw,
         }
     }
     /// When the carrier accepted this peer; the pacer and the hello timeout both
@@ -793,7 +810,7 @@ impl PeerCodec {
             if !self.owner_config.answer(feedback)
                 && let Some(retire) = self.encoder.feedback(feedback)
             {
-                let bytes = crate::udp_snapshot::encode(retire);
+                let bytes = crate::udp_snapshot::encode_with(self.raw, retire);
                 self.queue_control(now, &bytes)?;
             }
             return Ok(PeerRequest::Handled);
@@ -840,7 +857,10 @@ impl PeerCodec {
                     self.encoding.owner_bytes += bytes.len() as u64;
                     self.pacer.owner(self.elapsed(now), bytes);
                 }
-            } else if let Some(bytes) = self.owner_config.offer(revision, &anchor.owner.config)? {
+            } else if let Some(bytes) =
+                self.owner_config
+                    .offer(revision, &anchor.owner.config, self.raw)?
+            {
                 self.queue_control(now, &bytes)?;
             }
         }
@@ -855,7 +875,7 @@ impl PeerCodec {
             self.encoding.raw_world_bytes += raw.len() as u64;
             self.encoder.snapshot(state.input_epoch, &raw)?
         } else {
-            frame.compressed().to_vec()
+            frame.body(self.raw).to_vec()
         };
         let revision = self.next_revision()?;
         let frames = packets(revision, !frame.periodic, &compressed)?;
@@ -873,7 +893,7 @@ impl PeerCodec {
         // A lost `Retired` answer would otherwise pin the retiring baseline
         // forever and stop new ones being proposed.
         if let Some(retire) = self.encoder.resend_retire() {
-            let bytes = crate::udp_snapshot::encode(retire);
+            let bytes = crate::udp_snapshot::encode_with(self.raw, retire);
             self.queue_control(now, &bytes)?;
         }
         Ok(())
@@ -893,8 +913,9 @@ impl PeerCodec {
 
 /// One peer's whole host-side leg: admission, the seat it was given, its bounded
 /// outbox and the codec above. `gns_transport::serve` drives one of these per
-/// connection; a test drives one over a scripted link. Dropping it releases the
-/// seat, so a closed carrier never strands a chassis.
+/// socket connection, `Server::connect_owner` drives one over the in-process
+/// loopback link, and a test drives one over a scripted link. Dropping it
+/// releases the seat, so a closed carrier never strands a chassis.
 pub struct HostPeer {
     handle: HostHandle,
     codec: PeerCodec,
@@ -903,20 +924,33 @@ pub struct HostPeer {
     welcome: Option<Welcome>,
     outgoing: Vec<Datagram>,
     last_delivery_report: Instant,
+    /// Owner-only placement carried into the host's join, which is what grants
+    /// authority no network hello can claim. `None` for every socket peer.
+    owner_spawn: Option<([f64; 3], f64)>,
 }
 impl HostPeer {
     /// `admitted` is when the carrier accepted this peer; the hello timeout and
-    /// the pacer both measure from it.
-    pub fn new(handle: HostHandle, admitted: Instant, rate_bytes_per_s: u32) -> Self {
+    /// the pacer both measure from it. `raw` selects the uncompressed framing
+    /// the loopback transport uses.
+    pub fn new(handle: HostHandle, admitted: Instant, rate_bytes_per_s: u32, raw: bool) -> Self {
         Self {
             handle,
-            codec: PeerCodec::new(admitted, rate_bytes_per_s),
+            codec: PeerCodec::new(admitted, rate_bytes_per_s, raw),
             stop: Stop::default(),
             seat: None,
             welcome: None,
             outgoing: Vec::new(),
             last_delivery_report: admitted,
+            owner_spawn: None,
         }
+    }
+    /// Registers this peer as the embedded owner's seat, placing its chassis at
+    /// `spawn_m` (an FLU position in metres) with `yaw_deg` heading and granting
+    /// the authority only the in-process owner may hold. Must be called before
+    /// the hello is delivered; the hello itself never carries a spawn.
+    pub fn with_owner_spawn(mut self, spawn_m: [f64; 3], yaw_deg: f64) -> Self {
+        self.owner_spawn = Some((spawn_m, yaw_deg));
+        self
     }
     /// When the carrier accepted this peer.
     pub fn admitted(&self) -> Instant {
@@ -982,6 +1016,7 @@ impl HostPeer {
         password: String,
     ) -> io::Result<()> {
         let (sender, receiver) = outbox::channel(crate::net::OUTBOX_CAPACITY);
+        let spawn = self.owner_spawn;
         let welcome = self
             .handle
             .join(PeerRegistration {
@@ -990,7 +1025,7 @@ impl HostPeer {
                 team,
                 role,
                 robot,
-                owner_spawn: None,
+                owner_spawn: spawn,
                 outbox: sender,
                 stream: self.stop.clone(),
             })
@@ -1078,12 +1113,20 @@ pub(crate) struct ClientCodec {
     configs: VecDeque<(crate::owner_stream::ConfigRevision, ChassisConfig)>,
     /// Owner-configuration answers waiting for the next [`ClientCodec::acknowledge`].
     config_feedback: VecDeque<Feedback>,
+    /// Encode uncompressed frames, for the in-process owner link.
+    raw: bool,
 }
 impl ClientCodec {
     /// Creates the client codec with `epoch` as the pacer's zero.
     /// `rate_bytes_per_s` is the configured upstream budget and `history_limit`
-    /// caps the redundant input frames in one batch.
-    pub(crate) fn new(epoch: Instant, rate_bytes_per_s: u32, history_limit: usize) -> Self {
+    /// caps the redundant input frames in one batch. `raw` selects the
+    /// uncompressed framing the loopback transport uses.
+    pub(crate) fn new(
+        epoch: Instant,
+        rate_bytes_per_s: u32,
+        history_limit: usize,
+        raw: bool,
+    ) -> Self {
         Self {
             epoch,
             welcomed: false,
@@ -1094,6 +1137,7 @@ impl ClientCodec {
             history_limit,
             configs: VecDeque::new(),
             config_feedback: VecDeque::new(),
+            raw,
         }
     }
     /// The opening datagram, as the default robot. It travels on the reliable
@@ -1259,7 +1303,10 @@ impl ClientCodec {
             }
             self.pacer.owner(
                 self.elapsed(now),
-                input_batch(&select_inputs(&self.recent_inputs, self.history_limit))?,
+                input_batch(
+                    &select_inputs(&self.recent_inputs, self.history_limit),
+                    self.raw,
+                )?,
             );
             return Ok(());
         }
@@ -1267,7 +1314,8 @@ impl ClientCodec {
             && let Some(command @ Command::FireAimed { .. }) = queued.command
         {
             let mut bytes = COMMAND_MAGIC.to_vec();
-            bytes.extend(crate::compression::compress(
+            bytes.extend(crate::compression::encode(
+                self.raw,
                 &serde_json::to_vec(&ClientMessage::Command(command)).map_err(io_error)?,
             ));
             return self
@@ -1413,9 +1461,9 @@ mod tests {
         let chassis = state.field.chassis.first().unwrap().id;
         let config = state.field.chassis.first().unwrap().config.clone();
         let revision = ConfigRevision::of(&config);
-        let mut host = PeerCodec::new(epoch, 1 << 20);
+        let mut host = PeerCodec::new(epoch, 1 << 20, false);
         host.joined(Some(chassis));
-        let mut client = ClientCodec::new(epoch, 1 << 20, 12);
+        let mut client = ClientCodec::new(epoch, 1 << 20, 12, false);
         client.welcome_for_test();
 
         // Before any acknowledgement, exactly the configuration is queued and no
@@ -1492,7 +1540,7 @@ mod tests {
         let bytes = anchor.encode().unwrap();
         let revision = anchor.config_revision();
 
-        let mut client = ClientCodec::new(epoch, 1 << 20, 12);
+        let mut client = ClientCodec::new(epoch, 1 << 20, 12, false);
         client.welcome_for_test();
         // An unknown reference is dropped, not applied, and the connection lives.
         assert!(client.receive(&bytes, epoch).unwrap().is_none());
@@ -1529,9 +1577,9 @@ mod tests {
         let epoch = Instant::now();
         let first = owner_state(1, 1, 0);
         let chassis = first.field.chassis.first().unwrap().id;
-        let mut host = PeerCodec::new(epoch, 1 << 20);
+        let mut host = PeerCodec::new(epoch, 1 << 20, false);
         host.joined(Some(chassis));
-        let mut client = ClientCodec::new(epoch, 1 << 20, 12);
+        let mut client = ClientCodec::new(epoch, 1 << 20, 12, false);
         client.welcome_for_test();
 
         // Establish configuration A.
@@ -1606,7 +1654,7 @@ mod tests {
         let epoch = Instant::now();
         let state = owner_state(1, 1, 0);
         let chassis = state.field.chassis.first().unwrap().id;
-        let mut host = PeerCodec::new(epoch, 1 << 20);
+        let mut host = PeerCodec::new(epoch, 1 << 20, false);
         host.joined(Some(chassis));
         let mut offers = 0;
         for step in 0..CONFIG_RESEND_FRAMES + 2 {
@@ -1634,9 +1682,9 @@ mod tests {
         let epoch = Instant::now();
         let state = owner_state(1, 1, 0);
         let chassis = state.field.chassis[0].id;
-        let mut host = PeerCodec::new(epoch, 1 << 20);
+        let mut host = PeerCodec::new(epoch, 1 << 20, false);
         host.joined(Some(chassis));
-        let mut client = ClientCodec::new(epoch, 1 << 20, 12);
+        let mut client = ClientCodec::new(epoch, 1 << 20, 12, false);
         client.welcome_for_test();
         let mut configurations = 0;
         let mut anchors = 0;
@@ -1685,7 +1733,7 @@ mod tests {
         let state = owner_state(3, 3, 0);
         let chassis = state.field.chassis.first().unwrap().id;
         let config = state.field.chassis.first().unwrap().config.clone();
-        let mut client = ClientCodec::new(epoch, 1 << 20, 12);
+        let mut client = ClientCodec::new(epoch, 1 << 20, 12, false);
         client.welcome_for_test();
         // The client already holds the configuration from its join.
         let frame = ServerMessage::OwnerConfig(Box::new(OwnerConfig::new(config.clone())));
@@ -1713,7 +1761,7 @@ mod tests {
         let chassis = state.field.chassis.first().unwrap().id;
         // A reconnect is a fresh codec pair: the host must carry the
         // configuration again and release no anchor until the new peer answers.
-        let mut host = PeerCodec::new(epoch, 1 << 20);
+        let mut host = PeerCodec::new(epoch, 1 << 20, false);
         host.joined(Some(chassis));
         host.send(&periodic(&state), epoch, 0).unwrap();
         let packets = host_packets(&mut host, epoch + Duration::from_millis(32));
@@ -1731,7 +1779,7 @@ mod tests {
         );
         // An anchor that races ahead of the configuration is dropped and
         // answered with a request, never applied and never fatal.
-        let mut client = ClientCodec::new(epoch, 1 << 20, 12);
+        let mut client = ClientCodec::new(epoch, 1 << 20, 12, false);
         client.welcome_for_test();
         let anchor = OwnerAnchor::from_state(&state, chassis).unwrap();
         assert!(
@@ -1766,7 +1814,7 @@ mod tests {
             },
             timing: None,
         };
-        let mut client = ClientCodec::new(now, 1 << 20, 12);
+        let mut client = ClientCodec::new(now, 1 << 20, 12, false);
         client
             .submit(
                 QueuedCommand {
@@ -1784,7 +1832,7 @@ mod tests {
             &serde_json::to_vec(&ClientMessage::Command(command)).unwrap(),
         );
         assert_eq!(body, expected);
-        let mut host = PeerCodec::new(now, 1 << 20);
+        let mut host = PeerCodec::new(now, 1 << 20, false);
         assert!(matches!(host.receive(&packets[0], now).unwrap(),
             PeerRequest::Message(message) if *message == ClientMessage::Command(command)));
     }
@@ -1817,7 +1865,7 @@ mod tests {
         );
         assert_eq!(select_inputs(&history, 4).len(), 4);
         let mut stream = crate::input_stream::InputStream::default();
-        for command in decode_inputs(&input_batch(&selected).unwrap()).unwrap() {
+        for command in decode_inputs(&input_batch(&selected, false).unwrap()).unwrap() {
             if let Command::PilotInput { frame, .. } = command {
                 stream.receive(frame, 320_000_000, 0).unwrap();
             }
@@ -1825,7 +1873,7 @@ mod tests {
         assert_eq!(stream.latest(), 20);
         assert_eq!(stream.expire(570_000_000).unwrap().forward_m_s, 0.);
         let maximal: VecDeque<_> = history.iter().rev().take(12).copied().collect();
-        assert!(input_batch(&maximal).unwrap().len() <= 1_000);
+        assert!(input_batch(&maximal, false).unwrap().len() <= 1_000);
         let Command::PilotInput { frame, .. } = history.back_mut().unwrap() else {
             unreachable!()
         };
@@ -1853,7 +1901,7 @@ mod tests {
                 },
             });
         }
-        let packet = input_batch(&inputs).unwrap();
+        let packet = input_batch(&inputs, false).unwrap();
         let previous_bytes: usize = inputs
             .iter()
             .map(|input| {
@@ -1878,10 +1926,10 @@ mod tests {
         while inputs.len() <= 12 {
             inputs.push_back(*inputs.back().unwrap());
         }
-        assert!(input_batch(&inputs).is_err());
+        assert!(input_batch(&inputs, false).is_err());
         inputs.clear();
         inputs.push_back(Command::Pause { paused: true });
-        assert!(input_batch(&inputs).is_err());
+        assert!(input_batch(&inputs, false).is_err());
         let mut bomb = INPUT_BATCH_MAGIC.to_vec();
         bomb.extend(crate::compression::compress(&vec![
             b' ';
@@ -2012,7 +2060,7 @@ mod tests {
     /// Encodes, decodes and asserts the decoded batch reproduces the encoded
     /// frames bit for bit, within the single-datagram budget.
     fn assert_round_trip(inputs: &VecDeque<Command>) -> Vec<Command> {
-        let packet = input_batch(inputs).unwrap();
+        let packet = input_batch(inputs, false).unwrap();
         assert!(packet.len() <= CHUNK, "batch must fit one datagram");
         let decoded = decode_inputs(&packet).unwrap();
         assert_eq!(decoded.len(), inputs.len());
@@ -2240,7 +2288,7 @@ mod tests {
         }
         // The header comes from the newest frame, so the mismatched frame keeps
         // its fixed 80-byte encoding and still round-trips exactly.
-        let packet = input_batch(&inputs).unwrap();
+        let packet = input_batch(&inputs, false).unwrap();
         assert_eq!(
             fixed_batch(&decode_inputs(&packet).unwrap()),
             fixed_batch(&inputs.iter().copied().collect::<Vec<_>>())
@@ -2266,8 +2314,8 @@ mod tests {
                 )
             })
             .collect();
-        let idle_packet = input_batch(&idle).unwrap();
-        let drive_packet = input_batch(&drive).unwrap();
+        let idle_packet = input_batch(&idle, false).unwrap();
+        let drive_packet = input_batch(&drive, false).unwrap();
         let idle_decoded = decode_inputs(&idle_packet).unwrap();
         let drive_decoded = decode_inputs(&drive_packet).unwrap();
         assert!(idle_decoded.iter().all(|command| matches!(command,
@@ -2339,12 +2387,12 @@ mod tests {
             .collect();
 
         // A wrong mask: a bit outside the five command values.
-        let mut body = body_of(&input_batch(&inputs).unwrap());
+        let mut body = body_of(&input_batch(&inputs, false).unwrap());
         body[1 + INPUT_HEADER_BYTES + 1] |= 0x20;
         assert!(decode_inputs(&reencoded(&body)).is_err());
 
         // A wrong flag: a reserved bit beside the two absolute markers.
-        let mut body = body_of(&input_batch(&inputs).unwrap());
+        let mut body = body_of(&input_batch(&inputs, false).unwrap());
         body[1 + INPUT_HEADER_BYTES + 2] |= 0x80;
         assert!(decode_inputs(&reencoded(&body)).is_err());
 
@@ -2376,6 +2424,155 @@ mod tests {
                 )
             })
             .collect();
-        assert!(input_batch(&maximal).unwrap().len() <= CHUNK);
+        assert!(input_batch(&maximal, false).unwrap().len() <= CHUNK);
+    }
+
+    /// The application body of one datagram: the fragment payload for an RMG1
+    /// frame, or the whole datagram for the anchor and feedback lanes.
+    fn application_body(packet: &[u8]) -> &[u8] {
+        match packet.strip_prefix(b"RMG1") {
+            Some(rest) => &rest[HEADER - 4..],
+            None => packet,
+        }
+    }
+
+    /// Refuses a datagram that carries ZSTD or dictionary framing anywhere a
+    /// raw peer could have produced one.
+    fn assert_uncompressed(packet: &[u8]) {
+        let body = application_body(packet);
+        for bytes in [packet, body] {
+            assert!(
+                !bytes.starts_with(crate::compression::MAGIC),
+                "a raw peer must not write RMZ1"
+            );
+            assert!(
+                !bytes.starts_with(crate::binary_snapshot::MAGIC),
+                "a raw peer must not write RMBZ"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_loopback_pair_carries_inputs_snapshots_and_anchors_without_compression() {
+        use crate::owner_stream::{ConfigRevision, OwnerAnchor};
+        use crate::protocol::ServerMessage;
+        let epoch = Instant::now();
+        let state = owner_state(3, 3, 0);
+        let chassis = state.field.chassis.first().unwrap().id;
+        let config = state.field.chassis.first().unwrap().config.clone();
+        let mut host = PeerCodec::new(epoch, 1 << 20, true);
+        host.joined(Some(chassis));
+        let mut client = ClientCodec::new(epoch, 1 << 20, 12, true);
+        client.welcome_for_test();
+
+        // One pilot input travels as an RMI3 batch whose body is RMRW, and the
+        // host decodes it back to the exact frame.
+        let command = pilot(
+            1,
+            ChassisCommand {
+                forward_m_s: 1.5,
+                aim_yaw_rad: 0.25,
+                ..Default::default()
+            },
+        );
+        client
+            .submit(
+                QueuedCommand {
+                    command: Some(command),
+                    confirmation: None,
+                    time_probe: None,
+                },
+                epoch,
+            )
+            .unwrap();
+        let batches = client_packets(&mut client, epoch + Duration::from_millis(32));
+        assert!(!batches.is_empty());
+        for packet in &batches {
+            assert_uncompressed(packet);
+            let body = packet
+                .strip_prefix(INPUT_BATCH_MAGIC)
+                .expect("an input batch");
+            assert!(
+                body.starts_with(crate::compression::RAW_MAGIC),
+                "input batches must ride the raw framing"
+            );
+        }
+        let mut decoded = None;
+        for packet in &batches {
+            if let PeerRequest::Inputs(inputs) = host.receive(packet, epoch).unwrap() {
+                decoded = Some(inputs);
+            }
+        }
+        assert_eq!(decoded.expect("inputs decoded"), vec![command]);
+
+        // The first periodic publication offers the owner configuration on the
+        // reliable lane and writes an independent `RMB0` checkpoint.
+        host.send(&periodic(&state), epoch, 0).unwrap();
+        let first = host_packets(&mut host, epoch + Duration::from_millis(32));
+        for packet in &first {
+            assert_uncompressed(packet);
+        }
+        assert!(
+            first.iter().any(|packet| application_body(packet)
+                .starts_with(crate::binary_snapshot::bitpack::MAGIC)),
+            "a raw periodic snapshot is packed `RMB0`, not compressed"
+        );
+        assert!(
+            first
+                .iter()
+                .any(|packet| application_body(packet).starts_with(crate::compression::RAW_MAGIC)),
+            "the owner configuration rides the raw control framing"
+        );
+        let mut snapshot = false;
+        for packet in &first {
+            if let Some(ClientEvent::Message(ServerMessage::Snapshot(_))) =
+                client.receive(packet, epoch).unwrap()
+            {
+                snapshot = true;
+            }
+        }
+        assert!(snapshot, "the raw periodic snapshot decodes on the client");
+
+        // The stored answer releases anchors that reference the configuration.
+        client.acknowledge(epoch).unwrap();
+        let answers = client_packets(&mut client, epoch + Duration::from_millis(64));
+        assert!(
+            answers
+                .iter()
+                .any(|packet| packet.starts_with(crate::udp_snapshot::ACK_MAGIC))
+        );
+        for packet in &answers {
+            assert_uncompressed(packet);
+            host.receive(packet, epoch).unwrap();
+        }
+
+        let later = owner_state(5, 4, 2);
+        host.send(&periodic(&later), epoch + Duration::from_millis(64), 0)
+            .unwrap();
+        let second = host_packets(&mut host, epoch + Duration::from_millis(96));
+        for packet in &second {
+            assert_uncompressed(packet);
+        }
+        let anchor = second
+            .iter()
+            .find(|packet| packet.starts_with(crate::owner_stream::MAGIC))
+            .expect("the acknowledged configuration releases a raw anchor");
+        assert_eq!(
+            OwnerAnchor::config_revision_of(anchor).unwrap(),
+            ConfigRevision::of(&config)
+        );
+        let mut applied = None;
+        for packet in &second {
+            if let Some(ClientEvent::Anchor(anchor)) = client
+                .receive(packet, epoch + Duration::from_millis(96))
+                .unwrap()
+            {
+                applied = Some(*anchor);
+            }
+        }
+        assert_eq!(
+            applied.expect("the raw anchor applies").owner.config,
+            config
+        );
     }
 }

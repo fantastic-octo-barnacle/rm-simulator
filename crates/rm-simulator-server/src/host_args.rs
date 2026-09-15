@@ -18,9 +18,7 @@
 use crate::layout::LayoutOptions;
 use crate::protocol::{BulletSpread, DEFAULT_HTTP_PORT, DEFAULT_PORT, WeaponConfig, WeaponLimits};
 use clap::Args;
-use rm_simulator_world::{
-    Caliber, RuneKind, Shot, outpost, projectile::ProjectilePolicy,
-};
+use rm_simulator_world::{Caliber, RuneKind, Shot, outpost, projectile::ProjectilePolicy};
 
 /// Field, rune, weapon and chassis options shared by every host.
 ///
@@ -91,7 +89,6 @@ pub struct HostArgs {
     #[arg(long, num_args = 0..=1, default_missing_value = "127.0.0.1:7780")]
     pub http: Option<String>,
 }
-
 
 impl HostArgs {
     /// The host's default caliber: 17 mm. Every pilot's own robot overrides it

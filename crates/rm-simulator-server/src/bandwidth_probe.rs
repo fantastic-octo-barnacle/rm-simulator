@@ -328,9 +328,14 @@ pub(crate) fn run_observed(
     let (mut simulation, chassis) = crate::workload::simulation(workload.players() as usize);
     let driver = chassis[0];
     let mut totals = Totals::default();
-    let mut peer = PeerCodec::new(now, budget_bytes_s);
+    let mut peer = PeerCodec::new(now, budget_bytes_s, false);
     peer.joined(chassis.first().copied());
-    let mut client = ClientCodec::new(now, upstream_bytes_s, crate::udp_codec::MAX_INPUT_FRAMES);
+    let mut client = ClientCodec::new(
+        now,
+        upstream_bytes_s,
+        crate::udp_codec::MAX_INPUT_FRAMES,
+        false,
+    );
     let mut sequence = 0_u64;
     let mut snapshot_id = 0_u64;
     let ticks = seconds * 1000 / STEP_MS;

@@ -4,6 +4,17 @@
 
 ## Unreleased
 
+- Unify singleplayer and multiplayer on one wire. The embedded owner no longer
+  uses a typed in-process channel: `Server::connect_owner` now drives the same
+  per-peer codec a UDP client runs — the RMG1 fragment framing, the packed `RMB0`
+  checkpoints and their acknowledged-baseline delta rotation, the RMI3 input
+  batches, the RMO4 owner anchor and configuration handshake, and the byte pacer
+  — over two in-process datagram channels, with compression skipped (`RMRW`
+  frames instead of `RMZ1`/`RMBZ`). The owner still registers its spawn directly
+  and keeps owner authority, and the client still reports transport `local`.
+  `PROTOCOL_VERSION` is unchanged: the wire format did not change, only which
+  transport carries it. Frame timings and cadence are unchanged.
+
 - Remove the selectable physics rate. The `--physics-rate-hz` option and the
   `RM_SIM_TICK_NS` environment override are gone; every build, host and client
   now runs the fixed 128 Hz tick (7.8125 ms per tick), so `Hello` and `Welcome`
@@ -13,7 +24,7 @@
   with them. `PROTOCOL_VERSION` is 35, so both peers must update.
 
 - Remove the TCP gameplay transport. Valve GameNetworkingSockets over UDP is now
-  the only network transport, alongside the in-process owner channel and the HTTP
+  the only network transport, alongside the in-process owner link and the HTTP
   referee panel, so the shared `--transport` option is gone from both binaries and
   a host or guest that passed it must drop it. The JSON-lines wire helpers, the
   TCP client and server loops and the lobby's `tcp` advertisement are removed;

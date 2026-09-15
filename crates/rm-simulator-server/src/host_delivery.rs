@@ -7,7 +7,7 @@
 //! Transit impairment itself lives in [`crate::scripted_link`], and the
 //! end-to-end client trace over it is the app crate's `net_harness`.
 use super::*;
-use crate::host::Outbound;
+use crate::host::{Outbound, PeerRegistration};
 use rm_simulator_world::{Field, FieldConfig};
 
 /// A host with one typed peer whose writer nothing drains. The fixture reports

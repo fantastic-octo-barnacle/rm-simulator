@@ -134,7 +134,9 @@ impl Receiver {
     }
 
     /// Block until one message is available. `None` means every sender dropped
-    /// and the queue is empty, which is how a socket writer learns to finish.
+    /// and the queue is empty. Production drains with [`Receiver::try_recv`]
+    /// from a polling reactor; this is the blocking form the tests exercise.
+    #[cfg(test)]
     pub(crate) fn recv(&self) -> Option<Arc<Outbound>> {
         let mut state = self.shared.state.lock().unwrap_or_else(|p| p.into_inner());
         loop {

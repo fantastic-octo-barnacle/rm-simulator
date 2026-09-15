@@ -104,7 +104,7 @@ impl Trace {
         let host = Host::with_time(simulation, true, clock.clone()).expect("host worker");
         let handle = host.handle();
         handle.start_clock().expect("host clock");
-        let mut peer = HostPeer::new(handle.clone(), clock.now(), DOWN_BYTES_S);
+        let mut peer = HostPeer::new(handle.clone(), clock.now(), DOWN_BYTES_S, false);
         let mut leg = ClientLeg::new(
             "scripted pilot",
             Some(Team::Red),

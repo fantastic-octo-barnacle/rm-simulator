@@ -7,6 +7,9 @@ a verified CAD package loaded into a `Field`, the `Simulation` that paces it on
 the host clock, the framed GNS UDP player transport, the referee HTTP panel and the
 `rm-simulator-server` headless binary. It draws nothing and never depends on Bevy;
 the app is one client of this crate, whether it hosts in-process or connects here.
+The embedded owner is not a separate typed path: `Server::connect_owner` runs the
+same per-peer codec a UDP client runs, over two in-process datagram channels,
+with compression skipped.
 
 ## Modules
 
@@ -19,10 +22,10 @@ the app is one client of this crate, whether it hosts in-process or connects her
 | `src/simulation.rs` | `Simulation`: the paused flag, bounded real-time advance, command application and chassis spawning per player. |
 | `src/clock.rs` | The place host-side code reads the wall clock; tests hand it a `ManualTime` instead. |
 | `src/host.rs` | The single-owner worker: roster, command ordering, snapshot capture and its bounded mailbox. |
-| `src/net.rs` | The GNS UDP transport, peer delivery, `Client` and the in-process owner channel. Its private submodules are `gns_transport.rs`, `outbox.rs` and `presentation_clock.rs`. |
+| `src/net.rs` | The GNS UDP transport, peer delivery, `Client` and the embedded owner's loopback codec link: the same `udp_codec` peer over two in-process datagram channels, with compression skipped. Its private submodules are `gns_transport.rs`, `outbox.rs` and `presentation_clock.rs`. |
 | `src/udp_codec.rs`, `src/udp_snapshot.rs`, `src/snapshot_codec.rs`, `src/binary_snapshot/` | The per-peer codec with no socket in it, the acknowledged-baseline delta state machine, and the compact checkpoint and packed bitpacked encodings. |
 | `src/protocol.rs` | The `ClientMessage`/`ServerMessage` wire types, `Command`, roles, `PROTOCOL_VERSION`, the default ports and the weapon configuration. |
-| `src/compression.rs` | The ZSTD wire codec for non-checkpoint messages; every frame is self-identifying. |
+| `src/compression.rs` | The self-identifying wire framing for non-checkpoint messages: ZSTD for the network path, raw `RMRW` for the loopback transport, auto-detected on decode. |
 | `src/input_stream.rs`, `src/prediction.rs`, `src/view.rs`, `src/owner_stream.rs`, `src/pacing.rs` | Sequenced held input with a simulation-time lease, bounded replay contracts, remote pose history, owner anchors and byte pacing. |
 | `src/scripted_link.rs` | A deterministic datagram link with scripted loss, reordering, duplication, delay and blackouts. |
 | `src/network_stats.rs`, `src/network_trace.rs` | Local diagnostics, and bounded transport metadata tracing that never records payloads. |
@@ -47,7 +50,8 @@ payload or precision changes.
 
 `cargo test -p rm-simulator-server --locked` runs the in-module tests and the
 test-only `bandwidth_probe.rs` attribution probe. Coverage includes the protocol
-and its version refusal, the UDP client flows, the HTTP routes, the
+and its version refusal, the UDP client flows, the raw loopback codec the
+embedded owner runs, the HTTP routes, the
 ZSTD wire codec and the snapshot delta state machine, the host worker's ordering
 and bounded queues, the replaceable periodic outbox, input leases and their
 renewal, and the scripted link's loss, reordering and duplication.
