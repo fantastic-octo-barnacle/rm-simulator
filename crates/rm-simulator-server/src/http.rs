@@ -7,11 +7,14 @@
 //! own thread; the reply always closes the connection. No dependencies
 //! beyond the standard library and `serde_json`.
 use crate::host::HostHandle;
-use crate::lifecycle::{Listener, Stop};
+use crate::lifecycle::Stop;
 use crate::protocol::Command;
 use rm_simulator_world::RefereeCommand;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 /// The referee panel page.
 pub const PANEL_HTML: &str = include_str!("panel.html");
@@ -24,7 +27,114 @@ const MAX_HEADERS: usize = 64;
 
 /// A bound referee HTTP server. Dropping it closes the listener.
 pub struct HttpServer {
-    listener: Listener,
+    listener: HttpListener,
+}
+
+/// A bound listener and the worker that accepts for it. Dropping it stops and
+/// joins the worker. The referee panel is the only remaining TCP server, so its
+/// accept loop lives here rather than in a shared transport module.
+struct HttpListener {
+    /// Address the socket is actually bound to.
+    local_addr: SocketAddr,
+    stop: Stop,
+    worker: Option<JoinHandle<()>>,
+}
+impl HttpListener {
+    /// Start the accepting worker under the given thread name.
+    ///
+    /// The worker polls the listener in nonblocking mode, moves each accepted
+    /// stream back to blocking mode and serves it on its own thread. `serve`
+    /// runs per connection and must not use the listener. Completed connection
+    /// workers are reaped as the loop runs. Shutdown stops accepting within one
+    /// 10 ms poll, shuts every live stream down and joins all of them,
+    /// including connections still waiting for a handshake.
+    fn start(
+        listener: TcpListener,
+        stop: Stop,
+        name: &'static str,
+        serve: impl Fn(TcpStream) + Send + Sync + 'static,
+    ) -> io::Result<Self> {
+        let local_addr = listener.local_addr()?;
+        listener.set_nonblocking(true)?;
+        let stopping = stop.clone();
+        let serve = Arc::new(serve);
+        let worker = thread::Builder::new().name(name.into()).spawn(move || {
+            let mut connections: Vec<(TcpStream, JoinHandle<()>)> = Vec::new();
+            while !stopping.wait(Duration::ZERO) {
+                // Reap completed workers so a long-running server keeps only
+                // active connections. Shutdown also includes incomplete hellos.
+                let mut index = 0;
+                while index < connections.len() {
+                    if connections[index].1.is_finished() {
+                        let (_, worker) = connections.swap_remove(index);
+                        let _ = worker.join();
+                    } else {
+                        index += 1;
+                    }
+                }
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        // Accepted sockets inherit nonblocking mode on some
+                        // platforms; only the listener uses polling.
+                        if let Err(error) = stream.set_nonblocking(false) {
+                            eprintln!("{name}: configuring connection: {error}");
+                            continue;
+                        }
+                        let tracked = match stream.try_clone() {
+                            Ok(tracked) => tracked,
+                            Err(error) => {
+                                eprintln!("{name}: tracking connection: {error}");
+                                continue;
+                            }
+                        };
+                        let serve = serve.clone();
+                        match thread::Builder::new()
+                            .name(format!("{name}-peer"))
+                            .spawn(move || serve(stream))
+                        {
+                            Ok(worker) => connections.push((tracked, worker)),
+                            Err(error) => eprintln!("{name}: starting connection: {error}"),
+                        }
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        stopping.wait(Duration::from_millis(10));
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) => {
+                        eprintln!("{name}: accept failed: {error}");
+                        stopping.request();
+                    }
+                }
+            }
+            // Release the port before waiting for handlers to finish.
+            drop(listener);
+            for (stream, _) in &connections {
+                let _ = stream.shutdown(Shutdown::Both);
+            }
+            for (_, worker) in connections {
+                let _ = worker.join();
+            }
+        })?;
+        Ok(Self {
+            local_addr,
+            stop,
+            worker: Some(worker),
+        })
+    }
+
+    /// Stop accepting, close live connections and join the worker. Idempotent.
+    fn shutdown(&mut self) {
+        self.stop.request();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+impl Drop for HttpListener {
+    /// Stop accepting and join the worker.
+    fn drop(&mut self) {
+        self.shutdown();
+    }
 }
 
 impl HttpServer {
@@ -32,7 +142,7 @@ impl HttpServer {
     /// sends becomes a typed request on the same host queue as the transports.
     pub fn bind(addr: impl ToSocketAddrs, host: HostHandle) -> io::Result<HttpServer> {
         let listener = TcpListener::bind(addr)?;
-        let listener = Listener::start(listener, Stop::default(), "rm-http", move |stream| {
+        let listener = HttpListener::start(listener, Stop::default(), "rm-http", move |stream| {
             if let Err(error) = handle(stream, &host) {
                 eprintln!("http: {error}");
             }

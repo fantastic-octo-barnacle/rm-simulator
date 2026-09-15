@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
-//! Wire format between the simulation host and its clients: one JSON object
-//! per line over TCP, or framed messages over GNS UDP. The client opens with
+//! Wire format between the simulation host and its clients: typed messages
+//! carried in framed application payloads over GNS UDP. The client opens with
 //! `Hello`; the server answers `Welcome` and then streams `Snapshot`s at its
 //! own rate while accepting commands at any time. Everything a client can
 //! do is a [`Command`], which the HTTP panel also posts.
 use crate::simulation::SimulationState;
 use rm_simulator_world::{ChassisCommand, ChassisConfig, Pose, RefereeCommand, Shot, Team};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::io::{self, BufRead, Read, Write};
+use serde::{Deserialize, Serialize};
 
 /// Version 22 drops the shooter-view fire path, the TCP snapshot delta chain
 /// and the unread input acknowledgements.
@@ -73,11 +72,11 @@ pub fn version_mismatch(host: u32, client: u32) -> String {
     )
 }
 
-/// Default listen port for the game transport, TCP and UDP.
+/// Default listen port for the gameplay UDP transport.
 pub const DEFAULT_PORT: u16 = 7700;
 /// Default listen port for the referee HTTP panel.
 pub const DEFAULT_HTTP_PORT: u16 = 7780;
-/// Longest accepted line; snapshots of a busy field are a few tens of kB.
+/// Largest accepted message; snapshots of a busy field are a few tens of kB.
 pub const MAX_LINE_BYTES: usize = 4 << 20;
 
 /// Host caps, separate from the weapon settings a pilot starts with.
@@ -710,7 +709,7 @@ pub struct FireTiming {
     pub observed_muzzle_pose: Option<Pose>,
 }
 
-/// Everything a client sends, one JSON object per line.
+/// Everything a client sends, in the transport's framed payloads.
 ///
 /// A session is `Hello` first, then any number of `Command`s, `Ping`s and
 /// `TimeProbe`s. `Ping` is the confirmation barrier: the host applies the
@@ -720,10 +719,7 @@ pub struct FireTiming {
 /// for any command.
 ///
 /// ```
-/// use rm_simulator_server::protocol::{
-///     ClientMessage, Command, PROTOCOL_VERSION, Role, encode, read_message, write_message,
-/// };
-/// use std::io::BufReader;
+/// use rm_simulator_server::protocol::{ClientMessage, Command, PROTOCOL_VERSION, Role};
 ///
 /// // A client opens with Hello and then sends commands and a barrier.
 /// let hello = ClientMessage::Hello {
@@ -740,30 +736,15 @@ pub struct FireTiming {
 /// ));
 /// let ping = ClientMessage::Ping { nonce: 7 };
 ///
-/// let mut wire = Vec::new();
+/// // Each control message is one JSON document in its own framed payload.
 /// for message in [&hello, &start, &ping] {
-///     write_message(&mut wire, message).unwrap();
+///     let bytes = serde_json::to_vec(message).unwrap();
+///     assert!(!bytes.contains(&b'\n'));
+///     assert_eq!(
+///         &serde_json::from_slice::<ClientMessage>(&bytes).unwrap(),
+///         message
+///     );
 /// }
-/// // One JSON object per line, newline terminated.
-/// assert_eq!(wire.iter().filter(|byte| **byte == b'\n').count(), 3);
-/// assert_eq!(encode(&hello).lines().count(), 1);
-///
-/// let mut reader = BufReader::new(wire.as_slice());
-/// assert_eq!(
-///     read_message::<ClientMessage, _>(&mut reader).unwrap(),
-///     Some(hello)
-/// );
-/// assert_eq!(
-///     read_message::<ClientMessage, _>(&mut reader).unwrap(),
-///     Some(start)
-/// );
-/// assert_eq!(
-///     read_message::<ClientMessage, _>(&mut reader).unwrap(),
-///     Some(ping)
-/// );
-/// // End of stream is `None`, and a malformed line is an error, not a panic.
-/// assert_eq!(read_message::<ClientMessage, _>(&mut reader).unwrap(), None);
-/// assert!(read_message::<ClientMessage, _>(&mut BufReader::new(&b"{nope}\n"[..])).is_err());
 ///
 /// // A Hello that omits the newer fields still decodes and is a pilot in
 /// // infantry 3.
@@ -925,7 +906,7 @@ pub struct ShotResult {
     pub result: Result<u64, String>,
 }
 
-/// Everything a host sends, one JSON object per line.
+/// Everything a host sends, in the transport's framed payloads.
 ///
 /// The reader keeps only the newest snapshot and roster and coalesces the rest
 /// into ordered queues, so nothing here is a revision chain. A
@@ -933,8 +914,7 @@ pub struct ShotResult {
 /// never carries a rule.
 ///
 /// ```
-/// use rm_simulator_server::protocol::{PlayerInfo, Role, ServerMessage, read_message};
-/// use std::io::BufReader;
+/// use rm_simulator_server::protocol::{PlayerInfo, Role, ServerMessage};
 ///
 /// // A host can send several kinds on one connection.
 /// let roster = ServerMessage::Roster(vec![PlayerInfo {
@@ -950,14 +930,13 @@ pub struct ShotResult {
 /// };
 /// let pong = ServerMessage::Pong { nonce: 7 };
 ///
-/// let line = rm_simulator_server::protocol::encode(&roster);
-/// let mut reader = BufReader::new(line.as_bytes());
+/// let bytes = serde_json::to_vec(&roster).unwrap();
 /// assert!(matches!(
-///     read_message::<ServerMessage, _>(&mut reader).unwrap(),
-///     Some(ServerMessage::Roster(players)) if players.len() == 1
+///     serde_json::from_slice::<ServerMessage>(&bytes).unwrap(),
+///     ServerMessage::Roster(players) if players.len() == 1
 /// ));
 /// // A rejection is a plain reason string, not a rule outcome.
-/// let text = rm_simulator_server::protocol::encode(&rejected);
+/// let text = serde_json::to_string(&rejected).unwrap();
 /// assert!(text.contains("that chassis is not yours"));
 /// // A Pong echoes the Ping nonce so the client can retire its commands.
 /// assert!(matches!(pong, ServerMessage::Pong { nonce: 7 }));
@@ -1029,106 +1008,11 @@ pub enum ServerMessage {
     Roster(Vec<PlayerInfo>),
 }
 
-/// One message as a line of JSON, newline included.
-///
-/// The newline is part of the framing, so the result round-trips through
-/// [`read_message`] unchanged. Panics only if the message is not serializable,
-/// which no protocol type is.
-pub fn encode<T: Serialize>(message: &T) -> String {
-    let mut line = serde_json::to_string(message).expect("protocol types serialize");
-    line.push('\n');
-    line
-}
-/// Write one message and flush it, so the peer sees it without waiting for
-/// more traffic. Flushing per message is what keeps a request and its answer
-/// from sitting in a buffer.
-pub fn write_message<W: Write>(writer: &mut W, message: &impl Serialize) -> io::Result<()> {
-    writer.write_all(encode(message).as_bytes())?;
-    writer.flush()
-}
-/// The next message, or `None` at end of stream. A line longer than
-/// [`MAX_LINE_BYTES`] is an error as soon as the limit is passed, so a peer
-/// that never sends a newline cannot grow the buffer without bound.
-///
-/// Blank and whitespace-only lines are skipped. Any other unparsable line is
-/// an [`io::ErrorKind::InvalidData`] error rather than a panic, and an
-/// overlong line is the same error kind with a message that names the length
-/// problem.
-pub fn read_message<T: DeserializeOwned, R: BufRead>(reader: &mut R) -> io::Result<Option<T>> {
-    loop {
-        let mut line = Vec::new();
-        let read = reader
-            .by_ref()
-            .take(MAX_LINE_BYTES as u64 + 1)
-            .read_until(b'\n', &mut line)?;
-        if read == 0 {
-            return Ok(None);
-        }
-        if line.len() > MAX_LINE_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "message too long",
-            ));
-        }
-        if line.iter().all(u8::is_ascii_whitespace) {
-            continue;
-        }
-        return serde_json::from_slice(&line).map(Some).map_err(invalid);
-    }
-}
-/// Wrap a JSON parse failure as an invalid-data IO error, so a caller can
-/// treat a malformed line and a closed socket as the same kind of transport
-/// failure without matching on the parser's error type.
-fn invalid(error: serde_json::Error) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, error)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use rm_simulator_world::{Caliber, Field, FieldConfig, RefereeConfig};
 
-    #[test]
-    fn messages_round_trip_as_json_lines() {
-        let hello = ClientMessage::Hello {
-            password: String::new(),
-            protocol: PROTOCOL_VERSION,
-            name: "pilot".into(),
-            team: Some(Team::Blue),
-            role: Role::Pilot,
-            robot: Robot::Hero,
-            tick_ns: rm_simulator_world::tick_ns(),
-        };
-        let fire = ClientMessage::Command(Command::Fire {
-            shooter: 3,
-            timing: None,
-        });
-        let referee = ClientMessage::Command(Command::Referee(RefereeCommand::ActivateRune {
-            team: Team::Red,
-        }));
-        let mut buffer = Vec::new();
-        for message in [&hello, &fire, &referee] {
-            write_message(&mut buffer, message).unwrap();
-        }
-        assert_eq!(buffer.iter().filter(|b| **b == b'\n').count(), 3);
-        let mut reader = io::BufReader::new(buffer.as_slice());
-        assert_eq!(
-            read_message::<ClientMessage, _>(&mut reader).unwrap(),
-            Some(hello)
-        );
-        assert_eq!(
-            read_message::<ClientMessage, _>(&mut reader).unwrap(),
-            Some(fire)
-        );
-        assert_eq!(
-            read_message::<ClientMessage, _>(&mut reader).unwrap(),
-            Some(referee)
-        );
-        assert_eq!(read_message::<ClientMessage, _>(&mut reader).unwrap(), None);
-        // Garbage is an error, not a panic.
-        let mut bad = io::BufReader::new(&b"{nope}\n"[..]);
-        assert!(read_message::<ClientMessage, _>(&mut bad).is_err());
-    }
     #[test]
     fn snapshots_survive_the_wire() {
         let config = FieldConfig {
@@ -1154,10 +1038,9 @@ mod tests {
             paused: false,
             field: field.snapshot(),
         };
-        let line = encode(&ServerMessage::Snapshot(Box::new(state.clone())));
-        let mut reader = io::BufReader::new(line.as_bytes());
-        let back = read_message::<ServerMessage, _>(&mut reader).unwrap();
-        assert_eq!(back, Some(ServerMessage::Snapshot(Box::new(state))));
+        let bytes = serde_json::to_vec(&ServerMessage::Snapshot(Box::new(state.clone()))).unwrap();
+        let back = serde_json::from_slice::<ServerMessage>(&bytes).unwrap();
+        assert_eq!(back, ServerMessage::Snapshot(Box::new(state)));
         // The panel's shorthand for commands is the same JSON.
         let command: Command =
             serde_json::from_str(r#"{"Referee":{"ActivateRune":{"team":"Red"}}}"#).unwrap();
@@ -1209,30 +1092,6 @@ mod tests {
             muzzle: Pose::default(),
             shot: Shot::at_limit(Caliber::Mm17),
         }
-    }
-
-    #[test]
-    fn overlong_lines_are_refused_as_soon_as_the_limit_passes() {
-        use std::io::Read;
-        // No newline ever: the reader must give up rather than buffer forever.
-        let mut endless = io::BufReader::new(io::repeat(b'a'));
-        assert!(read_message::<ClientMessage, _>(&mut endless).is_err());
-        let mut long = io::BufReader::new(
-            io::repeat(b'a')
-                .take(MAX_LINE_BYTES as u64 + 1)
-                .chain(&b"\n"[..]),
-        );
-        assert!(read_message::<ClientMessage, _>(&mut long).is_err());
-        // A line at the limit is still parsed (and rejected as JSON, not as length).
-        let mut at_limit = io::BufReader::new(
-            io::repeat(b' ')
-                .take(MAX_LINE_BYTES as u64 - 1)
-                .chain(&b"\n{\"Ping\":{\"nonce\":1}}\n"[..]),
-        );
-        assert_eq!(
-            read_message::<ClientMessage, _>(&mut at_limit).unwrap(),
-            Some(ClientMessage::Ping { nonce: 1 })
-        );
     }
 }
 

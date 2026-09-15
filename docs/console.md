@@ -4,7 +4,7 @@
 
 The app automation console drives one local `rm-simulator` process over a
 loopback TCP endpoint: controls, clock, camera, inspection options and
-screenshot paths. It is separate from the multiplayer TCP server. The typed
+screenshot paths. It is separate from the gameplay transport. The typed
 `ConsoleCommand` handler runs on the app thread independently of socket
 parsing, so a future in-game console can translate text into these commands and
 use the same completion handling. For the interactive flags and bindings the
@@ -34,8 +34,8 @@ request; it does not keep forcing focus away later.
 
 `--console` defaults to `127.0.0.1:7790`. Use `--console 127.0.0.1:0` for an
 allocated port; the app prints the actual address. Only loopback addresses are
-accepted. This is an app automation endpoint, separate from the multiplayer TCP
-server. It has access to the local app's controls and screenshot filesystem paths.
+accepted. This is an app automation endpoint, separate from the gameplay UDP
+transport. It has access to the local app's controls and screenshot filesystem paths.
 One controller connects at a time; additional connections are closed.
 
 Hold a single connection open for multi-command input sequences. Disconnecting

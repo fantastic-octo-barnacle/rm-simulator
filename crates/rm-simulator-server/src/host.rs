@@ -6,17 +6,14 @@
 //! captures and queues snapshots in that same order; socket writers encode
 //! them afterwards. No caller can acquire or mutate the hosted simulation.
 use crate::clock::TimeSource;
-use crate::lifecycle::{ConnectionStop, Stop};
+use crate::lifecycle::Stop;
 use crate::protocol::{
     ChassisAssignment, ClientMessage, Command, PROTOCOL_VERSION, PlayerInfo, Robot, Role,
-    ServerMessage, Welcome, encode,
+    ServerMessage, Welcome,
 };
 use crate::simulation::{Simulation, SimulationState};
 use rm_simulator_world::{FieldSnapshot, StaticGeometry, Team};
 use std::io;
-use std::net::Shutdown;
-#[cfg(test)]
-use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -35,7 +32,6 @@ const OWNER_BROADCAST_PERIOD: Duration = Duration::from_millis(4);
 /// A message shared by all recipients. Encoding runs once, on a socket writer.
 pub(crate) struct Outbound {
     message: ServerMessage,
-    encoded: OnceLock<String>,
     compressed: OnceLock<Vec<u8>>,
     /// True on a periodic snapshot, whose unsent tail the peer outbox may
     /// replace. Reliable messages leave it false and are never replaced.
@@ -45,7 +41,6 @@ impl Outbound {
     pub(crate) fn new(message: ServerMessage) -> Self {
         Self {
             message,
-            encoded: OnceLock::new(),
             compressed: OnceLock::new(),
             periodic: false,
         }
@@ -59,9 +54,6 @@ impl Outbound {
                 &self.message,
             ))
         })
-    }
-    pub(crate) fn encoded(&self) -> &str {
-        self.encoded.get_or_init(|| encode(&self.message))
     }
 }
 
@@ -83,21 +75,21 @@ pub(crate) struct PeerRegistration {
     pub(crate) owner_spawn: Option<([f64; 3], f64)>,
     /// Bounded output queue the worker pushes this peer's messages onto.
     pub(crate) outbox: crate::net::outbox::Sender,
-    /// Transport-owned cancellation for the connection.
-    pub(crate) stream: ConnectionStop,
+    /// Cancellation the transport shares with this connection's worker.
+    pub(crate) stream: Stop,
 }
 struct Peer {
     info: PlayerInfo,
     owner: bool,
     last_telemetry: Instant,
     outbox: crate::net::outbox::Sender,
-    stream: ConnectionStop,
+    stream: Stop,
 }
 impl Peer {
     fn push(&self, message: Arc<Outbound>, replaceable: bool) {
         if self.outbox.push(message, replaceable).is_err() {
             // The reader reports Leave; until then this peer retains its seat.
-            let _ = self.stream.shutdown(Shutdown::Both);
+            self.stream.request();
         }
     }
 }
@@ -775,7 +767,7 @@ impl Owner {
             return;
         };
         let peer = self.peers.remove(index);
-        let _ = peer.stream.shutdown(Shutdown::Both);
+        peer.stream.request();
         if let Some(chassis) = peer.info.chassis {
             let _ = self.simulation.remove_chassis(chassis);
         }
@@ -784,7 +776,7 @@ impl Owner {
     }
     fn close(&mut self) {
         for peer in self.peers.drain(..) {
-            let _ = peer.stream.shutdown(Shutdown::Both);
+            peer.stream.request();
             if let Some(chassis) = peer.info.chassis {
                 let _ = self.simulation.remove_chassis(chassis);
             }
@@ -942,7 +934,6 @@ mod tests {
     use super::*;
     use crate::layout::ChassisSpawner;
     use rm_simulator_world::{ChassisConfig, Field, FieldConfig};
-    use std::net::TcpListener;
 
     fn host() -> Host {
         timed_host(TimeSource::system())
@@ -966,10 +957,7 @@ mod tests {
         handle.roster().unwrap();
         handle.roster().unwrap();
     }
-    fn peer(handle: &HostHandle, role: Role) -> (Welcome, crate::net::outbox::Receiver, TcpStream) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        let (stream, _) = listener.accept().unwrap();
+    fn peer(handle: &HostHandle, role: Role) -> (Welcome, crate::net::outbox::Receiver) {
         let (outbox, messages) = crate::net::outbox::channel(64);
         let welcome = handle
             .join(PeerRegistration {
@@ -980,10 +968,10 @@ mod tests {
                 robot: Robot::default(),
                 owner_spawn: None,
                 outbox,
-                stream: ConnectionStop::Tcp(stream),
+                stream: Stop::default(),
             })
             .unwrap();
-        (welcome, messages, client)
+        (welcome, messages)
     }
     fn next(messages: &crate::net::outbox::Receiver) -> Arc<Outbound> {
         messages.recv().unwrap()
@@ -1010,7 +998,7 @@ mod tests {
         .unwrap();
         let host = Host::new(Simulation::new(field, true), true).unwrap();
         let handle = host.handle();
-        let (_, messages, _socket) = peer(&handle, Role::Referee);
+        let (_, messages) = peer(&handle, Role::Referee);
         for _ in 0..3 {
             next(&messages);
         }
@@ -1050,7 +1038,7 @@ mod tests {
     fn client_and_operator_commands_share_one_order_and_confirmation_boundary() {
         let host = host();
         let handle = host.handle();
-        let (welcome, messages, _socket) = peer(&handle, Role::Referee);
+        let (welcome, messages) = peer(&handle, Role::Referee);
         assert!(matches!(
             next(&messages).message(),
             ServerMessage::Welcome(_)
@@ -1096,16 +1084,16 @@ mod tests {
         };
         assert_eq!(state.field.tick, 31);
         // Even with no socket writer running, the host keeps applying commands.
-        // Neither snapshot was encoded while the simulation worker owned it.
-        assert!(confirmation.encoded.get().is_none());
-        assert!(periodic.encoded.get().is_none());
+        // Neither snapshot was compressed while the simulation worker owned it.
+        assert!(confirmation.compressed.get().is_none());
+        assert!(periodic.compressed.get().is_none());
     }
 
     #[test]
     fn remote_pilots_cannot_manage_training_bots() {
         let host = host();
         let handle = host.handle();
-        let (welcome, messages, _socket) = peer(&handle, Role::Pilot);
+        let (welcome, messages) = peer(&handle, Role::Pilot);
         for _ in 0..3 {
             next(&messages);
         }
@@ -1130,7 +1118,7 @@ mod tests {
     fn pilots_cannot_purchase_ammo_for_another_chassis() {
         let host = host();
         let handle = host.handle();
-        let (welcome, messages, _socket) = peer(&handle, Role::Pilot);
+        let (welcome, messages) = peer(&handle, Role::Pilot);
         for _ in 0..3 {
             next(&messages);
         }
@@ -1172,7 +1160,7 @@ mod tests {
     fn pilot_input_checks_ownership_and_confirms_application_before_pong() {
         let host = host();
         let handle = host.handle();
-        let (welcome, messages, _socket) = peer(&handle, Role::Pilot);
+        let (welcome, messages) = peer(&handle, Role::Pilot);
         for _ in 0..3 {
             next(&messages);
         }
@@ -1238,7 +1226,7 @@ mod tests {
     fn a_stalled_writer_keeps_only_the_latest_periodic_state() {
         let host = host();
         let handle = host.handle();
-        let (_, messages, _socket) = peer(&handle, Role::Spectator);
+        let (_, messages) = peer(&handle, Role::Spectator);
         for _ in 0..3 {
             next(&messages);
         }
@@ -1251,7 +1239,7 @@ mod tests {
         assert_eq!(messages.queued(), 1);
         let latest = next(&messages);
         assert!(matches!(latest.message(), ServerMessage::Snapshot(s) if s.field.tick == 1_000));
-        assert!(latest.encoded.get().is_none());
+        assert!(latest.compressed.get().is_none());
     }
 
     #[test]
@@ -1317,14 +1305,14 @@ mod tests {
     fn joins_and_leaves_keep_spawn_seats_and_final_state_consistent() {
         let mut host = host();
         let handle = host.handle();
-        let (red, _red_messages, _red_socket) = peer(&handle, Role::Pilot);
-        let (blue, _blue_messages, _blue_socket) = peer(&handle, Role::Pilot);
+        let (red, _red_messages) = peer(&handle, Role::Pilot);
+        let (blue, _blue_messages) = peer(&handle, Role::Pilot);
         assert_eq!((red.team, blue.team), (Some(Team::Red), Some(Team::Blue)));
         let red_id = red.chassis.unwrap().id;
         let blue_id = blue.chassis.unwrap().id;
         handle.leave(red.client_id).unwrap();
         handle.leave(red.client_id).unwrap();
-        let (replacement, _messages, _socket) = peer(&handle, Role::Pilot);
+        let (replacement, _messages) = peer(&handle, Role::Pilot);
         assert_eq!(replacement.team, Some(Team::Red));
         assert!(replacement.chassis.unwrap().id > red_id.max(blue_id));
         assert_eq!(handle.roster().unwrap().len(), 2);
@@ -1342,7 +1330,7 @@ mod tests {
         )
         .unwrap();
         let handle = host.handle();
-        let (welcome, messages, _socket) = peer(&handle, Role::Referee);
+        let (welcome, messages) = peer(&handle, Role::Referee);
         for _ in 0..3 {
             next(&messages);
         }

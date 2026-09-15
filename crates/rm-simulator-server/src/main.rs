@@ -49,15 +49,8 @@ fn main() -> anyhow::Result<()> {
     .with_weapon_limits(args.host.weapon_limits())
     .map_err(anyhow::Error::msg)?;
     let listen = args.host.listen_address();
-    let server = match args.host.transport {
-        rm_simulator_server::net::Transport::Gns => Server::bind_udp(&listen, simulation),
-        rm_simulator_server::net::Transport::Tcp => Server::bind(&listen, simulation),
-    }?;
-    println!(
-        "players: {:?} at {}",
-        args.host.transport,
-        server.local_addr()
-    );
+    let server = Server::bind(&listen, simulation)?;
+    println!("players: GNS UDP at {}", server.local_addr());
     let http_address = args.host.http_address();
     let _http = if http_address != "none" {
         let http = HttpServer::bind(&http_address, server.handle())?;

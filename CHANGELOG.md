@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+- Remove the TCP gameplay transport. Valve GameNetworkingSockets over UDP is now
+  the only network transport, alongside the in-process owner channel and the HTTP
+  referee panel, so the shared `--transport` option is gone from both binaries and
+  a host or guest that passed it must drop it. The JSON-lines wire helpers, the
+  TCP client and server loops and the lobby's `tcp` advertisement are removed;
+  discovery still reports `"transport": "gns"`, and a listing that names any other
+  transport is refused. `Server::bind_udp` and `Server::bind_udp_suspended` are
+  now `Server::bind` and `Server::bind_suspended`. `PROTOCOL_VERSION` is unchanged.
+
 - Stop carrying the field package's pure build reports in the repository. The
   upstream zip's `build-provenance.json`, `deployment.json`,
   `mesh-simplification.json`, `road-marking-composition.json`,

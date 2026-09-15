@@ -82,9 +82,6 @@ pub struct HostArgs {
     /// Skip the field CAD collision proxies; only a flat floor at height zero and armor collide.
     #[arg(long)]
     pub no_field_collision: bool,
-    /// Gameplay transport; GNS uses UDP and works without Steam.
-    #[arg(long, value_enum, default_value = "gns")]
-    pub transport: crate::net::Transport,
     /// Run without a referee: the runes keep their training policy and the
     /// referee match keys do nothing.
     #[arg(long)]

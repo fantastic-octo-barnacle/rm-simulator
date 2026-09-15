@@ -3,7 +3,7 @@
 //! First-person RoboMaster field simulator: window, driven omni chassis or fly
 //! camera, tick pacing, gun and HUD. The world advances only through explicit
 //! ticks derived from frame time, either in a simulation hosted in this
-//! process (optionally shared over TCP) or on a remote host.
+//! process (optionally shared over GNS UDP) or on a remote host.
 //!
 //! `args` parses the command line, `session` owns the local or remote
 //! simulation and sends every input as a protocol command, `controls` reads

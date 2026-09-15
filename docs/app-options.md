@@ -10,7 +10,7 @@ for automation, see [console commands](console.md).
 ## Command-line options
 
 `rm-simulator` accepts every option below. `rm-simulator-server` accepts the
-field, weapon, physics-rate and transport options that a host owns; a client
+field, weapon and physics-rate options that a host owns; a client
 joined with `--connect` takes those from the server.
 
 | Option | Purpose |
@@ -47,7 +47,6 @@ joined with `--connect` takes those from the server.
 | `--no-referee` | Run the field without a referee: the rune is active from the start and there is no match |
 | `--no-projectile-retirement` | Keep spent projectiles until the four-second flight limit; by default a ball resting on scenery at or below 2 m/s for 50 ms is removed |
 | `--no-prediction` | Use host-driven movement, aim and firing for comparison |
-| `--transport gns\|tcp` | Gameplay transport, default GNS over UDP; use the same choice on host and guests |
 | `--connect HOST:PORT` | Join a running server instead of simulating locally (field options come from the server) |
 | `--lobby-name NAME` | Advertise a LAN lobby while using `--listen` |
 | `--password TEXT` | Password for hosting or joining; not saved by the menu |

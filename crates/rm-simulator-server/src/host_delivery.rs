@@ -9,39 +9,15 @@
 use super::*;
 use crate::host::Outbound;
 use rm_simulator_world::{Field, FieldConfig};
-use std::io::{Cursor, Read};
 
-// Also exercise the production JSON-lines decoder with split reads.
-/// A reader that hands out at most 7 bytes per call, so one message spans
-/// several reads.
-struct Fragments(Cursor<Vec<u8>>);
-impl Read for Fragments {
-    /// Read at most 7 bytes, or fewer when the buffer is smaller.
-    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        let count = out.len().min(7);
-        self.0.read(&mut out[..count])
-    }
-}
-/// Decode one JSON-lines message from `bytes` and assert that no second
-/// message follows.
-fn decode<T: serde::de::DeserializeOwned>(bytes: String) -> T {
-    let mut reader = BufReader::new(Fragments(Cursor::new(bytes.into_bytes())));
-    let message = read_message(&mut reader).unwrap().unwrap();
-    assert!(read_message::<T, _>(&mut reader).unwrap().is_none());
-    message
-}
-
-/// A host with one loopback peer whose writer nothing drains. The fixture
-/// reports the receiver so a test can inspect and drain the outbox itself.
+/// A host with one typed peer whose writer nothing drains. The fixture reports
+/// the receiver so a test can inspect and drain the outbox itself.
 fn fixture() -> (Host, Client, outbox::Receiver) {
     let host = Host::new(
         Simulation::new(Field::new(&FieldConfig::default()).unwrap(), true),
         true,
     )
     .unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-    let (peer, _) = listener.accept().unwrap();
     let (sender, receiver) = outbox::channel(OUTBOX_CAPACITY);
     let welcome = host
         .handle()
@@ -53,12 +29,12 @@ fn fixture() -> (Host, Client, outbox::Receiver) {
             robot: Default::default(),
             owner_spawn: None,
             outbox: sender,
-            stream: ConnectionStop::Tcp(peer),
+            stream: Stop::default(),
         })
         .unwrap();
     let (outbox, _commands) = mpsc::sync_channel(CLIENT_COMMAND_CAPACITY);
     let client = Client {
-        stream: ConnectionStop::Tcp(stream),
+        stream: Stop::default(),
         outbox,
         inbox: Arc::default(),
         welcome,
@@ -98,7 +74,7 @@ fn impairment_stalled_writer_keeps_barriers_and_bounds_periodic_backlog() {
     client.sent_confirmation = 1;
     let mut ticks = Vec::new();
     while receiver.queued() > 0 {
-        let message = decode(receiver.recv().unwrap().encoded().to_owned());
+        let message = receiver.recv().unwrap().message().clone();
         if let ServerMessage::Snapshot(state) = &message {
             ticks.push(state.field.tick);
         }
@@ -158,7 +134,7 @@ fn impairment_clock_samples_do_not_acknowledge_commands_or_advance_ticks() {
         .unwrap();
     assert_eq!(host.handle().state().unwrap().field.tick, 0);
     assert_eq!(receiver.queued(), 1);
-    let message = decode(receiver.recv().unwrap().encoded().to_owned());
+    let message = receiver.recv().unwrap().message().clone();
     assert!(matches!(
         message,
         ServerMessage::TimeSample {

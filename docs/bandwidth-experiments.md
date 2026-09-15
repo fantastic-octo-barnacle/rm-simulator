@@ -81,7 +81,7 @@ anchors so the handoff remains usable after line numbers move.
 | Area | Current behavior and implication |
 |---|---|
 | `crates/rm-simulator-server/src/host.rs`, `BROADCAST_PERIOD`, `publish_snapshot` | One worker owns the simulation and roster. Remote snapshots publish every 32 ms. Per-peer outboxes replace unsent periodic snapshots, preserving reliable messages and confirmation order. |
-| `net.rs`; `host.rs`, `Outbound`; `gns_transport.rs` | Local play uses typed channels; TCP carries independent JSON-line snapshots. GNS drives the per-peer UDP codec. Reducing local TCP overhead has already happened and does not solve remote bandwidth. |
+| `net.rs`; `host.rs`, `Outbound`; `gns_transport.rs` | Local play uses typed channels and remote play uses GNS, which drives the per-peer UDP codec. Reducing local channel overhead does not solve remote bandwidth. |
 | `udp_codec.rs`, `PeerCodec::send` | A periodic pilot snapshot produces both an owner anchor and a world checkpoint. Native pending bytes above 64 KiB skip world production but still produce the anchor. Nonperiodic confirmations take the full independent path. |
 | `owner_stream.rs`, `OwnerAnchor::encode` | The current `RMO4` anchor is binary and names its chassis configuration by an acknowledged 8-byte `ConfigRevision` instead of repeating it; the earlier `RMO3` layout repeated a deflated JSON configuration in every anchor and is the pre-experiment baseline. The anchor includes 29 f64 values and five f64 values per wheel. With four wheels, the `RMO3` layout is about 438 bytes before compressed configuration: about 109.5 kbps at 31.25 Hz before native/network overhead, by source arithmetic, not measurement. |
 | `snapshot_codec.rs`, `PlayerSnapshot` | Compact checkpoints already remove/reconstruct rune target poses, outpost armor poses and wheel contacts; projectile position/velocity use f32 and spin is omitted. Other restoration values retain f64. Failed-contact diagnostics are filtered. Do not propose these existing reductions as new work. |
@@ -275,8 +275,6 @@ Defer lossy chassis/aim quantization until lossless experiments establish the
 remaining gap. If tested, isolate f32 or fixed-point precision as its own
 candidate with explicit position, angle and contact/scoring error bounds across
 long replay, ramps and robot collisions. Exact equivalence cannot be assumed.
-TCP compression parity is also a separate, lower-priority experiment for this
-UDP issue; TCP snapshots must remain independent of previous transmitted frames.
 
 ## Results (executed 13 September 2026)
 

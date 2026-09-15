@@ -81,7 +81,7 @@ narrow to one crate.
 - `rm-simulator-gameplay`: `just gameplay-test`, with no physics, CAD, server or
   renderer; `just gameplay-demo` runs a complete scenario.
 - `rm-simulator-render`: a headless `App` with the sync plugin, inspecting components.
-- `rm-simulator-server`: the protocol, a loopback TCP server and the HTTP routes.
+- `rm-simulator-server`: the protocol, the UDP client flows and the HTTP routes.
 - `rm-simulator-app`: argument parsing, frame conversions, flashes, the HUD line
   and an end-to-end trace (`net_harness.rs`) over `scripted_link.rs`.
 
