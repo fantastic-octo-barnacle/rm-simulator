@@ -600,8 +600,8 @@ pub enum Command {
     /// Step the world by `ticks` physics ticks (also while paused). Referee
     /// only on a host.
     Step {
-        /// Ticks to advance, from 1 to 60,000. Each tick is `tick_ns` of world
-        /// time.
+        /// Ticks to advance, from 1 to 60,000. Each tick is one fixed 128 Hz
+        /// physics tick of world time.
         ticks: u64,
     },
 }

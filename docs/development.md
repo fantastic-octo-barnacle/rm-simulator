@@ -113,7 +113,8 @@ prek install --hook-type pre-commit --hook-type commit-msg
 `--screenshot PATH` captures the window or headless camera to a PNG once the
 scene has loaded and settled, then exits; it checks visuals without a display
 session. `--start-paused` opens with the world clock paused, and `F7` steps the
-world one frame (16 ms) while paused in a local world or as referee; `F6` pauses and resumes. The app
+world one manual step (three 128 Hz ticks, 23.4375 ms) while paused in a local
+world or as referee; `F6` pauses and resumes. The app
 automation console (`--console`) drives the same controls; see
 [console commands](console.md) and [app options](app-options.md).
 

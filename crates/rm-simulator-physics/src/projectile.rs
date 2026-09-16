@@ -54,8 +54,8 @@ pub const RETIRE_SPEED_M_S: f64 = 2.0;
 /// Longest integration slice of a world tick, in nanoseconds. A 17 mm shot at
 /// the 25 m/s limit crosses further in one 128 Hz tick than the thin armour
 /// housings are deep, and Rapier CCD does not recover the hit, so the ballistic
-/// world never integrates more than this at once whatever the tick length. A
-/// 1 ms tick is a single slice and steps exactly as before.
+/// world never integrates more than this at once whatever the tick length, and
+/// a tick no longer than this is a single slice.
 const SUBSTEP_MAX_NS: u64 = 1_000_000;
 
 /// Solver runs per world tick: the tick split into [`SUBSTEP_MAX_NS`] slices,

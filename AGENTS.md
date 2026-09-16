@@ -276,7 +276,7 @@ not a refactor.
   iterating. See `docs/development.md` for the full target list.
 - `--screenshot PATH` renders the loaded scene to a PNG and exits; use it to
   check visuals without a display session. `--start-paused` and `F7` step the
-  world by 16 ms for inspection.
+  world by one manual step — three 128 Hz ticks, 23.4375 ms — for inspection.
 - Record user-visible changes under `Unreleased` in `CHANGELOG.md` and keep
   the README option and control tables current.
 - Tests live beside the code. Run `cargo test -p rm-simulator-physics --locked`
