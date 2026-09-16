@@ -761,10 +761,12 @@ The comparison stages Hero HP at 60%. `hit` freezes a front armor flash;
 
 Chassis and outpost armor use the shared [SVG-derived sprite atlas](assets/armor-atlas/README.md).
 It includes numbers 1–5, guard, outpost and base identifiers with small/large
-variants. Hero uses 1, infantry uses 3, and outpost uses O. Textures preserve the
-source aspect ratio and face outward. Patterns are passive white printing; only
-the light bars stop emitting with disabled armor and remain white plastic. The external base package uses the base sprite on its moving dart plate, three
-upper armor modules and three lower modules exposed by opening the shields.
+variants. Hero uses 1, Infantry 3 uses 3, Infantry 4 uses 4, and outpost uses O.
+Textures preserve the source aspect ratio and face outward. Patterns are passive
+white printing; only the light bars stop emitting with disabled armor and remain
+white plastic. The external base package uses the base sprite on its moving dart
+plate, three upper armor modules and three lower modules exposed by opening the
+shields.
 
 ## Performance
 
