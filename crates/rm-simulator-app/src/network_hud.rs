@@ -90,6 +90,7 @@ fn p95(samples: &VecDeque<[Option<f64>; 4]>, column: usize) -> Option<f64> {
 /// the session's local stats, the correction diagnostics and the frame-time
 /// diagnostic. Rates come from the transport's own accounting and are shown as
 /// KiB/s; loss is shown as unavailable rather than as zero.
+#[allow(clippy::too_many_arguments)]
 pub fn update(
     mut commands: Commands,
     session: Res<Session>,
@@ -98,6 +99,7 @@ pub fn update(
     diagnostics: Res<DiagnosticsStore>,
     mut history: Local<History>,
     mut overlay: Query<(&mut Text, &mut Node), With<NetworkOverlay>>,
+    aim: Option<Res<crate::auto_aim::AutoAim>>,
 ) {
     if overlay.is_empty() {
         commands.spawn((
@@ -196,6 +198,21 @@ pub fn update(
             .get(&FrameTimeDiagnosticsPlugin::FRAME_TIME)
             .and_then(|d| d.smoothed());
         value.push_str(&format!("\nFrame {} ms   Queue {} ms\nUpdate gap {} ms   Lead {} ms   Backlog {} ms\nLoss unavailable; rates are GNS estimates\n60 s, auto-scaled traces; p95 / sample count", number(frame), number(native.and_then(|n| n.send_queue_ms)), number(gap), number(detail["input_lead_ms"].as_f64()), number(detail["prediction_backlog_ms"].as_f64())));
+        if let Some(aim) = &aim {
+            value.push_str(&format!(
+                "\nAim {:.0}ms {}   stale {} track {} blocked {} firing {}",
+                aim.observation_age_ms.max(0.),
+                if aim.last_gate.is_empty() {
+                    "--"
+                } else {
+                    aim.last_gate.as_str()
+                },
+                aim.stale_frames,
+                aim.tracking_only_frames,
+                aim.blocked_frames,
+                aim.firing_frames,
+            ));
+        }
         for (i, label) in ["RTT ms", "Rx KiB/s", "Gap ms", "Correction mm"]
             .iter()
             .enumerate()

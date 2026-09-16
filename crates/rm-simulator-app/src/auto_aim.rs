@@ -49,10 +49,27 @@ pub struct AutoAim {
     /// HUD text for the Auto Aim row: the chosen target and whether the shot is
     /// firing, waiting on alignment or aim-only. Empty while the assist is off.
     pub status: String,
-    /// Age of the authoritative target state at intended execution, in ms.
+    /// Age of the authoritative target state at presentation, in ms.
+    /// Execution lead and downstream transit are excluded, so the staleness
+    /// gates judge freshness rather than the round trip.
     pub observation_age_ms: f64,
     /// Intended execution time used by the solver, in simulation nanoseconds.
     pub execution_time_ns: u64,
+    /// Short gate key for this frame (`stale`, `tracking-only`, `firing`,
+    /// `searching`, `no-shot`, `aim only`, or the blocking reason such as
+    /// `weapon cadence`). Backs the network-HUD breakdown so
+    /// tracking-but-not-firing is visible without reading the full status
+    /// line.
+    pub last_gate: String,
+    /// Cumulative frames the observation was stale (>300 ms, no target).
+    pub stale_frames: u64,
+    /// Cumulative frames tracking with a stale (>150 ms) observation
+    /// (aim, no fire).
+    pub tracking_only_frames: u64,
+    /// Cumulative frames blocked by cadence, rune, geometry, robots or gate.
+    pub blocked_frames: u64,
+    /// Cumulative frames with `fire_ready` set.
+    pub firing_frames: u64,
     proposed_rune: Option<RuneShot>,
     last_rune: Option<RuneShot>,
 }
@@ -75,7 +92,20 @@ impl AutoAim {
         self.target = None;
         self.fire_ready = false;
         self.status.clear();
+        self.last_gate.clear();
         self.proposed_rune = None;
+    }
+    /// Record this frame's gate outcome for the HUD breakdown. Cumulative
+    /// counters survive `clear_intent`; only the per-frame status is cleared.
+    fn record_gate(&mut self, gate: &str) {
+        self.last_gate = gate.into();
+        match gate {
+            "stale" => self.stale_frames += 1,
+            "tracking-only" => self.tracking_only_frames += 1,
+            "firing" => self.firing_frames += 1,
+            "off" | "searching" | "no-shot" | "aim only" => {}
+            _ => self.blocked_frames += 1,
+        }
     }
     /// Called only when controls actually submit a shot, not while waiting for
     /// the weapon cadence. Releasing/repressing the button cannot bypass it.
@@ -660,8 +690,13 @@ pub fn update(
     buttons: Res<ButtonInput<MouseButton>>,
 ) {
     state.execution_time_ns = session.fire_time_ns();
-    state.observation_age_ms = state
-        .execution_time_ns
+    // Freshness is judged at presentation, not at intended execution: the
+    // execution time adds the input lead (rtt/2 + 32 ms, up to 150 ms), so
+    // gating on it starves firing on any link with real round-trip delay
+    // even while checkpoints arrive fresh. The solver still predicts ahead
+    // to `execution_time_ns`; only the staleness gates use this age.
+    state.observation_age_ms = session
+        .presentation_time_ns()
         .saturating_sub(session.snapshot.time_ns) as f64
         / 1e6;
     state.fire_ready = false;
@@ -679,7 +714,7 @@ pub fn update(
         .controls
         .pressed(InputAction::AutoFire, &keys, Some(&buttons));
     let Some(own) = session.presented_chassis() else {
-        *state = default();
+        state.clear_intent();
         return;
     };
     if (!aiming && !firing)
@@ -694,6 +729,7 @@ pub fn update(
     if !session.aim_observation_fresh() || state.observation_age_ms > 300. {
         state.target = None;
         state.status = "AUTO: stale target observation".into();
+        state.record_gate("stale");
         return;
     }
     let geometry = session.aim_geometry();
@@ -727,6 +763,7 @@ pub fn update(
     let Some(target) = selected else {
         state.target = None;
         state.status = "AUTO: searching".into();
+        state.record_gate("searching");
         return;
     };
     state.target = Some(target.id);
@@ -737,6 +774,7 @@ pub fn update(
     };
     let Some(solution) = choose_solution(target, pivot, gun.shot, lead_s, geometry.as_ref()) else {
         state.status = format!("AUTO: {} / no shot", target.description());
+        state.record_gate("no-shot");
         return;
     };
     if aiming {
@@ -746,11 +784,7 @@ pub fn update(
     state.proposed_rune = rune_shot(target, solution);
     let reason = if !firing {
         "aim only"
-    } else if session
-        .fire_time_ns()
-        .saturating_sub(session.snapshot.time_ns)
-        > 150_000_000
-    {
+    } else if state.observation_age_ms > 150. {
         "stale target, tracking only"
     } else if session.presentation_time_ns() < gun.next_shot_ns {
         "weapon cadence"
@@ -781,6 +815,11 @@ pub fn update(
     };
     state.fire_ready = reason == "firing";
     state.status = format!("AUTO: {} / {}", target.description(), reason);
+    state.record_gate(if reason == "stale target, tracking only" {
+        "tracking-only"
+    } else {
+        reason
+    });
 }
 
 #[cfg(test)]

@@ -705,9 +705,13 @@ pub fn update_hud(
     });
     for (kind, mut text, mut node) in &mut texts {
         let value = match kind {
-            Hud::AutoAim => assist
-                .as_ref()
-                .map_or_else(String::new, |a| a.status.clone()),
+            Hud::AutoAim => assist.as_ref().map_or_else(String::new, |a| {
+                if a.status.is_empty() {
+                    String::new()
+                } else {
+                    format!("{} [{:.0}ms]", a.status, a.observation_age_ms.max(0.))
+                }
+            }),
             Hud::Team(team) => team_text(&session, *team),
             Hud::Clock => clock_text(&session),
             Hud::Robot => {
