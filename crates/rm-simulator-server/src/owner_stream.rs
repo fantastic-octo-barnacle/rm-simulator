@@ -388,13 +388,11 @@ mod tests {
         (state, chassis)
     }
 
-    /// The bytes `RMO3` spent on the configuration this anchor now references.
+    /// The bytes the replaced layout spent on the configuration this anchor now
+    /// references: the deflated JSON the old anchor repeated, measured with the
+    /// current codec so the comparison uses one compressor.
     fn embedded_config_bytes(anchor: &OwnerAnchor) -> usize {
-        2 + miniz_oxide::deflate::compress_to_vec(
-            &serde_json::to_vec(&anchor.owner.config).unwrap(),
-            1,
-        )
-        .len()
+        2 + crate::compression::compress(&serde_json::to_vec(&anchor.owner.config).unwrap()).len()
     }
 
     #[test]

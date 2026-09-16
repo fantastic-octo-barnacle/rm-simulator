@@ -20,9 +20,9 @@ the app is one client of this crate, whether it hosts in-process or connects her
 | `src/clock.rs` | The place host-side code reads the wall clock; tests hand it a `ManualTime` instead. |
 | `src/host.rs` | The single-owner worker: roster, command ordering, snapshot capture and its bounded mailbox. |
 | `src/net.rs` | TCP and GNS UDP transports, peer delivery, `Client`, and in-process owner channels. Its private submodules are `gns_transport.rs`, `outbox.rs` and `presentation_clock.rs`. |
-| `src/udp_codec.rs`, `src/udp_snapshot.rs`, `src/snapshot_codec.rs`, `src/binary_snapshot/` | The per-peer codec with no socket in it, the acknowledged-baseline delta state machine, and the JSON and binary checkpoint encodings. |
+| `src/udp_codec.rs`, `src/udp_snapshot.rs`, `src/snapshot_codec.rs`, `src/binary_snapshot/` | The per-peer codec with no socket in it, the acknowledged-baseline delta state machine, and the compact checkpoint and packed bitpacked encodings. |
 | `src/protocol.rs` | The JSON-lines `ClientMessage`/`ServerMessage`, `Command`, roles, `PROTOCOL_VERSION`, the default ports and the weapon configuration. |
-| `src/compression.rs` | The selectable wire codec, DEFLATE or ZSTD with an embedded trained checkpoint dictionary; every frame is self-identifying. |
+| `src/compression.rs` | The ZSTD wire codec for non-checkpoint messages; every frame is self-identifying. |
 | `src/input_stream.rs`, `src/prediction.rs`, `src/view.rs`, `src/owner_stream.rs`, `src/pacing.rs` | Sequenced held input with a simulation-time lease, bounded replay contracts, remote pose history, owner anchors and byte pacing. |
 | `src/scripted_link.rs` | A deterministic datagram link with scripted loss, reordering, duplication, delay and blackouts. |
 | `src/network_stats.rs`, `src/network_trace.rs` | Local diagnostics, and bounded transport metadata tracing that never records payloads. |
@@ -33,24 +33,24 @@ the app is one client of this crate, whether it hosts in-process or connects her
 ## Dependencies
 
 `rm-simulator-world` plus `anyhow`, `clap`, `serde`, `serde_json`, `sha2`,
-`game-networking-sockets`, `miniz_oxide`, `zstd` and `if-addrs`. The crate never
+`game-networking-sockets`, `zstd` and `if-addrs`. The crate never
 depends on Bevy, `rm-simulator-render`, `rm-simulator-app` or
 `rm-simulator-gameplay`; the live resources arrive through the world crate. It is
 the only place besides the app that reads host time.
 
-`crates/rm-simulator-server/assets/` holds the tracked ZSTD dictionaries embedded
-with `include_bytes!`. See [assets/README.md](assets/README.md) for their bytes,
-hashes, training runs and regeneration commands; retrain them when an encoded
+`crates/rm-simulator-server/assets/` holds the tracked ZSTD checkpoint dictionary
+embedded with `include_bytes!`. See [assets/README.md](assets/README.md) for its
+bytes, hash, training run and regeneration commands; retrain it when an encoded
 payload or precision changes.
 
 ## Testing
 
 `cargo test -p rm-simulator-server --locked` runs the in-module tests and the
 test-only `bandwidth_probe.rs` attribution probe. Coverage includes the protocol
-and its version refusal, loopback TCP and UDP client flows, the HTTP routes, both
-wire codecs and the snapshot delta state machine, the host worker's ordering and
-bounded queues, the replaceable periodic outbox, input leases and their renewal,
-and the scripted link's loss, reordering and duplication.
+and its version refusal, loopback TCP and UDP client flows, the HTTP routes, the
+ZSTD wire codec and the snapshot delta state machine, the host worker's ordering
+and bounded queues, the replaceable periodic outbox, input leases and their
+renewal, and the scripted link's loss, reordering and duplication.
 
 Many modules carry doctests, among them `protocol.rs`, `compression.rs`,
 `math.rs`, `cad_assets.rs`, `collision_mesh.rs` and `scripted_link.rs`.
@@ -58,9 +58,8 @@ Many modules carry doctests, among them `protocol.rs`, `compression.rs`,
 Examples cover the operational checks. `inspect_assets` verifies a package and
 reports semantic bindings and collider counts; `physics_rate`, `match_cost`,
 `prediction_replay` and `projectile_retirement` probe the loaded field;
-`network_bandwidth`, `compression_comparison` and
-`binary_protocol_comparison` measure the wire; `train_checkpoint_dictionary` and
-`train_binary_dictionaries` regenerate the embedded dictionaries.
+`network_bandwidth` measures the wire; `train_binary_dictionaries` regenerates
+the embedded checkpoint dictionary.
 
 ```sh
 cargo run --locked -p rm-simulator-server --example inspect_assets -- <package>

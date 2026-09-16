@@ -328,9 +328,9 @@ pub(crate) fn run_observed(
     let (mut simulation, chassis) = crate::workload::simulation(workload.players() as usize);
     let driver = chassis[0];
     let mut totals = Totals::default();
-    let mut peer = PeerCodec::new(now, budget_bytes_s, false);
+    let mut peer = PeerCodec::new(now, budget_bytes_s);
     peer.joined(chassis.first().copied());
-    let mut client = ClientCodec::new(now, upstream_bytes_s, 12);
+    let mut client = ClientCodec::new(now, upstream_bytes_s, crate::udp_codec::MAX_INPUT_FRAMES);
     let mut sequence = 0_u64;
     let mut snapshot_id = 0_u64;
     let ticks = seconds * 1000 / STEP_MS;
@@ -528,7 +528,7 @@ pub(crate) fn ablation(state: &SimulationState) -> Vec<Ablation> {
         state.clone(),
     )));
     let total = |value: &serde_json::Value| {
-        miniz_oxide::deflate::compress_to_vec(&serde_json::to_vec(value).unwrap(), 1).len() as i64
+        crate::compression::compress(&serde_json::to_vec(value).unwrap()).len() as i64
     };
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let mut rows = vec![Ablation {

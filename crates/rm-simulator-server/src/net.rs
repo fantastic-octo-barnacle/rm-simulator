@@ -1069,12 +1069,7 @@ impl Client {
     }
     /// Bounded lead from host arrival feedback, seeded from the timing probe.
     pub fn input_lead_ns(&self) -> u64 {
-        let initial = self.initial_input_lead_ns();
-        if self.timing.fixed_input_lead {
-            initial
-        } else {
-            self.timing.input_lead.get(initial)
-        }
+        self.timing.input_lead.get(self.initial_input_lead_ns())
     }
     fn initial_input_lead_ns(&self) -> u64 {
         // Reliable probe retries include loss recovery. Do not turn a single
@@ -1236,7 +1231,11 @@ impl ClientLeg {
     ) -> io::Result<Self> {
         let (sender, commands) = mpsc::sync_channel(CLIENT_COMMAND_CAPACITY);
         Ok(Self {
-            codec: crate::udp_codec::ClientCodec::new(time.now(), rate_bytes_per_s, 12),
+            codec: crate::udp_codec::ClientCodec::new(
+                time.now(),
+                rate_bytes_per_s,
+                crate::udp_codec::MAX_INPUT_FRAMES,
+            ),
             inbox: Arc::new(ClientInbox::for_transport("gns", time.clone())),
             sender: Some(sender),
             commands,
@@ -2536,7 +2535,6 @@ struct ClientTiming {
     rtt_samples: crate::network_trace::EventSamples,
     clock: presentation_clock::ClockEstimate,
     input_lead: presentation_clock::InputLead,
-    fixed_input_lead: bool,
 }
 impl Default for ClientTiming {
     fn default() -> Self {
@@ -2555,7 +2553,6 @@ impl ClientTiming {
             rtt_samples: Default::default(),
             clock: Default::default(),
             input_lead: Default::default(),
-            fixed_input_lead: std::env::var_os("RM_NET_FIXED_INPUT_LEAD").is_some_and(|v| v == "1"),
         }
     }
     fn now(&self) -> Instant {

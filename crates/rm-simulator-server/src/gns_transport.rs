@@ -18,16 +18,6 @@ const MAX_PEERS: usize = 64;
 /// the peer is dropped instead of growing an unbounded backlog.
 const MAX_PENDING_BYTES: u32 = 512 * 1024;
 
-/// Redundant input frames per batch. The short setting reproduces a client
-/// with no redundancy for bandwidth comparisons.
-fn client_input_history() -> usize {
-    if std::env::var_os("RM_NET_INPUT_HISTORY").is_some_and(|v| v == "4") {
-        4
-    } else {
-        12
-    }
-}
-
 /// Resolve an address, taking the first candidate.
 fn address(addr: impl ToSocketAddrs) -> io::Result<SocketAddr> {
     addr.to_socket_addrs()?
@@ -399,7 +389,7 @@ impl Client {
                     let mut codec = ClientCodec::new(
                         epoch,
                         crate::pacing::configured_rate("RM_NET_UP_KIB_S", crate::pacing::upstream_default()),
-                        client_input_history(),
+                        crate::udp_codec::MAX_INPUT_FRAMES,
                     );
                     let mut last_stats = Instant::now() - Duration::from_secs(1);
                     while !stopping.wait(POLL) {

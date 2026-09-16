@@ -410,7 +410,7 @@ fn write_trace(
 ) -> io::Result<()> {
     let mut writer = BufWriter::new(file);
     let header = serde_json::to_vec(
-        &serde_json::json!({"schema_version":1,"type":"header","role":label,"pid":std::process::id(),"protocol":crate::protocol::PROTOCOL_VERSION,"snapshot_encoder":if crate::binary_snapshot::selected() { "binary-fixed-fine" } else { "json" },"byte_scope":"application payload; excludes IP/UDP/GNS overhead","clock":"elapsed_ns is observer-local; do not subtract across files"}),
+        &serde_json::json!({"schema_version":1,"type":"header","role":label,"pid":std::process::id(),"protocol":crate::protocol::PROTOCOL_VERSION,"snapshot_encoder":"binary-fixed-fine","byte_scope":"application payload; excludes IP/UDP/GNS overhead","clock":"elapsed_ns is observer-local; do not subtract across files"}),
     )?;
     writer.write_all(&header)?;
     writer.write_all(b"\n")?;

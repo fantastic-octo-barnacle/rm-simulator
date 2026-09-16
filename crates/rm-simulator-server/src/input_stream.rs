@@ -284,7 +284,7 @@ mod tests {
             crate::network_stats::HostTelemetry(1, 300_000_000, 7, stream.telemetry),
         );
         let json = crate::snapshot_codec::encode_player_message(&message);
-        assert!(miniz_oxide::deflate::compress_to_vec(&json, 1).len() + 21 < 256);
+        assert!(crate::compression::compress(&json).len() + 21 < 256);
     }
     #[test]
     fn schedules_once_and_applies_fresh_late_transitions() {

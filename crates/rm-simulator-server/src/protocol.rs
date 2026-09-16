@@ -31,7 +31,10 @@ use std::io::{self, BufRead, Read, Write};
 /// the robot instead of one host setting.
 /// Version 34 removes the `ShotFinished` message, which no host ever produced:
 /// a shot's end was only ever reported as a `ShotResult`.
-pub const PROTOCOL_VERSION: u32 = 34;
+/// Version 35 makes packed checkpoints the only periodic snapshot encoding and
+/// ZSTD the only wire codec, removing the JSON checkpoint path, the DEFLATE
+/// codec and every environment selector that chose between them.
+pub const PROTOCOL_VERSION: u32 = 35;
 
 /// The refusal a host sends a client whose physics rate differs from its own.
 /// Both are stated in Hz where the rate is one that is offered, and otherwise

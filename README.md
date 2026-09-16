@@ -414,9 +414,8 @@ is sent by normal clients.
 
 Input lead adapts to host-observed arrival margins within 32–150 ms. UDP repeats
 the newest four samples plus useful older movement transitions, up to twelve
-samples in one packet. For development comparisons, `RM_NET_FIXED_INPUT_LEAD=1`
-on the client keeps the previous RTT-based lead, and `RM_NET_INPUT_HISTORY=4`
-keeps four-sample redundancy. The harness records these overrides. F3 provides automatic or manual remote
+samples in one packet. The lead always adapts to host feedback; there is no
+fixed or shortened-history override. F3 provides automatic or manual remote
 interpolation buffering; it does not alter local input lead. Automatic buffering
 releases excess delay at up to 50 ms per second after the two-second jitter
 window improves.
@@ -441,8 +440,10 @@ does not acknowledge its execution by the host.
 | 27 | Sends authoritative armor contacts reliably, independently of world snapshots. Recent contacts recovered from snapshots also display once; repeated snapshots cannot restart their flash. Feedback more than 250 ms old is discarded instead of replayed after a long interruption. Damage and HP remain host-owned. Both host and clients must use matching protocol builds. |
 | 29 | Combines referenced owner configurations with lossless RMI3 input batches; experimental version 28 builds carried only one of the two changes. |
 | 32 | Defaults periodic UDP world checkpoints to bitpacked fine fixed point with a separately trained, embedded ZSTD dictionary. Both peers must run this build. Owner anchors and full confirmations retain their existing precision. |
+| 33 | Removes the `ShotFinished` message, which no host ever produced: a shot's end was only ever reported as a `ShotResult`. |
+| 34 | Makes packed checkpoints the only periodic snapshot encoding and ZSTD the only wire codec, removing the JSON checkpoint path and the DEFLATE codec. |
 
-The current protocol version is 32, defined by `PROTOCOL_VERSION` in
+The current protocol version is 34, defined by `PROTOCOL_VERSION` in
 `crates/rm-simulator-server/src/protocol.rs`. GNS sends redundant controls
 and retried shot intents unreliably; scheduling receipts and terminal shot results
 remain reliable. There is no shooter-view fire path, ordered TCP snapshot delta
@@ -466,24 +467,13 @@ reference.
 
 | Variable | Effect |
 |---|---|
-| `RM_NET_FULL_CHECKPOINTS=1` | On the host, compares full checkpoints under the same pacing. |
-| `RM_NET_PROFILE=limited` | On the host, retains the original 40 KiB/s downstream budget and 10 KiB/s upstream on clients using that profile. |
-| `RM_NET_UP_KIB_S` / `RM_NET_DOWN_KIB_S` | Integer values from 4 to 2048 that override the application pacing for comparison. Invalid overrides use the defaults. |
-| `RM_NET_FIXED_INPUT_LEAD=1` | On the client, keeps the previous RTT-based input lead instead of the adaptive 32–150 ms lead. |
-| `RM_NET_INPUT_HISTORY=4` | Keeps four-sample input redundancy. |
-| `RM_NET_SNAPSHOT=json` | On the host, compares the previous checkpoint format. |
-| `RM_NET_CODEC=zstd` or `RM_NET_CODEC=zstd-dict` | Selects compression for the JSON snapshot path and other compressed message kinds; unset means DEFLATE for those messages. |
-| `RM_NET_DEFLATE_LEVEL` / `RM_NET_ZSTD_LEVEL` | Override the compression effort of their codec. |
+| `RM_NET_UP_KIB_S` / `RM_NET_DOWN_KIB_S` | Integer values from 4 to 2048 that override the application pacing for a trial. Invalid overrides use the defaults. |
 
 Measure snapshot bytes and codec CPU with
 `cargo run -p rm-simulator-server --example network_bandwidth --locked`.
-Use `cargo run --release --locked -p rm-simulator-server --example
-network_bandwidth -- --deflate-sweep` to compare deflate 1/4 on identical selected
-checkpoints at 64 ms intervals. Compare the selectable compression codecs
-(DEFLATE, ZSTD, ZSTD with the embedded checkpoint dictionary) with
-`cargo run --release --locked -p rm-simulator-server --example
-compression_comparison`. Binary checkpoints always use their fine fixed-point
-dictionary at ZSTD level 3.
+Periodic checkpoints are packed fine fixed point compressed with the embedded
+checkpoint dictionary at ZSTD level 3; every other wire message is plain ZSTD at
+level 3. There is no codec selector and no dictionaryless or DEFLATE path.
 
 ### Diagnostics
 

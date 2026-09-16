@@ -51,7 +51,7 @@ const INPUT_BATCH_MAGIC_V2: &[u8; 4] = b"RMI2";
 /// placement revision, duration and five f64 command values.
 const INPUT_FRAME_BYTES: usize = 80;
 /// Most frames one batch may carry.
-const MAX_INPUT_FRAMES: usize = 12;
+pub(crate) const MAX_INPUT_FRAMES: usize = 12;
 /// Bytes of the shared RMI3 batch header: chassis, input epoch and placement
 /// revision, which every compact frame in the batch inherits.
 const INPUT_HEADER_BYTES: usize = 20;
@@ -729,15 +729,13 @@ pub(crate) struct PeerCodec {
     revision: u64,
     pacer: Pacer,
     encoder: crate::udp_snapshot::Encoder,
-    full_checkpoints: bool,
     encoding: crate::network_stats::EncodingStats,
     owner_config: OwnerConfigSender,
 }
 impl PeerCodec {
     /// Creates the host codec for a peer the carrier admitted at `admitted`.
-    /// `rate_bytes_per_s` is the pacing budget and `full_checkpoints` disables
-    /// baseline deltas, which reproduces a client without the delta scheme.
-    pub(crate) fn new(admitted: Instant, rate_bytes_per_s: u32, full_checkpoints: bool) -> Self {
+    /// `rate_bytes_per_s` is the pacing budget.
+    pub(crate) fn new(admitted: Instant, rate_bytes_per_s: u32) -> Self {
         Self {
             admitted,
             chassis: None,
@@ -745,7 +743,6 @@ impl PeerCodec {
             revision: 0,
             pacer: Pacer::new(rate_bytes_per_s),
             encoder: crate::udp_snapshot::Encoder::default(),
-            full_checkpoints,
             encoding: Default::default(),
             owner_config: OwnerConfigSender::default(),
         }
@@ -852,7 +849,6 @@ impl PeerCodec {
             return Ok(());
         }
         let compressed = if frame.periodic
-            && !self.full_checkpoints
             && let ServerMessage::Snapshot(state) = frame.message()
         {
             let raw = crate::snapshot_codec::encode_player_message(frame.message());
@@ -914,11 +910,7 @@ impl HostPeer {
     pub fn new(handle: HostHandle, admitted: Instant, rate_bytes_per_s: u32) -> Self {
         Self {
             handle,
-            codec: PeerCodec::new(
-                admitted,
-                rate_bytes_per_s,
-                std::env::var_os("RM_NET_FULL_CHECKPOINTS").is_some(),
-            ),
+            codec: PeerCodec::new(admitted, rate_bytes_per_s),
             stop: Stop::default(),
             seat: None,
             welcome: None,
@@ -1431,7 +1423,7 @@ mod tests {
         let chassis = state.field.chassis.first().unwrap().id;
         let config = state.field.chassis.first().unwrap().config.clone();
         let revision = ConfigRevision::of(&config);
-        let mut host = PeerCodec::new(epoch, 1 << 20, false);
+        let mut host = PeerCodec::new(epoch, 1 << 20);
         host.joined(Some(chassis));
         let mut client = ClientCodec::new(epoch, 1 << 20, 12);
         client.welcome_for_test();
@@ -1547,7 +1539,7 @@ mod tests {
         let epoch = Instant::now();
         let first = owner_state(1, 1, 0);
         let chassis = first.field.chassis.first().unwrap().id;
-        let mut host = PeerCodec::new(epoch, 1 << 20, false);
+        let mut host = PeerCodec::new(epoch, 1 << 20);
         host.joined(Some(chassis));
         let mut client = ClientCodec::new(epoch, 1 << 20, 12);
         client.welcome_for_test();
@@ -1624,7 +1616,7 @@ mod tests {
         let epoch = Instant::now();
         let state = owner_state(1, 1, 0);
         let chassis = state.field.chassis.first().unwrap().id;
-        let mut host = PeerCodec::new(epoch, 1 << 20, false);
+        let mut host = PeerCodec::new(epoch, 1 << 20);
         host.joined(Some(chassis));
         let mut offers = 0;
         for step in 0..CONFIG_RESEND_FRAMES + 2 {
@@ -1652,7 +1644,7 @@ mod tests {
         let epoch = Instant::now();
         let state = owner_state(1, 1, 0);
         let chassis = state.field.chassis[0].id;
-        let mut host = PeerCodec::new(epoch, 1 << 20, false);
+        let mut host = PeerCodec::new(epoch, 1 << 20);
         host.joined(Some(chassis));
         let mut client = ClientCodec::new(epoch, 1 << 20, 12);
         client.welcome_for_test();
@@ -1731,7 +1723,7 @@ mod tests {
         let chassis = state.field.chassis.first().unwrap().id;
         // A reconnect is a fresh codec pair: the host must carry the
         // configuration again and release no anchor until the new peer answers.
-        let mut host = PeerCodec::new(epoch, 1 << 20, false);
+        let mut host = PeerCodec::new(epoch, 1 << 20);
         host.joined(Some(chassis));
         host.send(&periodic(&state), epoch, 0).unwrap();
         let packets = host_packets(&mut host, epoch + Duration::from_millis(32));
@@ -1802,7 +1794,7 @@ mod tests {
             &serde_json::to_vec(&ClientMessage::Command(command)).unwrap(),
         );
         assert_eq!(body, expected);
-        let mut host = PeerCodec::new(now, 1 << 20, false);
+        let mut host = PeerCodec::new(now, 1 << 20);
         assert!(matches!(host.receive(&packets[0], now).unwrap(),
             PeerRequest::Message(message) if *message == ClientMessage::Command(command)));
     }
@@ -1901,10 +1893,10 @@ mod tests {
         inputs.push_back(Command::Pause { paused: true });
         assert!(input_batch(&inputs).is_err());
         let mut bomb = INPUT_BATCH_MAGIC.to_vec();
-        bomb.extend(miniz_oxide::deflate::compress_to_vec(
-            &vec![b' '; INPUT_BATCH_LIMIT + 1],
-            1,
-        ));
+        bomb.extend(crate::compression::compress(&vec![
+            b' ';
+            INPUT_BATCH_LIMIT + 1
+        ]));
         assert!(decode_inputs(&bomb).is_err());
     }
 
@@ -1962,7 +1954,7 @@ mod tests {
     fn malformed_and_oversized_frames_are_rejected() {
         let mut frames = Frames::default();
         assert!(frames.receive(b"bad", Instant::now()).is_err());
-        let bomb = miniz_oxide::deflate::compress_to_vec(&vec![0; MAX_WIRE + 1], 1);
+        let bomb = crate::compression::compress(&vec![0; MAX_WIRE + 1]);
         let mut failed = false;
         for packet in packets(1, true, &bomb).unwrap() {
             failed |= frames.receive(&packet, Instant::now()).is_err();
@@ -2023,7 +2015,7 @@ mod tests {
     /// Frames a hand-built body as an `RMI3` packet.
     fn reencoded(body: &[u8]) -> Vec<u8> {
         let mut packet = INPUT_BATCH_MAGIC.to_vec();
-        packet.extend(miniz_oxide::deflate::compress_to_vec(body, 1));
+        packet.extend(crate::compression::compress(body));
         packet
     }
 
@@ -2322,7 +2314,7 @@ mod tests {
             body.extend_from_slice(&fixed_frame(*chassis, frame));
         }
         let mut packet = INPUT_BATCH_MAGIC_V2.to_vec();
-        packet.extend(miniz_oxide::deflate::compress_to_vec(&body, 1));
+        packet.extend(crate::compression::compress(&body));
         assert_eq!(
             fixed_batch(&decode_inputs(&packet).unwrap()),
             fixed_batch(&inputs.iter().copied().collect::<Vec<_>>())
@@ -2333,7 +2325,7 @@ mod tests {
     fn compact_input_batch_refuses_malformed_headers_masks_counts_and_oversized_batches() {
         // A malformed header: a count byte with no shared identity behind it.
         let mut short = INPUT_BATCH_MAGIC.to_vec();
-        short.extend(miniz_oxide::deflate::compress_to_vec(&[1u8], 1));
+        short.extend(crate::compression::compress(&[1u8]));
         assert!(decode_inputs(&short).is_err());
 
         // A giant count and a zero count, which no encoder can produce.

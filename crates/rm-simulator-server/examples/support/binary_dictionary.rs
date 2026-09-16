@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
 //! Dictionary framing for experiments only. These frames must never masquerade
-//! as the production RMZ2 frames, which require the embedded JSON dictionary.
+//! as the production RMBZ checkpoint frames, which carry the embedded fine
+//! fixed-point dictionary.
 use super::fixed_point::Quantization;
 use std::io;
 
 const MAGIC: &[u8; 4] = b"RMBZ";
+/// Bytes that begin a trained ZSTD dictionary. An asset that does not came from
+/// the trainer's raw-content fallback and would silently degrade every frame it
+/// compresses, so the experimental codec refuses it.
+const TRAINED_DICTIONARY_MAGIC: [u8; 4] = [0x37, 0xa4, 0x30, 0xec];
 
 /// File stem identifying a binary layout and its numeric precision policy.
 pub fn name(packed: bool, mode: Quantization) -> &'static str {
@@ -27,7 +32,7 @@ impl Codec {
     /// Compile a trained dictionary into both contexts. ZSTD carries its
     /// dictionary id in each frame and refuses a different dictionary at decode.
     pub fn new(dictionary: &[u8]) -> io::Result<Self> {
-        if !dictionary.starts_with(&rm_simulator_server::compression::TRAINED_DICTIONARY_MAGIC) {
+        if !dictionary.starts_with(&TRAINED_DICTIONARY_MAGIC) {
             return Err(io::Error::other("expected a trained ZSTD dictionary"));
         }
         Ok(Self {
@@ -79,7 +84,7 @@ mod tests {
         assert_eq!(codec.decompress(&frame, 1024).unwrap(), samples[0]);
         assert!(codec.decompress(&frame, 2).is_err());
         assert!(Codec::new(&b).unwrap().decompress(&frame, 1024).is_err());
-        assert!(codec.decompress(b"RMZ2wrong framing", 1024).is_err());
+        assert!(codec.decompress(b"RMXXwrong framing", 1024).is_err());
         assert!(Codec::new(b"raw content is not a trained dictionary").is_err());
     }
 }
