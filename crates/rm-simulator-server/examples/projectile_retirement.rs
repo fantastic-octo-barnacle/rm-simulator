@@ -2,11 +2,16 @@
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
 //! Measurement harness: restitution and post-contact projectile retirement.
 //!
-//! Runs the real CAD field headlessly on the ordinary 1 ms tick, fires a
+//! Runs the real CAD field headlessly on the ordinary fixed 128 Hz tick, fires a
 //! deterministic scripted volley that is identical for every arm, and records
 //! active counts, lifetimes, removal reasons, contact workload, physics and
 //! replay CPU, snapshot bytes at a fixed publication rate, and every armor
 //! contact so arms can be diffed against the control.
+//!
+//! Every cadence here is scheduled in world time rather than tick counts, so
+//! `--warmup-s`, `--measure-s`, `--rates` and the publication rate keep their
+//! meaning whatever the fixed tick length is; a period that does not divide the
+//! tick alternates by one tick instead of drifting away from the rate it names.
 //!
 //! Usage: `projectile_retirement --cad <package> --out <dir> [--reps 5]
 //! [--warmup-s 10] [--measure-s 60] [--arms a,b,c] [--trajectories]`.
@@ -14,7 +19,7 @@ use rm_simulator_server::{
     base_layout, cad_assets,
     layout::{self, LayoutOptions},
     protocol::ServerMessage,
-    simulation::SimulationState,
+    simulation::{SimulationState, TickSchedule},
     snapshot_codec::encode_player_message,
 };
 use rm_simulator_world::{
@@ -141,10 +146,13 @@ const SCENARIOS: [&str; 10] = [
 ];
 
 /// Build the whole volley up front so every arm fires the same shots at the
-/// same ticks, whatever its physics does with them.
-fn schedule(seed: u64, ticks: u64, period_ticks: u64) -> Vec<Launch> {
+/// same ticks, whatever its physics does with them. Launches are spaced by
+/// `period_ns` of world time, so a rate that does not divide the tick rate
+/// alternates one long and one short gap instead of slowly drifting off it.
+fn schedule(seed: u64, ticks: u64, period_ns: u64) -> Vec<Launch> {
     let mut rng = Rng(seed | 1);
     let mut launches = Vec::new();
+    let mut clock = TickSchedule::default();
     let mut tick = 0;
     while tick < ticks {
         let scenario = rng.below(SCENARIOS.len());
@@ -161,7 +169,7 @@ fn schedule(seed: u64, ticks: u64, period_ticks: u64) -> Vec<Launch> {
             standoff_m: rng.range(2.0, 6.0),
             speed_scale: rng.range(0.75, 1.0),
         });
-        tick += period_ticks;
+        tick += clock.advance(period_ns);
     }
     launches
 }
@@ -407,7 +415,14 @@ fn run_arm(
     let floor_m = layout::CATCH_FLOOR_M;
     let mut metrics = Metrics::default();
     let mut launch_index = 0;
-    let publish_every = 1_000 / PUBLISH_HZ;
+    // Publications and the replay probe are scheduled in world time too, so the
+    // byte figures really are per second of the measured window and the probe
+    // really is 10 s apart. Publication ticks are counted from the end of
+    // warm-up, which is where `metrics` starts accumulating.
+    let publish_period_ns = 1_000_000_000 / PUBLISH_HZ;
+    let mut publish_clock = TickSchedule::default();
+    let mut next_publish = 0_u64;
+    let replay_every_ticks = 10_000_000_000_u64.div_ceil(tick_ns());
     let total_ticks = warmup_ticks + measure_ticks;
     let mut hits_this_tick: Vec<(u64, ArmorTarget, bool, u32)> = Vec::new();
     // First contact time per live ball at the end of the previous tick, so a
@@ -478,7 +493,8 @@ fn run_arm(
             };
             *metrics.removals.entry(reason).or_default() += 1;
         }
-        if tick % publish_every == 0 {
+        if measuring && tick - warmup_ticks == next_publish {
+            next_publish += publish_clock.advance(publish_period_ns).max(1);
             let mut state = SimulationState {
                 bots: Vec::new(),
                 snapshot_id: tick,
@@ -495,7 +511,7 @@ fn run_arm(
             metrics.publications += 1;
         }
         // Replay probe: restore the published checkpoint and step it on.
-        if (tick - warmup_ticks).is_multiple_of(10_000) {
+        if tick >= warmup_ticks && (tick - warmup_ticks).is_multiple_of(replay_every_ticks) {
             let checkpoint = field.snapshot();
             let mut replay = Field::restore(&checkpoint, &geometry, floor_m)?;
             let started = Instant::now();
@@ -578,8 +594,8 @@ fn main() -> anyhow::Result<()> {
                 .is_none_or(|names| names.iter().any(|name| name == arm.name))
         })
         .collect();
-    let warmup_ticks = (warmup_s * 1_000.0) as u64;
-    let measure_ticks = (measure_s * 1_000.0) as u64;
+    let warmup_ticks = ((warmup_s * 1e9) as u64).div_ceil(tick_ns());
+    let measure_ticks = ((measure_s * 1e9) as u64).div_ceil(tick_ns());
 
     let mut runs = String::from(
         "rate_hz,rep,arm,restitution,retire_speed_m_s,retire_dwell_ns,max_flight_ns,\
@@ -593,17 +609,18 @@ step_ms_per_sim_s,replay_ms_per_sim_s,snapshot_bytes_per_s,projectile_bytes_per_
     );
     let mut trajectory_text = String::from("arm,projectile,time_ns,x_m,y_m,z_m,speed_m_s\n");
 
+    let tick_hz = 1_000_000_000 / tick_ns();
     for rate in &rate_hz {
-        if *rate == 0 || *rate > 1_000 || 1_000 % rate != 0 {
+        if *rate == 0 || *rate > tick_hz {
             anyhow::bail!(
-                "--rates {rate}: a launch rate must be a divisor of 1000 so that its \
-                 period is a whole number of 1 ms ticks"
+                "--rates {rate}: a launch rate must be from 1 to {tick_hz} Hz, the tick rate, \
+                 so that no period is shorter than one tick"
             );
         }
-        let period_ticks = 1_000 / rate;
+        let period_ns = 1_000_000_000 / rate;
         for rep in 0..reps {
             let seed = 0x5EED_0000 + rep as u64 * 7919 + rate;
-            let launches = schedule(seed, warmup_ticks + measure_ticks, period_ticks);
+            let launches = schedule(seed, warmup_ticks + measure_ticks, period_ns);
             // Randomize arm order within the repetition.
             let mut order: Vec<usize> = (0..arms.len()).collect();
             let mut rng = Rng(seed ^ 0xA5A5_A5A5);
@@ -652,6 +669,8 @@ step_ms_per_sim_s,replay_ms_per_sim_s,snapshot_bytes_per_s,projectile_bytes_per_
                     .collect();
                 let sim_s = measure_ticks as f64 * tick_ns() as f64 / 1e9;
                 let publications = metrics.publications.max(1) as f64;
+                // Publications are scheduled at exactly `PUBLISH_HZ` on average,
+                // so this is the real span they were counted over.
                 let published_s = publications / PUBLISH_HZ as f64;
                 let _ = writeln!(
                     runs,

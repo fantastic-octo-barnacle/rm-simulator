@@ -9,7 +9,9 @@ use rm_simulator_server::{
 use rm_simulator_world::{ChassisCommand, ChassisSnapshot, RefereeCommand, Team};
 use serde_json::Value;
 
-/// Production publication period in simulation ticks (1 ms each).
+/// Production publication period in world time, in milliseconds. The run is
+/// scheduled in duration, not ticks: a 32 ms frame is four whole 128 Hz ticks
+/// plus a remainder, and the remainder accumulates.
 const STEP_MS: u64 = 32;
 /// Fixed command-jitter seed; identical to the original JSON dictionary trainer.
 const SEED: u64 = 0x5eed_2026_0914;
@@ -85,6 +87,7 @@ pub fn checkpoints(scenario: &Scenario) -> Vec<Value> {
             .unwrap();
     }
     let mut rng = Rng::new(SEED);
+    let mut schedule = rm_simulator_server::simulation::TickSchedule::default();
     let mut samples = Vec::new();
     for frame in 0..scenario.frames {
         // Drive from the last published checkpoint, the one-frame-old view a
@@ -131,7 +134,10 @@ pub fn checkpoints(scenario: &Scenario) -> Vec<Value> {
                 let _ = simulation.apply(&Command::RemoveBot { chassis: bot });
             }
         }
-        simulation.step(STEP_MS).unwrap();
+        let advance = schedule.advance(STEP_MS * 1_000_000);
+        if advance > 0 {
+            simulation.step(advance).unwrap();
+        }
         let mut state = simulation.state();
         state.snapshot_id = frame + 1;
         let compact = encode_player_message(&ServerMessage::Snapshot(Box::new(state)));

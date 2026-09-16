@@ -29,7 +29,7 @@
 use crate::host::Outbound;
 use crate::net::QueuedCommand;
 use crate::protocol::{Command, ServerMessage};
-use crate::simulation::SimulationState;
+use crate::simulation::{SimulationState, TickSchedule};
 use crate::udp_codec::{CONGESTED_PENDING_BYTES, ClientCodec, PeerCodec};
 use rm_simulator_world::{ChassisCommand, tick_ns};
 use std::collections::BTreeMap;
@@ -52,8 +52,6 @@ const OWNER_BROADCAST_MS: u64 = 4;
 const WORLD_BROADCAST_MS: u64 = 32;
 /// Input sample period: 62.5 Hz, the documented upstream frame rate.
 const INPUT_MS: u64 = 16;
-/// One input frame's duration, in ticks of 1 ms.
-const FRAME_TICKS: u32 = 16;
 /// A pacer budget no offered stream can exceed in a probe run.
 pub(crate) const UNLIMITED: u32 = 64 * 1024 * 1024;
 
@@ -337,14 +335,18 @@ pub(crate) fn run_observed(
     );
     let mut sequence = 0_u64;
     let mut snapshot_id = 0_u64;
-    let step_ticks = (STEP_MS * 1_000_000).div_ceil(tick_ns()).max(1);
-    let mut sim_time_ns = 0_u64;
+    // Simulation time follows the codec clock exactly. A 2 ms offered interval
+    // is 2 ms of world time, so the ticks accumulate across intervals; rounding
+    // each interval up to a tick on its own would advance the world 3.9 times
+    // faster than the duration this probe reports.
+    let mut schedule = TickSchedule::default();
+    let step_ns = STEP_MS * 1_000_000;
     let ticks = seconds * 1000 / STEP_MS;
     for tick in 0..ticks {
         let started = Instant::now();
         if tick.is_multiple_of(INPUT_MS / STEP_MS) {
             sequence += 1;
-            let sampled_time_ns = sim_time_ns + step_ticks * tick_ns();
+            let sampled_time_ns = schedule.issued_ticks() * tick_ns();
             // One client connection carries one pilot, exactly as the wire does.
             // A twelve-player world is twelve such peers; this one measures the
             // single-pilot upstream stream that the budget is stated per player.
@@ -357,7 +359,7 @@ pub(crate) fn run_observed(
                                 input_epoch: 0,
                                 sequence,
                                 sampled_time_ns,
-                                duration_ticks: FRAME_TICKS,
+                                duration_ticks: schedule.span_ticks(INPUT_MS * 1_000_000) as u32,
                                 placement_revision: 0,
                                 command: frame_command(workload, sequence),
                             },
@@ -385,8 +387,10 @@ pub(crate) fn run_observed(
                     .unwrap();
             }
         }
-        simulation.step(step_ticks).unwrap();
-        sim_time_ns += step_ticks * tick_ns();
+        let advance = schedule.advance(step_ns);
+        if advance > 0 {
+            simulation.step(advance).unwrap();
+        }
         // Reproduce the host's two publication kinds explicitly. `PeerCodec` has
         // no flag that separates them, so this probe decides when a world
         // checkpoint may be offered and, for the owner cadence, uses the codec's
