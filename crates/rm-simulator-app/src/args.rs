@@ -114,6 +114,7 @@ pub struct Args {
     #[arg(
         long,
         conflicts_with_all = [
+            "outpost_speed_rad_s",
             "muzzle_speed_m_s",
             "fire_rate_hz",
             "max_fire_rate_hz",
@@ -442,6 +443,21 @@ mod tests {
         assert!(Args::try_parse_from(["rm-simulator", "--connect", "h:1", "--big-rune"]).is_err());
         assert!(
             Args::try_parse_from(["rm-simulator", "--connect", "h:1", "--no-referee"]).is_err()
+        );
+        // Every host-owned option is refused rather than silently ignored:
+        // the remote host decides the rune motion too.
+        assert!(
+            Args::try_parse_from([
+                "rm-simulator",
+                "--connect",
+                "h:1",
+                "--outpost-speed-rad-s",
+                "0.4"
+            ])
+            .is_err()
+        );
+        assert!(
+            Args::try_parse_from(["rm-simulator", "--connect", "h:1", "--start-paused"]).is_err()
         );
     }
 }
