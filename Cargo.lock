@@ -5142,7 +5142,6 @@ dependencies = [
  "clap",
  "game-networking-sockets",
  "if-addrs",
- "miniz_oxide 0.8.9",
  "rm-simulator-world",
  "serde",
  "serde_json",

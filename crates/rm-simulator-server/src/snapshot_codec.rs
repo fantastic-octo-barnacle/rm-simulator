@@ -1,108 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
-//! Snapshot wire encodings. A compact independent player checkpoint plus the
-//! structural patch primitives the UDP baseline codec builds its deltas from.
-//! No encoding here depends on an earlier transmitted frame.
+//! Snapshot wire encodings. A compact independent player checkpoint, which the
+//! packed checkpoint codec bitpacks and both confirmation and control paths
+//! carry as JSON. No encoding here depends on an earlier transmitted frame.
 use crate::{protocol::ServerMessage, simulation::SimulationState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::BTreeMap, io};
-
-/// A bounded structural replacement tree. Array length/key-set changes replace
-/// the whole container, so joins, removals and optional values remain explicit.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Patch {
-    /// Replace the value at this position outright.
-    Set(Value),
-    /// Change the listed object keys, leaving the others untouched. The key set
-    /// must match the baseline exactly; a join or removal replaces the container.
-    Map(BTreeMap<String, Patch>),
-    /// Change the listed array indices, leaving the others untouched. The length
-    /// must match the baseline exactly, so an element added or removed replaces
-    /// the whole array.
-    List(BTreeMap<usize, Patch>),
-}
-/// Smallest structural patch turning `before` into `after`, or `None` when they
-/// are equal. A nested patch is returned only when it is smaller than replacing
-/// the subtree, so a delta never costs more than the state it describes.
-///
-/// ```
-/// use rm_simulator_server::snapshot_codec::{apply, difference};
-/// use serde_json::json;
-///
-/// let before = json!({"tick": 1, "projectiles": [{"id": 3, "x": 0.0, "y": 1.0}]});
-/// let after = json!({"tick": 2, "projectiles": [{"id": 3, "x": 0.0, "y": 1.5}]});
-/// let patch = difference(&before, &after).expect("values differ");
-/// let mut value = before.clone();
-/// apply(&mut value, patch, 0).unwrap();
-/// assert_eq!(value, after);
-/// // Equal values need no patch at all.
-/// assert!(difference(&after, &after).is_none());
-/// ```
-pub fn difference(before: &Value, after: &Value) -> Option<Patch> {
-    if before == after {
-        return None;
-    }
-    let nested = match (before, after) {
-        (Value::Object(a), Value::Object(b)) if a.keys().eq(b.keys()) => Some(Patch::Map(
-            b.iter()
-                .filter_map(|(key, value)| {
-                    difference(&a[key], value).map(|patch| (key.clone(), patch))
-                })
-                .collect(),
-        )),
-        (Value::Array(a), Value::Array(b)) if a.len() == b.len() => Some(Patch::List(
-            b.iter()
-                .enumerate()
-                .filter_map(|(index, value)| {
-                    difference(&a[index], value).map(|patch| (index, patch))
-                })
-                .collect(),
-        )),
-        _ => None,
-    };
-    let replacement = Patch::Set(after.clone());
-    // Never inflate a subtree just to retain a fine-grained patch.
-    Some(match nested {
-        Some(patch)
-            if serde_json::to_vec(&patch).unwrap().len()
-                < serde_json::to_vec(&replacement).unwrap().len() =>
-        {
-            patch
-        }
-        _ => replacement,
-    })
-}
-fn invalid() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidData,
-        "invalid snapshot delta or missing baseline",
-    )
-}
-/// Applies one patch to a decoded baseline, in place. Errors when the patch no
-/// longer matches the value's shape or nests deeper than 32 levels, both of
-/// which mean the patch and baseline disagree.
-pub fn apply(value: &mut Value, patch: Patch, depth: usize) -> io::Result<()> {
-    if depth > 32 {
-        return Err(invalid());
-    }
-    match patch {
-        Patch::Set(next) => *value = next,
-        Patch::Map(changes) => {
-            let object = value.as_object_mut().ok_or_else(invalid)?;
-            for (key, change) in changes {
-                apply(object.get_mut(&key).ok_or_else(invalid)?, change, depth + 1)?;
-            }
-        }
-        Patch::List(changes) => {
-            let array = value.as_array_mut().ok_or_else(invalid)?;
-            for (index, change) in changes {
-                apply(array.get_mut(index).ok_or_else(invalid)?, change, depth + 1)?;
-            }
-        }
-    }
-    Ok(())
-}
+use std::io;
 
 /// Independent UDP player checkpoint. Physics restore values remain f64 except
 /// ball position/velocity, whose f32 precision is well below 0.1 mm on this field.
@@ -381,8 +285,8 @@ mod tests {
             let message = ServerMessage::Snapshot(Box::new(state.clone()));
             let full = serde_json::to_vec(&message).unwrap();
             let compact = encode_player_message(&message);
-            full_bytes += miniz_oxide::deflate::compress_to_vec(&full, 1).len();
-            compact_bytes += miniz_oxide::deflate::compress_to_vec(&compact, 1).len();
+            full_bytes += crate::compression::compress(&full).len();
+            compact_bytes += crate::compression::compress(&compact).len();
             // Decode each packet in isolation; no earlier frame or delta chain.
             let ServerMessage::Snapshot(actual) = decode_player_message(&compact).unwrap() else {
                 panic!("not a snapshot")

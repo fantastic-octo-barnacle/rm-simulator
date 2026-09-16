@@ -326,25 +326,17 @@ impl Pacer {
     }
 }
 
-/// Downstream allowance in KiB/s. The default `lan` profile uses 512 KiB/s;
-/// `RM_NET_PROFILE=limited` keeps the original 40 KiB/s development budget.
-/// Native congestion control still limits delivery on constrained links.
+/// Downstream allowance in KiB/s for the default `lan` profile. Native
+/// congestion control still limits delivery on constrained links, and
+/// `RM_NET_DOWN_KIB_S` overrides the application budget for a trial.
 pub fn downstream_default() -> u32 {
-    if std::env::var("RM_NET_PROFILE").as_deref() == Ok("limited") {
-        40
-    } else {
-        512
-    }
+    512
 }
 
-/// Upstream allowance in KiB/s. LAN uses 64 KiB/s for sustained fire and input
-/// redundancy; `RM_NET_PROFILE=limited` retains the original 10 KiB/s budget.
+/// Upstream allowance in KiB/s for the default `lan` profile, which covers
+/// sustained fire and input redundancy. `RM_NET_UP_KIB_S` overrides it.
 pub fn upstream_default() -> u32 {
-    if std::env::var("RM_NET_PROFILE").as_deref() == Ok("limited") {
-        10
-    } else {
-        64
-    }
+    64
 }
 
 /// Byte rate from environment variable `name`, in bytes per second. A value

@@ -29,6 +29,13 @@ ZSTD dictionary experiment adds a selectable wire codec (`RM_NET_CODEC`), leaves
 the DEFLATE wire and the production default untouched, and measures a 30–58% cut
 of the selected stream.
 
+**Superseded by protocol 35.** The selectors this investigation introduced have
+been removed: packed checkpoints with the trained dictionary are now the only
+periodic encoding and plain ZSTD is the only codec for every other message, so
+`RM_NET_CODEC`, `RM_NET_SNAPSHOT` and the effort-level overrides no longer
+exist. The measurements below stand as the evidence for that choice; the
+DEFLATE baselines they mention are no longer reproducible in the current build.
+
 The subsequent binary and fixed-point experiment compares lossless binary
 checkpoints, packed baseline deltas and several motion precision assumptions
 against both compression baselines. It is a standalone prototype with round-trip

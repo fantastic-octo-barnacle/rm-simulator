@@ -4,6 +4,20 @@
 
 ## Unreleased
 
+- Remove the wire-development selectors. Periodic checkpoints are always packed
+  fine fixed point with the embedded trained dictionary, and every other message
+  is always plain ZSTD; the DEFLATE codec, the JSON checkpoint path and the
+  `RM_NET_CODEC`, `RM_NET_SNAPSHOT`, `RM_NET_DEFLATE_LEVEL` and
+  `RM_NET_ZSTD_LEVEL` environment selectors are gone, along with the miniz_oxide
+  dependency, the second dictionary asset and the three examples that existed
+  only to compare the removed alternatives. The pacing, input-lead,
+  input-redundancy and checkpoint-completeness overrides (`RM_NET_PROFILE`,
+  `RM_NET_FIXED_INPUT_LEAD`, `RM_NET_INPUT_HISTORY`,
+  `RM_NET_FULL_CHECKPOINTS`) are gone too, so the adaptive lead and the twelve
+  redundant input frames are the only behaviour; `RM_NET_UP_KIB_S` and
+  `RM_NET_DOWN_KIB_S` remain for impairment trials. Periodic checkpoints are now
+  protocol 35, so both peers must update.
+
 - Add a robot page to the title screen: Single Player, Join lobby / address
   and Create lobby open it before the match starts, with blue seats on the
   left, red on the right (Hero, Infantry 3, Infantry 4 or a spectating
