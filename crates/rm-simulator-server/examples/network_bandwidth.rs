@@ -3,12 +3,18 @@
 //! Reproducible JSON snapshot workload; no CAD assets or wall-clock pacing.
 //! Measures the live player path: the compact independent checkpoint and the
 //! acknowledged UDP baseline codec that carries it.
+//!
+//! Frames are scheduled in world time, not tick counts: one 16 ms frame may
+//! cover two or three 128 Hz ticks, and the ticks accumulate so the simulated
+//! duration matches the reported one.
+use rm_simulator_server::simulation::TickSchedule;
 use rm_simulator_server::{protocol::Command, workload};
 
 fn main() {
     let step_ms = 16;
+    let step_ns = step_ms * 1_000_000;
+    let tick_ns = rm_simulator_world::tick_ns();
     let frames = 250;
-    let seconds = (frames * step_ms) as f64 / 1000.;
     for (players, firing) in [(0, false), (2, false), (12, false), (2, true)] {
         // One builder, shared with the probe and the other measurement examples,
         // so every harness drives the same field.
@@ -23,12 +29,16 @@ fn main() {
         }
         let mut encoder = rm_simulator_server::udp_snapshot::Encoder::default();
         let mut decoder = rm_simulator_server::udp_snapshot::Decoder::default();
+        let mut schedule = TickSchedule::default();
         let mut encode_us = 0;
         let mut decode_us = 0;
         let mut total = 0;
         let mut sections = std::collections::BTreeMap::<String, usize>::new();
         for frame in 0..frames {
-            simulation.step(step_ms).unwrap();
+            let advance = schedule.advance(step_ns);
+            if advance > 0 {
+                simulation.step(advance).unwrap();
+            }
             if firing && frame % (128 / step_ms) == 0 {
                 simulation
                     .apply(&Command::Fire {
@@ -53,7 +63,7 @@ fn main() {
             .unwrap();
             let (received, feedback) = decoder.receive(parsed).unwrap();
             if let Some(rm_simulator_server::protocol::ServerMessage::Snapshot(state)) = received {
-                assert_eq!(state.field.tick, (frame + 1) * step_ms);
+                assert_eq!(state.field.tick, schedule.issued_ticks());
             }
             decode_us += started.elapsed().as_micros();
             if let Some(feedback) = feedback
@@ -69,10 +79,14 @@ fn main() {
                     serde_json::to_vec(value).unwrap().len();
             }
         }
+        // Report against the duration actually simulated, which whole-tick
+        // rounding makes slightly shorter than `frames * step_ms`.
+        let simulated_s = schedule.issued_ticks() as f64 * tick_ns as f64 / 1e9;
         println!(
-            "{players} moving players, firing={firing}: mean {} bytes/state, {:.1} bytes/s at {:.3} Hz",
+            "{players} moving players, firing={firing}: mean {} bytes/state, {:.1} bytes/s over {:.3} s at {:.3} Hz",
             total / frames as usize,
-            total as f64 / seconds,
+            total as f64 / simulated_s,
+            simulated_s,
             1000. / step_ms as f64
         );
         println!(

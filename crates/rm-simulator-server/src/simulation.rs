@@ -35,6 +35,70 @@ pub fn step_ticks() -> u64 {
     STEP_NS.div_ceil(tick_ns()).max(1)
 }
 
+/// A world-time interval schedule that yields whole ticks without losing time.
+///
+/// A fixed tick cannot advance by a fraction of itself, so a caller that
+/// schedules intervals shorter than one tick — a measurement harness pacing a
+/// codec every 2 ms, say — must accumulate the remainder. Rounding every
+/// interval to a tick on its own would make the simulated duration disagree
+/// with the duration the caller reports, and a 2 ms interval rounded up to a
+/// 7.8125 ms tick runs the world 3.9 times too fast.
+///
+/// [`Simulation::advance_observed`] keeps the same accumulator for host time;
+/// this type exposes that arithmetic to callers that pace their own clock.
+///
+/// ```
+/// use rm_simulator_server::simulation::TickSchedule;
+///
+/// let tick_ns = rm_simulator_world::tick_ns();
+/// let mut schedule = TickSchedule::default();
+/// // Eight 2 ms intervals cover 16 ms, which is two whole 128 Hz ticks.
+/// let ticks: u64 = (0..8).map(|_| schedule.advance(2_000_000)).sum();
+/// assert_eq!(ticks, 16_000_000 / tick_ns);
+/// assert_eq!(schedule.elapsed_ns(), 16_000_000);
+/// assert_eq!(schedule.issued_ticks(), ticks);
+/// ```
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TickSchedule {
+    elapsed_ns: u64,
+    issued_ticks: u64,
+}
+
+impl TickSchedule {
+    /// Advance the schedule by `duration_ns` and return the whole ticks that
+    /// became due. The result is zero for an interval that did not complete a
+    /// tick; the remainder stays in [`TickSchedule::elapsed_ns`] and is charged
+    /// to a later interval, so a caller that steps by the returned count keeps
+    /// simulated time equal to scheduled time.
+    pub fn advance(&mut self, duration_ns: u64) -> u64 {
+        self.elapsed_ns += duration_ns;
+        let due = self.elapsed_ns / tick_ns();
+        let ticks = due - self.issued_ticks;
+        self.issued_ticks = due;
+        ticks
+    }
+
+    /// World time the schedule has covered so far, in nanoseconds. This is the
+    /// duration a caller has scheduled, not the duration it has simulated;
+    /// `issued_ticks * tick_ns()` is the latter.
+    pub fn elapsed_ns(&self) -> u64 {
+        self.elapsed_ns
+    }
+
+    /// Whole ticks issued so far, which is how far the world has advanced.
+    pub fn issued_ticks(&self) -> u64 {
+        self.issued_ticks
+    }
+
+    /// Ticks an interval of `duration_ns` starting now covers: the sample
+    /// interval a frame submitted at this point should declare. At least one,
+    /// because an input frame may not declare a zero-tick duration.
+    pub fn span_ticks(&self, duration_ns: u64) -> u64 {
+        let span = (self.elapsed_ns + duration_ns) / tick_ns() - self.elapsed_ns / tick_ns();
+        span.max(1)
+    }
+}
+
 /// What clients see: the field plus the host's pacing state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SimulationState {
@@ -88,7 +152,7 @@ pub struct FireRecord {
 /// The authoritative field with the host's pause, pacing, input and shot state.
 /// One host worker owns the only live value. World time moves only through
 /// [`advance`](Simulation::advance) and [`step`](Simulation::step), and only in
-/// whole 1 ms ticks.
+/// whole fixed 128 Hz ticks.
 pub struct Simulation {
     /// Lobby password every remote seat must present. The embedded owner seat
     /// is exempt because it already holds the simulation.
