@@ -701,6 +701,9 @@ fn state(world: &mut World) -> Value {
         "auto_aim":world.get_resource::<crate::auto_aim::AutoAim>().map(|aim| json!({
             "status":aim.status, "fire_ready":aim.fire_ready,
             "observation_age_ms":aim.observation_age_ms, "execution_time_ns":aim.execution_time_ns,
+            "last_gate":aim.last_gate,
+            "stale_frames":aim.stale_frames, "tracking_only_frames":aim.tracking_only_frames,
+            "blocked_frames":aim.blocked_frames, "firing_frames":aim.firing_frames,
         })),
         "connection_toast":session.connection_toast,
         "network":session.network_diagnostics(),

@@ -4,6 +4,22 @@
 
 ## Unreleased
 
+- Log per-peer network health on the server. The GNS host prints one `net
+  peer=ID world=N skipped_congested=N replaced_unsent=N ...` line per admitted
+  peer every 10 s, and appends snapshot totals to the disconnect line, so a
+  peer starving its client's auto-aim observation is visible in the server log
+  without a packet trace. The auto-aim HUD row now shows the observation age
+  in ms, and the detailed network overlay breaks down the firing gate
+  (`stale` / `tracking-only` / `blocked` / `firing` frame counters).
+
+- Judge auto-aim freshness at presentation instead of at intended execution.
+  The 150 ms tracking-only gate and the 300 ms stale gate used the age at
+  `fire_time_ns`, which includes the input lead (rtt/2 + 32 ms, up to 150 ms):
+  on a link with ~95 ms RTT the lead alone consumed most of the firing budget
+  and the assist tracked without ever firing, even with checkpoints arriving
+  every ~14 ms. Both gates now use the presentation-time snapshot age; the
+  ballistic solver still predicts ahead to the execution time.
+
 - Unify singleplayer and multiplayer on one wire. The embedded owner no longer
   uses a typed in-process channel: `Server::connect_owner` now drives the same
   per-peer codec a UDP client runs — the RMG1 fragment framing, the packed `RMB0`

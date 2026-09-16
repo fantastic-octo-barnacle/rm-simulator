@@ -169,11 +169,36 @@ fn remove(
     connection: GnsConnection,
     reason: &str,
 ) {
-    if peers.remove(&connection).is_some() {
-        eprintln!("gns peer {connection:?}: {reason}");
+    if let Some(peer) = peers.remove(&connection) {
+        let encoding = peer.encoding_stats();
+        eprintln!(
+            "gns peer {connection:?}: {reason} (world={} skipped_congested={} replaced_unsent={} framed_world_bytes={})",
+            encoding.world_updates,
+            encoding.skipped_world_updates,
+            peer.replaced_unsent(),
+            encoding.framed_world_bytes,
+        );
         let detail = std::ffi::CString::new(reason).ok();
         let _ = socket.close_connection(connection, 1000, detail.as_deref(), false);
     }
+}
+/// One parseable log line per admitted peer: cumulative snapshot encodes,
+/// congestion skips and pacer replacements since admission. A peer whose
+/// `skipped_congested` climbs while `world` stalls is the one starving its
+/// client's auto-aim observation.
+fn log_peer_stats(peer: &HostPeer) {
+    let Some(id) = peer.client_id() else {
+        return;
+    };
+    let encoding = peer.encoding_stats();
+    eprintln!(
+        "net peer={id} world={} skipped_congested={} replaced_unsent={} framed_world_bytes={} owner_updates={}",
+        encoding.world_updates,
+        encoding.skipped_world_updates,
+        peer.replaced_unsent(),
+        encoding.framed_world_bytes,
+        encoding.owner_updates,
+    );
 }
 /// How much this connection already owes the native send buffer. A peer that
 /// cannot drain is dropped rather than allowed to grow an unbounded backlog.
@@ -200,9 +225,16 @@ fn serve(
     let observer =
         crate::network_trace::Observer::new("gns-host", crate::clock::TimeSource::system());
     let mut peers = BTreeMap::<GnsConnection, HostPeer>::new();
+    let mut last_stats_log = Instant::now();
     let result = (|| {
         while !stop.wait(POLL) {
             global.poll_callbacks();
+            if last_stats_log.elapsed() >= Duration::from_secs(10) {
+                last_stats_log = Instant::now();
+                for peer in peers.values() {
+                    log_peer_stats(peer);
+                }
+            }
             for event in socket.receive_events() {
                 let connection = event.connection();
                 match event.info().state() {

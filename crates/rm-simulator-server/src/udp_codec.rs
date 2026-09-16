@@ -903,9 +903,9 @@ impl PeerCodec {
     pub(crate) fn next(&mut self, now: Instant) -> io::Result<Option<Datagram>> {
         self.pacer.next(self.elapsed(now)).map_err(io_error)
     }
-    /// Host encoding counters for this peer. Test-facing: the bandwidth probe
-    /// reads them here because no production path reports them over the wire.
-    #[cfg(test)]
+    /// Host encoding counters for this peer. The transport's periodic log
+    /// line and the per-second `DeliveryStats` report them; the bandwidth
+    /// probe reads them in tests.
     pub(crate) fn encoding_stats(&self) -> crate::network_stats::EncodingStats {
         self.encoding.clone()
     }
@@ -1077,6 +1077,16 @@ impl HostPeer {
     /// Datagrams the carrier should transmit, oldest first.
     pub fn take_outgoing(&mut self) -> Vec<Datagram> {
         std::mem::take(&mut self.outgoing)
+    }
+    /// Host snapshot encoding counters for this peer, cumulative since
+    /// admission. Backs the transport's periodic log line.
+    pub fn encoding_stats(&self) -> crate::network_stats::EncodingStats {
+        self.codec.encoding_stats()
+    }
+    /// Replaceable updates discarded unsent because a newer copy arrived
+    /// first, across owner anchors, world transfers and duplicate control.
+    pub fn replaced_unsent(&self) -> u64 {
+        self.codec.pacer.replaced
     }
 }
 impl Drop for HostPeer {
