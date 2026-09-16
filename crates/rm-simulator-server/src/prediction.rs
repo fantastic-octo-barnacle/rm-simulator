@@ -549,7 +549,10 @@ mod tests {
                     ChassisCommand::default()
                 };
                 let input = history.push(time, command).unwrap();
-                let delay_ms = 40 + (tick % 6) + if tick == drive_end { 100 } else { 0 };
+                // The 100 ms stall must land on a tick this block actually
+                // runs on, and it only runs on `grid` multiples; `drive_end`
+                // (624 ms) is not one, `drive_push` is.
+                let delay_ms = 40 + (tick % 6) + if tick == drive_push { 100 } else { 0 };
                 let delay = (delay_ms * 1_000_000).div_ceil(tick_ns());
                 delivered_at = delivered_at.max(tick + delay);
                 deliveries.push_back((delivered_at, input));
