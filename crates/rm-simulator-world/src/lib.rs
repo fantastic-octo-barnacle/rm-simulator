@@ -1203,9 +1203,12 @@ impl Field {
 mod tests {
     use super::*;
     /// World-time durations as tick counts, so every stepping rhythm here
-    /// keeps its meaning whatever the fixed tick length is.
+    /// keeps its meaning whatever the fixed tick length is. Rounded up: these
+    /// are settling and boundary waits, and a truncated duration advances less
+    /// than the world time it names. A test that needs an exact world time
+    /// steps an explicit tick count instead, the way the partition tests do.
     fn ticks(ns: u64) -> u64 {
-        ns / tick_ns()
+        ns.div_ceil(tick_ns())
     }
     /// A referee'd field with two pilots, a rune and both outposts, driven
     /// and shot at long enough for every rule to have moved.
@@ -1413,7 +1416,7 @@ mod tests {
                 .unwrap();
         }
         // Split by uneven tick counts derived from the total, so the parts
-        // still sum to it at the fixed 1 ms tick.
+        // still sum to it at the fixed tick.
         let total = ticks(1_500_000_000);
         whole.step(total).unwrap();
         let parts = [1, total / 7, total / 3];
