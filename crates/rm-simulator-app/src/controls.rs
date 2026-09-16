@@ -763,7 +763,9 @@ mod tests {
         })
         .unwrap();
         add_terrain(&mut field, &terrain).unwrap();
-        field.step(300_000_000 / tick_ns()).unwrap();
+        // Settling waits: round up so each covers at least the world time it
+        // names, whatever the fixed tick length is.
+        field.step((300_000_000_u64).div_ceil(tick_ns())).unwrap();
         let mut highest = f64::MIN;
         for _ in 0..40 {
             // Hold the heading the way the app's aim-follow does; the omni
@@ -775,7 +777,7 @@ mod tests {
                     drive_command(1.0, 0.0, false, false, 0.0, 0.0, yaw_of(chassis.pose)),
                 )
                 .unwrap();
-            field.step(100_000_000 / tick_ns()).unwrap();
+            field.step((100_000_000_u64).div_ceil(tick_ns())).unwrap();
             let chassis = field.snapshot().chassis.remove(0);
             highest = highest.max(chassis.pose.translation_m[2]);
             let up = rotate(chassis.pose.rotation_wxyz, [0.0, 0.0, 1.0]);
