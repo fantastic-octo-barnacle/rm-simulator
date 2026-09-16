@@ -295,6 +295,7 @@ mod correction_tests {
         field
             .add_chassis(&rm_simulator_world::ChassisPlacement {
                 team: rm_simulator_world::Team::Red,
+                kind: rm_simulator_world::RobotKind::Infantry,
                 spawn: rm_simulator_world::Pose::default(),
                 config: rm_simulator_world::ChassisConfig::default(),
             })

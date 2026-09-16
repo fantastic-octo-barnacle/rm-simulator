@@ -17,7 +17,7 @@ mod gns_transport;
 pub(crate) mod outbox;
 pub use crate::protocol::describe_seat;
 use crate::protocol::{
-    ClientMessage, Command, PROTOCOL_VERSION, PlayerInfo, Role, ServerMessage, Welcome,
+    ClientMessage, Command, PROTOCOL_VERSION, PlayerInfo, Robot, Role, ServerMessage, Welcome,
     read_message, write_message,
 };
 use crate::simulation::{Simulation, SimulationState};
@@ -124,6 +124,7 @@ impl Server {
         name: &str,
         team: Team,
         role: Role,
+        robot: Robot,
         spawn_m: [f64; 3],
         yaw_deg: f64,
     ) -> anyhow::Result<Client> {
@@ -139,6 +140,7 @@ impl Server {
                 name: name.into(),
                 team: Some(team),
                 role,
+                robot,
                 owner_spawn: Some((spawn_m, yaw_deg)),
                 outbox: sender,
                 stream: ConnectionStop::Worker(stop.clone()),
@@ -391,44 +393,46 @@ fn talk(
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(HELLO_TIMEOUT))?;
     let mut reader = BufReader::new(stream.try_clone()?);
-    let (name, wanted_team, role, password) = match read_message::<ClientMessage, _>(&mut reader)? {
-        Some(ClientMessage::Hello {
-            password,
-            protocol,
-            name,
-            team,
-            role,
-            tick_ns,
-        }) => {
-            if protocol != PROTOCOL_VERSION {
-                let mut stream = stream;
-                write_message(
-                    &mut stream,
-                    &ServerMessage::Rejected {
-                        reason: crate::protocol::version_mismatch(PROTOCOL_VERSION, protocol),
-                    },
-                )?;
-                return Ok(());
+    let (name, wanted_team, role, robot, password) =
+        match read_message::<ClientMessage, _>(&mut reader)? {
+            Some(ClientMessage::Hello {
+                password,
+                protocol,
+                name,
+                team,
+                role,
+                robot,
+                tick_ns,
+            }) => {
+                if protocol != PROTOCOL_VERSION {
+                    let mut stream = stream;
+                    write_message(
+                        &mut stream,
+                        &ServerMessage::Rejected {
+                            reason: crate::protocol::version_mismatch(PROTOCOL_VERSION, protocol),
+                        },
+                    )?;
+                    return Ok(());
+                }
+                // One match runs at one physics rate, so a peer predicting at a
+                // different tick length is refused before it holds a seat.
+                if tick_ns != rm_simulator_world::tick_ns() {
+                    let mut stream = stream;
+                    write_message(
+                        &mut stream,
+                        &ServerMessage::Rejected {
+                            reason: crate::protocol::rate_mismatch(
+                                rm_simulator_world::tick_ns(),
+                                tick_ns,
+                            ),
+                        },
+                    )?;
+                    return Ok(());
+                }
+                (name, team, role, robot, password)
             }
-            // One match runs at one physics rate, so a peer predicting at a
-            // different tick length is refused before it holds a seat.
-            if tick_ns != rm_simulator_world::tick_ns() {
-                let mut stream = stream;
-                write_message(
-                    &mut stream,
-                    &ServerMessage::Rejected {
-                        reason: crate::protocol::rate_mismatch(
-                            rm_simulator_world::tick_ns(),
-                            tick_ns,
-                        ),
-                    },
-                )?;
-                return Ok(());
-            }
-            (name, team, role, password)
-        }
-        _ => return Ok(()),
-    };
+            _ => return Ok(()),
+        };
     stream.set_read_timeout(None)?;
     let (sender, inbox) = outbox::channel(OUTBOX_CAPACITY);
     let writer_stream = stream.try_clone()?;
@@ -447,6 +451,7 @@ fn talk(
         name,
         team: wanted_team,
         role,
+        robot,
         owner_spawn,
         outbox: sender,
         stream: ConnectionStop::Tcp(peer_stream),
@@ -717,23 +722,25 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connect, say hello and wait for the welcome. Run this off the UI thread.
+    /// Connect, say hello as the default robot and wait for the welcome. Run
+    /// this off the UI thread.
     pub fn connect(
         addr: impl ToSocketAddrs,
         name: &str,
         team: Option<Team>,
         role: Role,
     ) -> anyhow::Result<Client> {
-        Self::connect_with_password(addr, name, team, role, "")
+        Self::connect_with_password(addr, name, team, role, Robot::default(), "")
     }
 
-    /// Connect, say hello with a lobby password, and wait for the welcome. Run
-    /// this off the UI thread.
+    /// Connect, say hello naming the robot to drive and a lobby password, and
+    /// wait for the welcome. Run this off the UI thread.
     pub fn connect_with_password(
         addr: impl ToSocketAddrs,
         name: &str,
         team: Option<Team>,
         role: Role,
+        robot: Robot,
         password: &str,
     ) -> anyhow::Result<Client> {
         let addr = addr
@@ -745,6 +752,7 @@ impl Client {
             name,
             team,
             role,
+            robot,
             password,
         )
     }
@@ -754,6 +762,7 @@ impl Client {
         name: &str,
         team: Option<Team>,
         role: Role,
+        robot: Robot,
         password: &str,
     ) -> anyhow::Result<Client> {
         stream.set_nodelay(true)?;
@@ -767,6 +776,7 @@ impl Client {
                 name: name.to_string(),
                 team,
                 role,
+                robot,
                 tick_ns: rm_simulator_world::tick_ns(),
             },
         )?;
@@ -1489,7 +1499,14 @@ mod tests {
         assert!(server.listening_addr().is_none());
         let handle = server.handle();
         let mut client = server
-            .connect_owner("local", Team::Red, Role::Pilot, [0., 0., 0.5], 0.)
+            .connect_owner(
+                "local",
+                Team::Red,
+                Role::Pilot,
+                Robot::default(),
+                [0., 0., 0.5],
+                0.,
+            )
             .unwrap();
         assert!(matches!(client.stream, ConnectionStop::Worker(_)));
         assert_eq!(client.network_stats().transport, "local");
@@ -1683,7 +1700,14 @@ mod tests {
     fn placement_is_owner_only_and_barriers_confirm_plain_commands() {
         let (server, simulation) = host();
         let mut owner = server
-            .connect_owner("owner", Team::Red, Role::Pilot, [2.0, 3.0, 1.0], 0.0)
+            .connect_owner(
+                "owner",
+                Team::Red,
+                Role::Pilot,
+                Robot::default(),
+                [2.0, 3.0, 1.0],
+                0.0,
+            )
             .unwrap();
         let mut guest = Client::connect(server.local_addr(), "guest", None, Role::Pilot).unwrap();
         let own_id = owner.welcome().chassis.as_ref().unwrap().id;
@@ -1744,7 +1768,14 @@ mod tests {
     fn owner_uses_custom_spawn_and_authority_cannot_be_claimed_over_tcp() {
         let (server, simulation) = host();
         let mut owner = server
-            .connect_owner("owner", Team::Red, Role::Pilot, [2.0, 3.0, 1.0], 90.0)
+            .connect_owner(
+                "owner",
+                Team::Red,
+                Role::Pilot,
+                Robot::default(),
+                [2.0, 3.0, 1.0],
+                90.0,
+            )
             .unwrap();
         let id = owner.welcome().chassis.as_ref().unwrap().id;
         let mut guest =
@@ -1761,7 +1792,14 @@ mod tests {
         assert!(heading[0].abs() < 1e-9 && (heading[1] - 1.0).abs() < 1e-9);
         assert!(
             server
-                .connect_owner("second", Team::Red, Role::Pilot, [0.0; 3], 0.0)
+                .connect_owner(
+                    "second",
+                    Team::Red,
+                    Role::Pilot,
+                    Robot::default(),
+                    [0.0; 3],
+                    0.0
+                )
                 .is_err()
         );
         owner.send_confirmed(Command::Step { ticks: 16 }).unwrap();
@@ -1788,7 +1826,7 @@ mod tests {
         for role in [Role::Spectator, Role::Referee] {
             let (server, simulation) = host();
             let mut owner = server
-                .connect_owner("owner", Team::Blue, role, [0.0; 3], 0.0)
+                .connect_owner("owner", Team::Blue, role, Robot::default(), [0.0; 3], 0.0)
                 .unwrap();
             assert!(owner.welcome().chassis.is_none());
             if role == Role::Referee {
@@ -1808,7 +1846,14 @@ mod tests {
     fn only_the_owner_can_fire_from_a_free_camera() {
         let (server, simulation) = host();
         let mut owner = server
-            .connect_owner("owner", Team::Red, Role::Spectator, [0.0; 3], 0.0)
+            .connect_owner(
+                "owner",
+                Team::Red,
+                Role::Spectator,
+                Robot::default(),
+                [0.0; 3],
+                0.0,
+            )
             .unwrap();
         let mut watcher =
             Client::connect(server.local_addr(), "watcher", None, Role::Spectator).unwrap();
@@ -1841,7 +1886,14 @@ mod tests {
         let server = Server::bind_suspended("127.0.0.1:0", simulation).unwrap();
         server.spawn_clock().unwrap();
         let mut owner = server
-            .connect_owner("owner", Team::Red, Role::Spectator, [0.0; 3], 0.0)
+            .connect_owner(
+                "owner",
+                Team::Red,
+                Role::Spectator,
+                Robot::default(),
+                [0.0; 3],
+                0.0,
+            )
             .unwrap();
         for _ in 0..5 {
             assert_eq!(
@@ -1876,7 +1928,14 @@ mod tests {
     fn confirmation_waits_for_a_result_snapshot_without_blocking_the_caller() {
         let (server, simulation) = host();
         let mut owner = server
-            .connect_owner("owner", Team::Red, Role::Referee, [0.0; 3], 0.0)
+            .connect_owner(
+                "owner",
+                Team::Red,
+                Role::Referee,
+                Robot::default(),
+                [0.0; 3],
+                0.0,
+            )
             .unwrap();
         let guard = simulation.stall();
         owner.send_confirmed(Command::Step { ticks: 16 }).unwrap();
@@ -1910,7 +1969,14 @@ mod tests {
     fn frequent_owner_updates_do_not_change_remote_broadcasts() {
         let (server, _) = host();
         let mut owner = server
-            .connect_owner("owner", Team::Red, Role::Referee, [0.0; 3], 0.0)
+            .connect_owner(
+                "owner",
+                Team::Red,
+                Role::Referee,
+                Robot::default(),
+                [0.0; 3],
+                0.0,
+            )
             .unwrap();
         let mut guest =
             Client::connect(server.local_addr(), "guest", None, Role::Spectator).unwrap();
@@ -2084,6 +2150,7 @@ mod tests {
                     team: None,
                     role: Role::Spectator,
                     chassis: None,
+                    robot: None,
                 }]))
                 .unwrap();
         }
@@ -2363,6 +2430,7 @@ mod tests {
                 name: "old".into(),
                 team: None,
                 role: Role::Pilot,
+                robot: Robot::default(),
                 tick_ns: rm_simulator_world::tick_ns(),
             },
         )
@@ -2392,6 +2460,7 @@ mod tests {
                 name: "sloth".into(),
                 team: None,
                 role: Role::Spectator,
+                robot: Robot::default(),
                 tick_ns: rm_simulator_world::tick_ns(),
             },
         )

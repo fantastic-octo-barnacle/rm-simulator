@@ -28,7 +28,7 @@ the app is one client of this crate, whether it hosts in-process or connects her
 | `src/network_stats.rs`, `src/network_trace.rs` | Local diagnostics, and bounded transport metadata tracing that never records payloads. |
 | `src/http.rs`, `src/panel.html` | The HTTP/1.1 referee panel and JSON API: `GET /`, `GET /api/state`, `POST /api/referee` and `POST /api/command`. |
 | `src/lobby.rs`, `src/lifecycle.rs`, `src/math.rs`, `src/semantics.rs` | LAN directory leases, owned listeners, wxyz quaternion and matrix helpers, and checksum-bound semantic articulation data. |
-| `src/main.rs` | The headless binary: `--robot`, `--projectile-mm`, `--physics-rate-hz`, `--listen`, `--transport`, `--http` and the rune, referee, chassis and collision toggles. |
+| `src/main.rs` | The headless binary: `--physics-rate-hz`, `--listen`, `--transport`, `--http` and the rune, referee, chassis and collision toggles. |
 
 ## Dependencies
 

@@ -52,6 +52,16 @@ pub struct ChassisId(pub u32);
 #[derive(Component)]
 #[require(PresentedPose)]
 pub struct ChassisBody;
+/// What a chassis was built as. The number and the drivetrain are baked
+/// into its meshes, so a chassis whose appearance later names others (a
+/// roster that arrives after the first snapshot) is rebuilt.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChassisBuild {
+    /// Number printed on its armor plates.
+    pub armor_pattern: crate::armor::ArmorPattern,
+    /// Whether it was built with mecanum wheels.
+    pub mecanum: bool,
+}
 /// Index into `ChassisAppearance::wheels`.
 #[derive(Component)]
 #[require(PresentedPose)]
@@ -283,13 +293,14 @@ fn along_x() -> Quat {
     Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)
 }
 
-/// Build the visuals for every chassis seen for the first time, and remove
-/// those whose id has left the scene.
+/// Build the visuals for every chassis seen for the first time or whose
+/// number or drivetrain changed, and remove those whose id has left the
+/// scene.
 fn spawn_chassis(
     scene: (Res<SceneInput>, Res<ChassisIndex>),
     config: Res<Config>,
     optics: (Res<ArmorAtlas>, Res<DiffuserProfile>),
-    existing: Query<(Entity, &ChassisId)>,
+    existing: Query<(Entity, &ChassisId, Option<&ChassisBuild>)>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -299,12 +310,27 @@ fn spawn_chassis(
     let Some(scene) = input.0.as_ref() else {
         return;
     };
-    for (entity, id) in &existing {
-        if !index.0.contains_key(&id.0) {
+    let build = |chassis: &crate::sync::ChassisAppearance| ChassisBuild {
+        armor_pattern: chassis.armor_pattern,
+        mecanum: chassis.mecanum,
+    };
+    let stale: std::collections::HashSet<u32> = existing
+        .iter()
+        .filter_map(|(_, id, built)| {
+            let wanted = build(&scene.chassis[*index.0.get(&id.0)?]);
+            (built.is_some_and(|built| *built != wanted)).then_some(id.0)
+        })
+        .collect();
+    for (entity, id, _) in &existing {
+        if !index.0.contains_key(&id.0) || stale.contains(&id.0) {
             commands.entity(entity).despawn();
         }
     }
-    let existing_ids: std::collections::HashSet<_> = existing.iter().map(|(_, id)| id.0).collect();
+    let existing_ids: std::collections::HashSet<_> = existing
+        .iter()
+        .map(|(_, id, _)| id.0)
+        .filter(|id| !stale.contains(id))
+        .collect();
     let rendering = config.rendering;
     for chassis in &scene.chassis {
         if existing_ids.contains(&chassis.id) {
@@ -368,6 +394,7 @@ fn spawn_chassis(
             .spawn((
                 id,
                 ChassisBody,
+                build(chassis),
                 Mesh3d(box_mesh(&mut meshes, [hx * 0.60, hy * 0.60, hz * 0.65])),
                 MeshMaterial3d(graphite.clone()),
                 Transform::default(),
@@ -1012,6 +1039,44 @@ mod tests {
         });
         app.update();
         assert_eq!(ids(&mut app), vec![2]);
+        assert_eq!(parts(&mut app), 5);
+        // A chassis whose number or drivetrain changes is rebuilt once, in
+        // place, and keeps its part count.
+        let artwork = |app: &mut App| {
+            let mut patterns: Vec<_> = app
+                .world_mut()
+                .query::<&crate::armor::ArmorArtwork>()
+                .iter(app.world())
+                .map(|artwork| artwork.0)
+                .collect();
+            patterns.dedup();
+            patterns
+        };
+        assert_eq!(artwork(&mut app), vec![crate::armor::ArmorPattern::Three]);
+        let mut hero = appearance(2, 3.0);
+        hero.armor_pattern = crate::armor::ArmorPattern::One;
+        hero.mecanum = true;
+        app.world_mut().resource_mut::<SceneInput>().0 = Some(SceneState {
+            chassis: vec![hero.clone()],
+            ..Default::default()
+        });
+        app.update();
+        assert_eq!(ids(&mut app), vec![2]);
+        assert_eq!(parts(&mut app), 5);
+        assert_eq!(artwork(&mut app), vec![crate::armor::ArmorPattern::One]);
+        let built = app
+            .world_mut()
+            .query::<&ChassisBuild>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(
+            *built,
+            ChassisBuild {
+                armor_pattern: crate::armor::ArmorPattern::One,
+                mecanum: true
+            }
+        );
+        app.update();
         assert_eq!(parts(&mut app), 5);
     }
     #[test]

@@ -375,6 +375,7 @@ mod tests {
         let chassis = field
             .add_chassis(&ChassisPlacement {
                 team: Team::Red,
+                kind: rm_simulator_world::RobotKind::Infantry,
                 spawn: Pose::at([0., 0., 0.3]),
                 config: ChassisConfig::default(),
             })

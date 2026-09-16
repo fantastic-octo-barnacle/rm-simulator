@@ -7,7 +7,7 @@ cylinders and wheel rollers. It does not load the module STEP files at runtime.
 The original files remain in the supplied Downloads directory. This is a visual
 and driving prototype, not a competition-compliant robot design.
 
-The `--robot` chassis preset, `--projectile-mm` caliber and view flags are in
+The `--robot` choice, the title screen's robot page and the view flags are in
 [app options](app-options.md); [field package](field-package.md) owns the field.
 The [documentation index](README.md) lists every guide.
 
@@ -55,13 +55,17 @@ accounts for the projection onto that direction. This extends the existing
 ideal roller/suspension model; it does not model each roller contact or motor
 controller. Renderer wheel centers follow suspension contacts when grounded.
 
-The host chooses one preset for all joining pilots. The serialized chassis
+Each pilot names its robot in `Hello` (protocol 33): the Hero, the Infantry 3
+or the Infantry 4. The host spawns the matching chassis, records its kind
+with the referee (which keeps the one configured HP) and fixes its caliber,
+42 mm for the Hero and 17 mm for the infantries; a weapon update naming
+another caliber is refused. The two infantries differ only in the number
+painted on their armor, which the roster carries to every client; a chassis
+the roster has not described yet shows 1 on a mecanum body and 3 otherwise
+and is repainted when the roster arrives. The serialized chassis
 configuration includes a defaulted `mecanum` flag; older snapshots without it
 remain omni. Use matching client/server builds to display Hero correctly.
-The referee records Hero as the robot kind but retains its configured HP.
-Local Hero selection defaults the gun to 42 mm; explicit caliber overrides
-still work. Remote clients select their own gun caliber. There are no new
-robot-specific heat, power, ammunition or firing-rate policies.
+There are no robot-specific heat, power, ammunition or firing-rate policies.
 
 ## Lights and review fixtures
 

@@ -357,17 +357,18 @@ impl Client {
         team: Option<Team>,
         role: Role,
     ) -> anyhow::Result<Self> {
-        Self::connect_udp_with_password(addr, name, team, role, "")
+        Self::connect_udp_with_password(addr, name, team, role, Robot::default(), "")
     }
-    /// Connect over GNS and supply a join password. The hello must be answered
-    /// within `HELLO_TIMEOUT` or the connection attempt fails and its worker
-    /// stops. Commands queue on the returned client; this call blocks until the
-    /// welcome arrives, so run it off the UI thread.
+    /// Connect over GNS naming the robot to drive and a join password. The
+    /// hello must be answered within `HELLO_TIMEOUT` or the connection attempt
+    /// fails and its worker stops. Commands queue on the returned client; this
+    /// call blocks until the welcome arrives, so run it off the UI thread.
     pub fn connect_udp_with_password(
         addr: impl ToSocketAddrs,
         name: &str,
         team: Option<Team>,
         role: Role,
+        robot: Robot,
         password: &str,
     ) -> anyhow::Result<Self> {
         let addr = address(addr)?;
@@ -385,7 +386,7 @@ impl Client {
         let (outbox, commands) =
             mpsc::sync_channel::<Option<QueuedCommand>>(CLIENT_COMMAND_CAPACITY);
         let (welcome_tx, welcome_rx) = mpsc::sync_channel(1);
-        let hello = ClientCodec::hello_with_password(name, team, role, password)?;
+        let hello = ClientCodec::hello_with_password(name, team, role, robot, password)?;
         let stopping = stop.clone();
         let incoming = inbox.clone();
         let timing = ClientTiming::default();
@@ -622,7 +623,14 @@ mod tests {
         let mut server = Server::bind_udp("127.0.0.1:0", simulation).unwrap();
         let address = server.local_addr();
         let mut owner = server
-            .connect_owner("local", Team::Red, Role::Referee, [0.; 3], 0.)
+            .connect_owner(
+                "local",
+                Team::Red,
+                Role::Referee,
+                Robot::default(),
+                [0.; 3],
+                0.,
+            )
             .unwrap();
         let mut guest = Client::connect_udp(address, "guest", None, Role::Spectator).unwrap();
         owner.send_confirmed(Command::Step { ticks: 16 }).unwrap();
@@ -704,6 +712,7 @@ mod tests {
                 name: "lossy referee".into(),
                 team: None,
                 role: Role::Referee,
+                robot: Robot::default(),
                 tick_ns: rm_simulator_world::tick_ns(),
             },
             ClientMessage::Command(Command::Step { ticks: 17 }),

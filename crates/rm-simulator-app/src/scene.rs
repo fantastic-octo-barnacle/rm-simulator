@@ -377,18 +377,35 @@ pub fn armor_optics() -> ArmorOptics {
         light_length_m: outpost_rules::LIGHT_LENGTH_M as f32,
     }
 }
+/// The number painted on a chassis: the pilot's robot when the roster names
+/// it, else 1 for a mecanum Hero and 3 for any other (a bot, or a chassis the
+/// roster has not described yet).
+fn armor_pattern(
+    chassis: &ChassisSnapshot,
+    robot: Option<rm_simulator_server::protocol::Robot>,
+) -> ArmorPattern {
+    use rm_simulator_server::protocol::Robot;
+    match robot {
+        Some(Robot::Hero) => ArmorPattern::One,
+        Some(Robot::Infantry3) => ArmorPattern::Three,
+        Some(Robot::Infantry4) => ArmorPattern::Four,
+        None if chassis.config.mecanum => ArmorPattern::One,
+        None => ArmorPattern::Three,
+    }
+}
 /// One chassis for the renderer, using the actual host or predicted motor pose. `flash`
-/// lists the armor plates flashing after a strike.
-fn chassis_appearance(chassis: &ChassisSnapshot, flash: &[bool]) -> ChassisAppearance {
+/// lists the armor plates flashing after a strike; `robot` is what the roster
+/// says its pilot drives.
+fn chassis_appearance(
+    chassis: &ChassisSnapshot,
+    flash: &[bool],
+    robot: Option<rm_simulator_server::protocol::Robot>,
+) -> ChassisAppearance {
     let config = &chassis.config;
     let aim = pose_flu(chassis.turret);
     let (yaw_stage, turret) = gimbal_poses(pose_flu(chassis.pose), aim);
     ChassisAppearance {
-        armor_pattern: if config.mecanum {
-            ArmorPattern::One
-        } else {
-            ArmorPattern::Three
-        },
+        armor_pattern: armor_pattern(chassis, robot),
         mecanum: config.mecanum,
         hp_fraction: if chassis.defeated { 0.0 } else { 1.0 },
         id: chassis.id,
@@ -494,6 +511,11 @@ pub fn publish_scene(
             } else {
                 None
             };
+            let robot = session
+                .roster
+                .iter()
+                .find(|p| p.chassis == Some(chassis.id))
+                .and_then(|p| p.robot);
             let mut appearance = chassis_appearance(
                 if mine && live_presentation {
                     session.presented_chassis().unwrap_or(chassis)
@@ -501,6 +523,7 @@ pub fn publish_scene(
                     interpolated.as_ref().unwrap_or(chassis)
                 },
                 flash,
+                robot,
             );
             if let Some(robot) = snapshot
                 .referee
@@ -959,6 +982,7 @@ mod tests {
                 config: config.clone(),
                 spawn: Pose::yawed([1.0, 0.0, config.rest_height_m()], yaw),
                 team: Team::Blue,
+                kind: rm_simulator_world::RobotKind::Infantry,
             }],
             ..Default::default()
         })
@@ -980,7 +1004,7 @@ mod tests {
         assert!((pivot[0] - 1.0).abs() < 1e-3 && pivot[1].abs() < 1e-3);
         // Another player's turret is drawn pointing where the world holds
         // its aim, on a gimbal that turns with the body.
-        let appearance = chassis_appearance(&chassis, &[false, true]);
+        let appearance = chassis_appearance(&chassis, &[false, true], None);
         assert_eq!(appearance.turret.translation_m, pivot);
         assert_eq!(appearance.team, TeamColor::Blue);
         assert_eq!(appearance.yaw_stage.translation_m, pivot);

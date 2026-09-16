@@ -738,7 +738,14 @@ mod tests {
         let terrain = load_terrain(cad).unwrap();
         let config = ChassisConfig::default();
         let (spawn, yaw_deg) = default_spawn(Team::Blue);
-        let start = chassis_placement(config.clone(), Some(&terrain), Team::Blue, spawn, yaw_deg);
+        let start = chassis_placement(
+            config.clone(),
+            rm_simulator_world::RobotKind::Infantry,
+            Some(&terrain),
+            Team::Blue,
+            spawn,
+            yaw_deg,
+        );
         // A flat slab puts the spawn on height zero; the crowned V2.0.0 slab
         // sits about 0.11 m below the reference along the centre line.
         let ground = start.spawn.translation_m[2] - config.rest_height_m() - 0.01;
@@ -823,8 +830,14 @@ mod tests {
         let terrain = load_terrain(cad).unwrap();
         let config = ChassisConfig::default();
         let field_with = |spawn: [f64; 3]| {
-            let placement =
-                chassis_placement(config.clone(), Some(&terrain), Team::Blue, spawn, 0.0);
+            let placement = chassis_placement(
+                config.clone(),
+                rm_simulator_world::RobotKind::Infantry,
+                Some(&terrain),
+                Team::Blue,
+                spawn,
+                0.0,
+            );
             let mut field = Field::new(&rm_simulator_world::FieldConfig {
                 floor_height_m: rm_simulator_server::layout::CATCH_FLOOR_M,
                 chassis: vec![placement.clone()],

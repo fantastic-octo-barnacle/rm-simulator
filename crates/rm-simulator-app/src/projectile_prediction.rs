@@ -246,6 +246,7 @@ mod tests {
             chassis: vec![ChassisPlacement {
                 config: ChassisConfig::default(),
                 team: Team::Red,
+                kind: rm_simulator_world::RobotKind::Infantry,
                 spawn: Pose::at([-5., 0., 1.]),
             }],
             ..Default::default()

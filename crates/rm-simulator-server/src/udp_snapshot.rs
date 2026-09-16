@@ -720,6 +720,7 @@ mod tests {
         let mut config = FieldConfig::default();
         config.chassis.push(rm_simulator_world::ChassisPlacement {
             team: rm_simulator_world::Team::Red,
+            kind: rm_simulator_world::RobotKind::Infantry,
             config: Default::default(),
             spawn: rm_simulator_world::Pose::at([0., 0., 0.2]),
         });

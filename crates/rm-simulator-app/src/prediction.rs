@@ -306,6 +306,7 @@ mod tests {
             chassis: vec![ChassisPlacement {
                 config: ChassisConfig::default(),
                 team: Team::Red,
+                kind: rm_simulator_world::RobotKind::Infantry,
                 spawn: Pose::at([0., 0., ChassisConfig::default().rest_height_m()]),
             }],
             ..Default::default()
@@ -374,6 +375,7 @@ mod tests {
             chassis: vec![ChassisPlacement {
                 config: ChassisConfig::default(),
                 team: Team::Red,
+                kind: rm_simulator_world::RobotKind::Infantry,
                 spawn: Pose::at([0., 0., ChassisConfig::default().rest_height_m()]),
             }],
             ..Default::default()

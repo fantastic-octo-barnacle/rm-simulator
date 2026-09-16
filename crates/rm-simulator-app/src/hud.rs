@@ -128,7 +128,7 @@ pub fn panel_input(
         } else if title.is_some() {
             if !title_state
                 .as_mut()
-                .is_some_and(|state| state.back_to_main_menu())
+                .is_some_and(|state| state.escape_back())
             {
                 ui.quit_confirm = true;
             }
@@ -613,6 +613,17 @@ pub fn update_panel_rows(
                 let robot = session
                     .referee()
                     .and_then(|r| r.robots.iter().find(|r| Some(r.id) == p.chassis));
+                // The roster alone names the robot, so a pilot stays labelled
+                // even without a referee record (`--no-referee`). The referee
+                // record supplies only health and the kind of a chassis whose
+                // player named none.
+                let label = match (p.chassis, p.robot) {
+                    (Some(id), Some(robot)) => format!("#{id} {}", robot.name()),
+                    _ => robot.map_or_else(
+                        || p.role.name().to_owned(),
+                        |r| format!("#{} {:?}", r.id, r.kind),
+                    ),
+                };
                 rows.push([
                     format!(
                         "{}{}",
@@ -623,10 +634,7 @@ pub fn update_panel_rows(
                             ""
                         }
                     ),
-                    robot.map_or_else(
-                        || p.role.name().to_owned(),
-                        |r| format!("#{} {:?}", r.id, r.kind),
-                    ),
+                    label,
                     robot.map_or_else(|| "--".into(), |r| format!("{} / {} HP", r.hp, r.max_hp)),
                 ]);
             }
@@ -1040,6 +1048,39 @@ mod tests {
         assert!(rows.0.iter().any(|r| r[0] == "W" && r[1] == "Move forward"));
         assert!(rows.0.iter().any(|r| r[0] == "P" && r[1] == "Settings"));
     }
+    #[test]
+    fn team_status_names_a_pilot_robot_without_a_referee_record() {
+        use rm_simulator_server::protocol::{PlayerInfo, Robot, Role};
+        let mut app = App::new();
+        let mut session = crate::session::test_session(true);
+        session.snapshot.referee = None;
+        session.roster = vec![PlayerInfo {
+            client_id: session.client_id,
+            name: "Pilot".into(),
+            team: Some(Team::Red),
+            role: Role::Pilot,
+            chassis: Some(7),
+            robot: Some(Robot::Infantry4),
+        }];
+        app.insert_resource(session)
+            .init_resource::<HudState>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .add_systems(Startup, |mut commands: Commands| spawn_hud(&mut commands))
+            .add_systems(Update, update_panel_rows);
+        app.world_mut().resource_mut::<HudState>().roster = true;
+        app.update();
+        let rows = app
+            .world_mut()
+            .query::<&PanelRows>()
+            .single(app.world())
+            .unwrap();
+        assert!(
+            rows.0.iter().any(|r| r[1] == "#7 Infantry 4"),
+            "a match without a referee record must still name the robot: {:?}",
+            rows.0
+        );
+    }
+
     #[test]
     fn debug_panel_is_exclusive_and_escape_blocks_gameplay() {
         let mut app = App::new();

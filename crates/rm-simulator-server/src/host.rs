@@ -8,8 +8,8 @@
 use crate::clock::TimeSource;
 use crate::lifecycle::{ConnectionStop, Stop};
 use crate::protocol::{
-    ChassisAssignment, ClientMessage, Command, PROTOCOL_VERSION, PlayerInfo, Role, ServerMessage,
-    Welcome, encode,
+    ChassisAssignment, ClientMessage, Command, PROTOCOL_VERSION, PlayerInfo, Robot, Role,
+    ServerMessage, Welcome, encode,
 };
 use crate::simulation::{Simulation, SimulationState};
 use rm_simulator_world::{FieldSnapshot, StaticGeometry, Team};
@@ -76,6 +76,8 @@ pub(crate) struct PeerRegistration {
     pub(crate) team: Option<Team>,
     /// Seat the peer asked for.
     pub(crate) role: Role,
+    /// The robot a pilot asked to drive; ignored for the other seats.
+    pub(crate) robot: Robot,
     /// Owner-only placement as an FLU position in metres and a heading in
     /// degrees. `Some` also grants authority no network hello can claim.
     pub(crate) owner_spawn: Option<([f64; 3], f64)>,
@@ -668,6 +670,7 @@ impl Owner {
             name,
             team,
             role,
+            robot,
             owner_spawn,
             outbox,
             stream,
@@ -699,8 +702,8 @@ impl Owner {
         };
         let chassis = if let (Role::Pilot, Some(team)) = (role, team) {
             let spawned = match owner_spawn {
-                Some((position, yaw)) => self.simulation.spawn_chassis_at(team, position, yaw),
-                None => self.simulation.spawn_chassis(team),
+                Some((position, yaw)) => self.simulation.spawn_robot_at(team, robot, position, yaw),
+                None => self.simulation.spawn_robot(team, robot),
             };
             if owner_spawn.is_some()
                 && let Err(error) = &spawned
@@ -715,6 +718,7 @@ impl Owner {
                     .chassis_config(id)
                     .expect("new chassis exists")
                     .clone(),
+                robot,
             })
         } else {
             None
@@ -726,7 +730,10 @@ impl Owner {
             team,
             role,
             chassis: chassis.clone(),
-            weapon: self.simulation.weapon(),
+            weapon: chassis.as_ref().map_or_else(
+                || self.simulation.weapon(),
+                |chassis| self.simulation.weapon_for(chassis.id),
+            ),
             weapon_limits: self.simulation.weapon_limits(),
             tick_ns: rm_simulator_world::tick_ns(),
         };
@@ -736,7 +743,8 @@ impl Owner {
                 name: name.clone(),
                 team,
                 role,
-                chassis: chassis.map(|chassis| chassis.id),
+                chassis: chassis.as_ref().map(|chassis| chassis.id),
+                robot: chassis.map(|chassis| chassis.robot),
             },
             owner: owner_spawn.is_some(),
             last_telemetry: self.time.now(),
@@ -752,7 +760,12 @@ impl Owner {
         self.peers.push(peer);
         self.broadcast(ServerMessage::Notice(format!(
             "{name} joined as {}",
-            crate::protocol::describe_seat(team, role, welcome.chassis.as_ref().map(|c| c.id))
+            crate::protocol::describe_seat(
+                team,
+                role,
+                welcome.chassis.as_ref().map(|c| c.id),
+                welcome.chassis.as_ref().map(|c| c.robot),
+            )
         )));
         self.broadcast(ServerMessage::Roster(self.roster()));
         Ok(welcome)
@@ -964,6 +977,7 @@ mod tests {
                 name: "test".into(),
                 team: None,
                 role,
+                robot: Robot::default(),
                 owner_spawn: None,
                 outbox,
                 stream: ConnectionStop::Tcp(stream),
@@ -1420,6 +1434,7 @@ mod tests {
         let mut field = Field::new(&FieldConfig {
             chassis: vec![rm_simulator_world::ChassisPlacement {
                 team: Team::Red,
+                kind: rm_simulator_world::RobotKind::Infantry,
                 config: Default::default(),
                 spawn: rm_simulator_world::Pose::at([0.0, 0.0, 2.0]),
             }],

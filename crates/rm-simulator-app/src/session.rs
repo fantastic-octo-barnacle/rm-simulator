@@ -211,6 +211,7 @@ impl Session {
                         &args.name,
                         Some(args.team.into()),
                         role,
+                        args.robot,
                         &args.password,
                     ),
                     rm_simulator_server::net::Transport::Tcp => Client::connect_with_password(
@@ -218,6 +219,7 @@ impl Session {
                         &args.name,
                         Some(args.team.into()),
                         role,
+                        args.robot,
                         &args.password,
                     ),
                 }
@@ -245,11 +247,7 @@ impl Session {
             let simulation = Simulation::from_cad(
                 cad,
                 &options,
-                Some(if args.robot == "hero" {
-                    ChassisConfig::hero()
-                } else {
-                    ChassisConfig::default()
-                }),
+                Some(ChassisConfig::default()),
                 args.start_paused,
                 |stage| match stage {
                     BuildProgress::ReadingTerrain => progress(0.3, "Reading terrain triangles"),
@@ -279,7 +277,8 @@ impl Session {
                 }
             }?;
             server.spawn_clock()?;
-            let client = server.connect_owner(&args.name, team, role, spawn, spawn_yaw_deg)?;
+            let client =
+                server.connect_owner(&args.name, team, role, args.robot, spawn, spawn_yaw_deg)?;
             if args.listen.is_some() {
                 println!(
                     "hosting players using {:?} at {}",
@@ -352,7 +351,12 @@ impl Session {
         println!(
             "joined as client {}, {}",
             client_id,
-            describe_seat(welcome.team, welcome.role, chassis_id)
+            describe_seat(
+                welcome.team,
+                welcome.role,
+                chassis_id,
+                welcome.chassis.as_ref().map(|c| c.robot)
+            )
         );
         let state = client
             .wait_snapshot(std::time::Duration::from_secs(5))
