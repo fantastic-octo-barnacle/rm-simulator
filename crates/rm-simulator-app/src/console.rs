@@ -69,9 +69,9 @@ pub enum ConsoleCommand {
         /// True pauses the clock, false resumes it.
         paused: bool,
     },
-    /// Advances a paused world by a whole number of 1 ms ticks.
+    /// Advances a paused world by a whole number of fixed 128 Hz ticks.
     Step {
-        /// Number of milliseconds to advance, from 1 to 60000.
+        /// Number of 128 Hz ticks to advance, from 1 to 60000.
         ticks: u64,
     },
     /// Saves the current rendered view and HUD to a PNG without exiting the app.

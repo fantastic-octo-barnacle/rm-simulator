@@ -123,13 +123,16 @@ CPU and disk bandwidth even though it cannot block gameplay on disk I/O.
 
 ## Embedded play
 
-`Server::connect_owner` uses bounded typed command and snapshot channels. It
+`Server::connect_owner` runs the same framed per-peer codec a UDP client runs —
+the RMG1 fragment framing, the RMB0/RMI3/RMO4 messages and the byte pacer — over
+two in-process datagram channels, with compression skipped (`RMRW` frames). It
 retains the same `Client` API, host authorization and confirmation snapshot/Pong
 order as network play. Only unsent periodic snapshots may be replaced. Reliable
 outbox overflow closes the peer explicitly. Dropping the client removes its seat;
 server teardown joins its delivery workers. Standalone sessions create no gameplay
-listener, while listen hosts use channels for their local player and GNS UDP for
-remote players. Snapshot cloning and physics replay still cost time.
+listener, while listen hosts give their local player the same loopback codec and
+serve remote players over GNS UDP. Snapshot cloning and physics replay still cost
+time.
 
 ## Packet classification
 

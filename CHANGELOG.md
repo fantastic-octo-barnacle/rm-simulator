@@ -37,7 +37,7 @@
   no longer carry a tick length and a host no longer refuses a rate mismatch.
   The
   `physics_rate` measurement example and the `physics_rate_hz` layout option go
-  with them. `PROTOCOL_VERSION` is 35, so both peers must update.
+  with them. `PROTOCOL_VERSION` is 36, so both peers must update.
 
 - Remove the TCP gameplay transport. Valve GameNetworkingSockets over UDP is now
   the only network transport, alongside the in-process owner link and the HTTP

@@ -97,7 +97,7 @@ The essentials, for driving and for match control:
 | Space / Left Shift | Move up / down (flying) |
 | F5 | Start the match (or reset a finished one) (local world or referee) |
 | F6 | Pause or resume the world clock (local world or referee) |
-| F7 | Step the world one frame (16 ms) while paused (local world or referee) |
+| F7 | Step the world one manual step (three 128 Hz ticks, 23.4375 ms) while paused (local world or referee) |
 | F | Activate the rune for your team when it has an opportunity (local world or referee) |
 | Tab (hold) | Show team robot status |
 | P | Toggle settings; 1 toggles reticle, 2 toggles minimap, - / = adjusts mouse sensitivity |
@@ -302,8 +302,9 @@ runs the same framed codec as a network peer, without a gameplay socket or
 compression. It works offline without a separate server process or Steam. Its clock runs on a worker, held until scenery finishes loading,
 and preserves `--start-paused`. The local owner retains match controls and
 free-camera firing; these privileges cannot be requested in a network hello.
-`--listen` exposes the same world to other players. Its local player also uses
-the channel connection; remote players retain the selected network transport.
+`--listen` exposes the same world to other players. Its local player rides the
+same framed loopback codec link, so local and remote peers share one wire;
+remote peers reach it over GNS UDP instead of the in-process channels.
 
 ### Host authority
 
@@ -438,11 +439,12 @@ does not acknowledge its execution by the host.
 | 27 | Sends authoritative armor contacts reliably, independently of world snapshots. Recent contacts recovered from snapshots also display once; repeated snapshots cannot restart their flash. Feedback more than 250 ms old is discarded instead of replayed after a long interruption. Damage and HP remain host-owned. Both host and clients must use matching protocol builds. |
 | 29 | Combines referenced owner configurations with lossless RMI3 input batches; experimental version 28 builds carried only one of the two changes. |
 | 32 | Defaults periodic UDP world checkpoints to bitpacked fine fixed point with a separately trained, embedded ZSTD dictionary. Both peers must run this build. Owner anchors and full confirmations retain their existing precision. |
-| 33 | Removes the `ShotFinished` message, which no host ever produced: a shot's end was only ever reported as a `ShotResult`. |
-| 34 | Makes packed checkpoints the only periodic snapshot encoding and ZSTD the only wire codec, removing the JSON checkpoint path and the DEFLATE codec. |
-| 35 | Freezes the simulation at the 128 Hz tick and drops the rate from the handshake. Every build, host and client now runs the fixed 128 Hz tick; `Hello` and `Welcome` no longer carry a tick length. |
+| 33 | Lets every pilot name the robot it drives in `Hello`; the chassis assignment and the roster repeat it, and the gun caliber follows the robot instead of one host setting. |
+| 34 | Removes the `ShotFinished` message, which no host ever produced: a shot's end was only ever reported as a `ShotResult`. |
+| 35 | Makes packed checkpoints the only periodic snapshot encoding and ZSTD the only wire codec, removing the JSON checkpoint path and the DEFLATE codec. |
+| 36 | Freezes the simulation at the 128 Hz tick and drops the rate from the handshake. Every build, host and client now runs the fixed 128 Hz tick; `Hello` and `Welcome` no longer carry a tick length. |
 
-The current protocol version is 35, defined by `PROTOCOL_VERSION` in
+The current protocol version is 36, defined by `PROTOCOL_VERSION` in
 `crates/rm-simulator-server/src/protocol.rs`. GNS sends redundant controls
 and retried shot intents unreliably; scheduling receipts and terminal shot results
 remain reliable. There is no shooter-view fire path or input-acknowledgement
@@ -674,7 +676,9 @@ assist. Manual fire remains independent.
 
 Auto-aim runs locally. Acquisition follows displayed robot poses, while the impact
 solution uses the latest timestamped motion. Auto-fire requires an observation
-no more than 150 ms old at intended execution; tracking stops at 300 ms. Its HUD
+no more than 150 ms old at presentation time; tracking stops at 300 ms, both
+measured against the snapshot the client has actually shown rather than the
+predicted execution instant. Its HUD
 reports stale observations, motor alignment, blocked paths, weapon cadence and
 rune confirmation. Every shot samples current controls even between normal
 16 ms input refreshes.

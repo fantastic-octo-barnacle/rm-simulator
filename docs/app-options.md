@@ -179,7 +179,7 @@ an NVIDIA laptop GPU; Mac performance still needs separate measurements.
 | F3 | Open / close debug panel: collider Off / Overlay / Only, visual wireframe, rendering statistics, remote motion buffering, reset own robot to spawn |
 | Space / Left Shift | Move up / down (flying) |
 | F6 | Pause or resume the world clock (local world or referee) |
-| F7 | Step the world one frame (16 ms) while paused (local world or referee) |
+| F7 | Step the world one manual step (three 128 Hz ticks, 23.4375 ms) while paused (local world or referee) |
 | O / I | Buy one 17 mm / 42 mm round using team gold, at default prices of 1 / 10 gold during a running match |
 | F5 | Start the match (or reset a finished one) (local world or referee) |
 | F | Activate the rune for your team when it has an opportunity (local world or referee) |

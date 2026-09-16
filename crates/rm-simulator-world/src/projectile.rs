@@ -59,7 +59,8 @@ pub enum Rejection {
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ArmorHit {
-    /// Field time the contact was scored at, in the 1 ms tick clock.
+    /// Field time the contact was scored at, in nanoseconds on the world's
+    /// fixed 128 Hz tick clock.
     pub time_ns: u64,
     /// Identity of the ball, as returned by `Field::fire`.
     pub projectile: u64,
