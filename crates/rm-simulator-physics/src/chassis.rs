@@ -483,11 +483,15 @@ fn vector(v: [f64; 3]) -> Vector {
     Vector::new(v[0], v[1], v[2])
 }
 fn rapier_pose(p: Pose) -> Pose3 {
+    let pose = exact_rapier_pose(p);
+    Pose3::from_parts(pose.translation, pose.rotation.normalize())
+}
+/// The pose bit for bit. Rapier integrates rotations without renormalising,
+/// so a live body sits an ulp or two off unit length; a restore must keep that
+/// or its replay drifts from the host's.
+fn exact_rapier_pose(p: Pose) -> Pose3 {
     let [w, x, y, z] = p.rotation_wxyz;
-    Pose3::from_parts(
-        vector(p.translation_m),
-        Rotation::from_xyzw(x, y, z, w).normalize(),
-    )
+    Pose3::from_parts(vector(p.translation_m), Rotation::from_xyzw(x, y, z, w))
 }
 fn pose_is_valid(p: Pose) -> bool {
     let norm = p.rotation_wxyz.iter().map(|v| v * v).sum::<f64>();
@@ -780,6 +784,10 @@ impl Chassis {
             return Err("non-finite prediction state");
         }
         self.place(world, state.pose)?;
+        world.bodies[self.body].set_position(exact_rapier_pose(state.pose), true);
+        world
+            .bodies
+            .propagate_modified_body_positions_to_colliders(&mut world.colliders);
         self.placement_revision = state.placement_revision;
         self.set_command(state.command)?;
         self.defeated = state.defeated;
