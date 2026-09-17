@@ -35,7 +35,11 @@ use serde::{Deserialize, Serialize};
 /// codec and every environment selector that chose between them.
 /// Version 36 freezes the simulation at the 128 Hz tick and drops the rate from
 /// the handshake.
-pub const PROTOCOL_VERSION: u32 = 36;
+/// Version 37 carries projectile timestamps as checkpoint-relative ages in
+/// nanoseconds instead of absolute simulation times, which keeps every age
+/// under 2^33 for a four-second ball. Reconstruction is exact, so prediction
+/// replays retire the same balls on the same ticks.
+pub const PROTOCOL_VERSION: u32 = 37;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///
