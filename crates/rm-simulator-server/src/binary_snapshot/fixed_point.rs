@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
 //! Motion precision for binary checkpoints; application choices, not rule constants.
-//! Only dynamic chassis state and compact projectile position/velocity change.
+//! Only chassis motion and compact projectile position/velocity change.
 //! Commands, configuration, clocks, ids, contacts, scoring and hidden rules stay
 //! exact. Reconstructed quaternion components are normalized before physics use.
 use crate::binary_snapshot::bitpack::{Fixed, Grid, Rounding};
@@ -19,13 +19,9 @@ use crate::protocol::ServerMessage;
 pub enum Fine {
     /// The `PlayerSnapshot` itself.
     Root,
-    /// Inside `state`, the `SimulationState`.
-    State,
-    /// Inside `state.field`.
-    Field,
-    /// Inside a chassis, outside its configuration and command.
+    /// Inside the chassis motion array.
     Chassis,
-    /// Inside the hoisted projectile array.
+    /// Inside the projectile array.
     Projectiles,
     /// Every `f64` beneath rounds onto this grid.
     Round(Grid),
@@ -39,11 +35,8 @@ impl Rounding for Fine {
     fn field(self, key: &'static str) -> Self {
         let round = |scale, width, k| Fine::Round(Grid { scale, width, k });
         match (self, key) {
-            (Fine::Root, "state") => Fine::State,
+            (Fine::Root, "motion") => Fine::Chassis,
             (Fine::Root, "projectiles") => Fine::Projectiles,
-            (Fine::State, "field") => Fine::Field,
-            (Fine::Field, "chassis") => Fine::Chassis,
-            (Fine::Chassis, "config" | "command") => Fine::Exact,
             (Fine::Chassis, "translation_m") => round(1000., 18, K_TRANSLATION),
             (Fine::Chassis, "velocity_m_s") => round(100., 16, K_VELOCITY),
             (Fine::Chassis, "angular_velocity_rad_s" | "gimbal_velocity_rad_s") => {
@@ -124,20 +117,22 @@ mod tests {
         let values = [-200., -131.072, -1.23456, 0.0005, 131.0709, 200.];
         let rounded = values.map(|v| round(rule, v));
         assert_eq!(rounded, [-200., -131.072, -1.235, 0.001, 131.071, 200.]);
-        let chassis = Fine::Root.field("state").field("field").field("chassis");
+        let chassis = Fine::Root.field("motion");
         assert_eq!(
             round(chassis.field("pose").field("translation_m"), 1.23456),
             1.235
         );
+        // Configuration and command live in the slow chassis records.
+        let records = Fine::Root.field("chassis");
         assert_eq!(
-            round(chassis.field("config").field("hub_m"), 1.23456),
+            round(records.field("config").field("hub_m"), 1.23456),
             1.23456
         );
         assert_eq!(
-            round(chassis.field("command").field("forward_m_s"), 1.23456),
+            round(records.field("command").field("forward_m_s"), 1.23456),
             1.23456
         );
-        assert_eq!(Fine::Root.field("state").field("paused"), Fine::Exact);
+        assert_eq!(Fine::Root.field("header").field("paused"), Fine::Exact);
         assert_eq!(
             chassis.field("turret").field("rotation_wxyz").fixed(),
             Fixed::Rotation

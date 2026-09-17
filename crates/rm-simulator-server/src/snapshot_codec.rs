@@ -6,7 +6,11 @@
 //! checkpoint. No encoding here depends on an earlier transmitted frame; the
 //! periodic delta lane in [`crate::udp_snapshot`] builds on
 //! [`checkpoint_node`] and [`decode_checkpoint`].
-use crate::binary_snapshot::{bitpack, bitpack::Node, fixed_point};
+use crate::binary_snapshot::{
+    bitpack,
+    bitpack::{Aligned, Node},
+    fixed_point,
+};
 use crate::protocol::{ClientMessage, ServerMessage};
 use crate::simulation::SimulationState;
 use serde::{Deserialize, Serialize};
@@ -50,42 +54,47 @@ impl From<CaliberBit> for rm_simulator_world::Caliber {
 /// Nothing a decoder can derive travels. The field clock is `tick` times
 /// `tick_ns()`; the rune, outpost and referee views are rebuilt from the rule
 /// state in the restore (see [`RulesWire`]); wheel hubs and tyre targets are
-/// rebuilt from the pose, configuration and command (see [`ChassisWire`]).
+/// rebuilt from the pose, configuration and command (see [`ChassisMotion`]).
 /// Every absolute timestamp rides as a [`StampCodes`] tick code, with any
 /// sub-tick remainders listed once in `sub_tick_ns`, in visit order.
+///
+/// The fields are laid out by change rate. The slow section comes first, each
+/// record [`Aligned`] to a byte boundary so an unchanged record has the same
+/// bytes in every independent frame and the dictionary matches it; the fast
+/// section (chassis motion and projectiles) follows as dense bits that no
+/// dictionary would match anyway. Values fixed for a placement travel as a
+/// preset index when they equal one ([`ConfigWire`], [`PolicyWire`]), so a
+/// checkpoint stays decodable on its own.
 ///
 /// Field names never reach the wire; they select the fixed-point rounding in
 /// [`fixed_point::Fine`].
 #[derive(Serialize, Deserialize)]
 struct PlayerSnapshot {
-    state: StateWire,
+    header: Aligned<Header>,
+    shot_results: Aligned<Vec<Aligned<crate::protocol::ShotResult>>>,
+    /// Registered hits only; hit times are stamp codes.
+    hits: Aligned<Vec<Aligned<rm_simulator_world::ArmorHit>>>,
+    bases: Aligned<Vec<Aligned<rm_simulator_world::BaseSnapshot>>>,
+    rules: Aligned<RulesWire>,
+    chassis: Aligned<Vec<Aligned<ChassisRecord>>>,
+    /// One per `chassis` record, in the same order.
+    motion: Vec<ChassisMotion>,
     projectiles: Vec<ProjectileWire>,
-    /// Nonzero remainders of the stamps whose code marks one, in the order
-    /// [`PlayerSnapshot::for_each_stamp`] visits them.
-    sub_tick_ns: Vec<u32>,
 }
-/// [`SimulationState`] with its field in wire form; shot results carry their
-/// execution time as a stamp code.
+/// The scalar part of [`SimulationState`] and its field, without the clock.
 #[derive(Serialize, Deserialize)]
-struct StateWire {
-    bots: Vec<u32>,
+struct Header {
     snapshot_id: u64,
     input_epoch: u64,
-    shot_results: Vec<crate::protocol::ShotResult>,
-    paused: bool,
-    field: FieldWire,
-}
-/// [`rm_simulator_world::FieldSnapshot`] without its clock, derived views or
-/// projectiles (hoisted into [`ProjectileWire`]). Hit times are stamp codes.
-#[derive(Serialize, Deserialize)]
-struct FieldWire {
-    bases: Vec<rm_simulator_world::BaseSnapshot>,
     tick: u64,
-    chassis: Vec<ChassisWire>,
-    hits: Vec<rm_simulator_world::ArmorHit>,
+    paused: bool,
     shots_fired: u64,
     hits_detected: u64,
-    rules: RulesWire,
+    bots: Vec<u32>,
+    /// Nonzero remainders of the stamps whose code marks one, in the order
+    /// [`PlayerSnapshot::for_each_field_stamp`] and the referee's round clock
+    /// visit them.
+    sub_tick_ns: Vec<u32>,
 }
 /// Where the rule state and its views travel.
 #[derive(Serialize, Deserialize)]
@@ -97,12 +106,45 @@ enum RulesWire {
     /// motion amplitude and frequency and epoch angle as exact `f64`, its
     /// epoch, stage, state, first-hit and current times as stamp codes, lit
     /// pair, hits, completed groups, restart policy and seeded stream.
-    Derived(Box<rm_simulator_world::FieldRestore>),
+    Derived(Box<DerivedRules>),
     /// Anything else, such as a hand-built state with no restore or a view
     /// edited away from its rules: every part travels as it is, absolute
     /// times included, and only the rune target poses and outpost armor poses
     /// are rebuilt from their angles.
     Explicit(Box<ExplicitRules>),
+}
+/// [`rm_simulator_world::FieldRestore`] with each rune and outpost aligned
+/// and the projectile policy as a preset.
+#[derive(Serialize, Deserialize)]
+struct DerivedRules {
+    runes: Vec<Aligned<rm_simulator_world::Rune>>,
+    outposts: Vec<Aligned<rm_simulator_world::Outpost>>,
+    referee: Aligned<Option<rm_simulator_world::Referee>>,
+    next_chassis_id: u32,
+    last_detection_ns: Vec<(rm_simulator_world::ArmorTarget, u64)>,
+    projectile_policy: PolicyWire,
+}
+impl DerivedRules {
+    fn new(restore: &rm_simulator_world::FieldRestore) -> Self {
+        Self {
+            runes: restore.runes.iter().cloned().map(Aligned).collect(),
+            outposts: restore.outposts.iter().cloned().map(Aligned).collect(),
+            referee: Aligned(restore.referee.clone()),
+            next_chassis_id: restore.next_chassis_id,
+            last_detection_ns: restore.last_detection_ns.clone(),
+            projectile_policy: PolicyWire::new(restore.projectile_policy),
+        }
+    }
+    fn into_restore(self) -> rm_simulator_world::FieldRestore {
+        rm_simulator_world::FieldRestore {
+            runes: self.runes.into_iter().map(|rune| rune.0).collect(),
+            outposts: self.outposts.into_iter().map(|outpost| outpost.0).collect(),
+            referee: self.referee.0,
+            next_chassis_id: self.next_chassis_id,
+            last_detection_ns: self.last_detection_ns,
+            projectile_policy: self.projectile_policy.into_policy(),
+        }
+    }
 }
 /// The [`RulesWire::Explicit`] fallback: the views and the optional restore
 /// exactly as the state holds them.
@@ -114,25 +156,85 @@ struct ExplicitRules {
     referee: Option<rm_simulator_world::RefereeSnapshot>,
     restore: Option<rm_simulator_world::FieldRestore>,
 }
-/// [`rm_simulator_world::ChassisSnapshot`] with each wheel reduced to its spin.
-/// Contacts are diagnostics; hubs and tyre targets are rebuilt with
-/// [`rm_simulator_world::ChassisSnapshot::derive_wheel_kinematics`] after the
-/// pose is normalized.
+/// A projectile policy: the default in one gamma bit, anything else exactly.
 #[derive(Serialize, Deserialize)]
-struct ChassisWire {
+enum PolicyWire {
+    /// [`rm_simulator_world::projectile::ProjectilePolicy::default`].
+    Default,
+    /// Any other policy.
+    Exact(rm_simulator_world::projectile::ProjectilePolicy),
+}
+impl PolicyWire {
+    fn new(policy: rm_simulator_world::projectile::ProjectilePolicy) -> Self {
+        if policy == rm_simulator_world::projectile::ProjectilePolicy::default() {
+            Self::Default
+        } else {
+            Self::Exact(policy)
+        }
+    }
+    fn into_policy(self) -> rm_simulator_world::projectile::ProjectilePolicy {
+        match self {
+            Self::Default => rm_simulator_world::projectile::ProjectilePolicy::default(),
+            Self::Exact(policy) => policy,
+        }
+    }
+}
+/// A chassis configuration. The two presets in
+/// `rm_simulator_physics::chassis` cost one and three bits instead of the
+/// roughly 123 packed bytes of an exact configuration; a configuration equal
+/// to neither travels exactly, so the checkpoint still needs no earlier frame.
+#[derive(Serialize, Deserialize)]
+enum ConfigWire {
+    /// [`rm_simulator_world::ChassisConfig::default`], the omni Infantry.
+    Infantry,
+    /// [`rm_simulator_world::ChassisConfig::hero`], the mecanum Hero.
+    Hero,
+    /// Any other configuration.
+    Exact(Box<rm_simulator_world::ChassisConfig>),
+}
+impl ConfigWire {
+    fn new(config: &rm_simulator_world::ChassisConfig) -> Self {
+        if *config == rm_simulator_world::ChassisConfig::default() {
+            Self::Infantry
+        } else if *config == rm_simulator_world::ChassisConfig::hero() {
+            Self::Hero
+        } else {
+            Self::Exact(Box::new(config.clone()))
+        }
+    }
+    fn into_config(self) -> rm_simulator_world::ChassisConfig {
+        match self {
+            Self::Infantry => rm_simulator_world::ChassisConfig::default(),
+            Self::Hero => rm_simulator_world::ChassisConfig::hero(),
+            Self::Exact(config) => *config,
+        }
+    }
+}
+/// The slowly changing part of a [`rm_simulator_world::ChassisSnapshot`]:
+/// identity, configuration, command and whether it is defeated.
+#[derive(Serialize, Deserialize)]
+struct ChassisRecord {
     placement_revision: u64,
     id: u32,
     team: rm_simulator_world::Team,
-    config: rm_simulator_world::ChassisConfig,
+    config: ConfigWire,
+    command: rm_simulator_world::ChassisCommand,
+    defeated: bool,
+}
+/// The dynamic part of a [`rm_simulator_world::ChassisSnapshot`], with each
+/// wheel reduced to its spin. Contacts are diagnostics; hubs and tyre targets
+/// are rebuilt with
+/// [`rm_simulator_world::ChassisSnapshot::derive_wheel_kinematics`] after the
+/// pose is normalized.
+#[derive(Serialize, Deserialize)]
+struct ChassisMotion {
     pose: rm_simulator_world::Pose,
     turret: rm_simulator_world::Pose,
     velocity_m_s: [f64; 3],
     angular_velocity_rad_s: [f64; 3],
-    command: rm_simulator_world::ChassisCommand,
     held_aim_rad: [f64; 2],
     gimbal_velocity_rad_s: [f64; 2],
     wheel_spin_rad: Vec<f64>,
-    defeated: bool,
 }
 /// Stable identity and shooter, caliber, a position and velocity vector, then
 /// the retirement bookkeeping. Spin is not carried: it moves no ball a client
@@ -224,12 +326,12 @@ impl PlayerSnapshot {
     /// detection times. The referee's round-clock stamps follow separately.
     /// The visit order is the wire order of `sub_tick_ns`.
     fn for_each_field_stamp(&mut self, visit: &mut dyn FnMut(&mut u64)) {
-        for result in &mut self.state.shot_results {
+        for result in self.shot_results.iter_mut() {
             if let Some(time) = &mut result.executed_time_ns {
                 visit(time);
             }
         }
-        for hit in &mut self.state.field.hits {
+        for hit in self.hits.iter_mut() {
             visit(&mut hit.time_ns);
         }
         for ball in &mut self.projectiles {
@@ -241,14 +343,14 @@ impl PlayerSnapshot {
                 visit(time);
             }
         }
-        if let RulesWire::Derived(restore) = &mut self.state.field.rules {
+        if let RulesWire::Derived(restore) = &mut *self.rules {
             for rune in &mut restore.runes {
                 rune.for_each_stamp_mut(visit);
             }
             for outpost in &mut restore.outposts {
                 outpost.for_each_stamp_mut(visit);
             }
-            if let Some(referee) = &mut restore.referee {
+            if let Some(referee) = &mut *restore.referee {
                 referee.for_each_stamp_mut(rm_simulator_world::StampClock::Field, visit);
             }
             for (_, time) in &mut restore.last_detection_ns {
@@ -257,7 +359,7 @@ impl PlayerSnapshot {
         }
     }
     fn referee_mut(&mut self) -> Option<&mut rm_simulator_world::Referee> {
-        match &mut self.state.field.rules {
+        match &mut *self.rules {
             RulesWire::Derived(restore) => restore.referee.as_mut(),
             RulesWire::Explicit(_) => None,
         }
@@ -283,7 +385,7 @@ impl PlayerSnapshot {
                         .all(|(view, outpost)| *view == outpost.snapshot(field.time_ns))
                     && field.referee == restore.referee.as_ref().map(|r| r.snapshot()) =>
             {
-                RulesWire::Derived(Box::new(restore.clone()))
+                RulesWire::Derived(Box::new(DerivedRules::new(restore)))
             }
             _ => {
                 let mut runes = field.runes.clone();
@@ -306,20 +408,28 @@ impl PlayerSnapshot {
         let chassis = field
             .chassis
             .iter()
-            .map(|chassis| ChassisWire {
-                placement_revision: chassis.placement_revision,
-                id: chassis.id,
-                team: chassis.team,
-                config: chassis.config.clone(),
+            .map(|chassis| {
+                Aligned(ChassisRecord {
+                    placement_revision: chassis.placement_revision,
+                    id: chassis.id,
+                    team: chassis.team,
+                    config: ConfigWire::new(&chassis.config),
+                    command: chassis.command,
+                    defeated: chassis.defeated,
+                })
+            })
+            .collect();
+        let motion = field
+            .chassis
+            .iter()
+            .map(|chassis| ChassisMotion {
                 pose: chassis.pose,
                 turret: chassis.turret,
                 velocity_m_s: chassis.velocity_m_s,
                 angular_velocity_rad_s: chassis.angular_velocity_rad_s,
-                command: chassis.command,
                 held_aim_rad: chassis.held_aim_rad,
                 gimbal_velocity_rad_s: chassis.gimbal_velocity_rad_s,
                 wheel_spin_rad: chassis.wheels.iter().map(|wheel| wheel.spin_rad).collect(),
-                defeated: chassis.defeated,
             })
             .collect();
         let projectiles = field
@@ -337,32 +447,34 @@ impl PlayerSnapshot {
             })
             .collect();
         let mut snapshot = Self {
-            state: StateWire {
-                bots: state.bots.clone(),
+            header: Aligned(Header {
                 snapshot_id: state.snapshot_id,
                 input_epoch: state.input_epoch,
-                shot_results: state.shot_results.clone(),
+                tick: field.tick,
                 paused: state.paused,
-                field: FieldWire {
-                    bases: field.bases.clone(),
-                    tick: field.tick,
-                    chassis,
-                    // Failed-contact diagnostics only fed the removed impact
-                    // markers. Keep genuine registered hits, damage and rune
-                    // outcomes for armor feedback.
-                    hits: field
-                        .hits
-                        .iter()
-                        .filter(|hit| hit.detected)
-                        .cloned()
-                        .collect(),
-                    shots_fired: field.shots_fired,
-                    hits_detected: field.hits_detected,
-                    rules,
-                },
-            },
+                shots_fired: field.shots_fired,
+                hits_detected: field.hits_detected,
+                bots: state.bots.clone(),
+                sub_tick_ns: Vec::new(),
+            }),
+            shot_results: Aligned(state.shot_results.iter().cloned().map(Aligned).collect()),
+            // Failed-contact diagnostics only fed the removed impact markers.
+            // Keep genuine registered hits, damage and rune outcomes for armor
+            // feedback.
+            hits: Aligned(
+                field
+                    .hits
+                    .iter()
+                    .filter(|hit| hit.detected)
+                    .cloned()
+                    .map(Aligned)
+                    .collect(),
+            ),
+            bases: Aligned(field.bases.iter().cloned().map(Aligned).collect()),
+            rules: Aligned(rules),
+            chassis: Aligned(chassis),
+            motion,
             projectiles,
-            sub_tick_ns: Vec::new(),
         };
         // An `Explicit` field keeps its clock in `time_ns`; the stamps outside
         // the rules still code against it.
@@ -376,7 +488,7 @@ impl PlayerSnapshot {
                 codes.encode(stamp)
             });
         }
-        snapshot.sub_tick_ns = sub_tick_ns;
+        snapshot.header.sub_tick_ns = sub_tick_ns;
         snapshot
     }
 
@@ -386,11 +498,10 @@ impl PlayerSnapshot {
     /// physics will use.
     fn into_state(mut self, normalize: bool) -> io::Result<SimulationState> {
         let invalid = |message| io::Error::new(io::ErrorKind::InvalidData, message);
-        let mut sub_tick_ns = std::mem::take(&mut self.sub_tick_ns);
-        let time_ns = match &self.state.field.rules {
+        let mut sub_tick_ns = std::mem::take(&mut self.header.sub_tick_ns);
+        let time_ns = match &*self.rules {
             RulesWire::Derived(_) => self
-                .state
-                .field
+                .header
                 .tick
                 .checked_mul(rm_simulator_world::tick_ns())
                 .ok_or_else(|| invalid("checkpoint tick overflows the clock"))?,
@@ -413,27 +524,36 @@ impl PlayerSnapshot {
             ));
         }
         let PlayerSnapshot {
-            state, projectiles, ..
+            header,
+            shot_results,
+            hits,
+            bases,
+            rules,
+            chassis: records,
+            motion,
+            projectiles,
         } = self;
-        let field = state.field;
-        let (runes, outposts, referee, restore) = match field.rules {
-            RulesWire::Derived(restore) => (
-                restore
-                    .runes
-                    .iter()
-                    .map(rm_simulator_world::Rune::snapshot)
-                    .collect(),
-                restore
-                    .outposts
-                    .iter()
-                    .map(|outpost| outpost.snapshot(time_ns))
-                    .collect(),
-                restore
-                    .referee
-                    .as_ref()
-                    .map(rm_simulator_world::Referee::snapshot),
-                Some(*restore),
-            ),
+        let (runes, outposts, referee, restore) = match rules.0 {
+            RulesWire::Derived(rules) => {
+                let restore = rules.into_restore();
+                (
+                    restore
+                        .runes
+                        .iter()
+                        .map(rm_simulator_world::Rune::snapshot)
+                        .collect(),
+                    restore
+                        .outposts
+                        .iter()
+                        .map(|outpost| outpost.snapshot(time_ns))
+                        .collect(),
+                    restore
+                        .referee
+                        .as_ref()
+                        .map(rm_simulator_world::Referee::snapshot),
+                    Some(restore),
+                )
+            }
             RulesWire::Explicit(rules) => {
                 let ExplicitRules {
                     mut runes,
@@ -455,24 +575,30 @@ impl PlayerSnapshot {
                 (runes, outposts, referee, restore)
             }
         };
-        let mut chassis = Vec::with_capacity(field.chassis.len());
-        for wire in field.chassis {
-            if wire.wheel_spin_rad.len() != wire.config.wheel_hubs_m.len() {
+        if records.len() != motion.len() {
+            return Err(invalid(
+                "checkpoint chassis motion does not match its records",
+            ));
+        }
+        let mut chassis = Vec::with_capacity(records.len());
+        for (Aligned(record), motion) in records.0.into_iter().zip(motion) {
+            let config = record.config.into_config();
+            if motion.wheel_spin_rad.len() != config.wheel_hubs_m.len() {
                 return Err(invalid("checkpoint wheel count does not match the chassis"));
             }
             let mut snapshot = rm_simulator_world::ChassisSnapshot {
-                placement_revision: wire.placement_revision,
-                id: wire.id,
-                team: wire.team,
-                config: wire.config,
-                pose: wire.pose,
-                turret: wire.turret,
-                velocity_m_s: wire.velocity_m_s,
-                angular_velocity_rad_s: wire.angular_velocity_rad_s,
-                command: wire.command,
-                held_aim_rad: wire.held_aim_rad,
-                gimbal_velocity_rad_s: wire.gimbal_velocity_rad_s,
-                wheels: wire
+                placement_revision: record.placement_revision,
+                id: record.id,
+                team: record.team,
+                config,
+                pose: motion.pose,
+                turret: motion.turret,
+                velocity_m_s: motion.velocity_m_s,
+                angular_velocity_rad_s: motion.angular_velocity_rad_s,
+                command: record.command,
+                held_aim_rad: motion.held_aim_rad,
+                gimbal_velocity_rad_s: motion.gimbal_velocity_rad_s,
+                wheels: motion
                     .wheel_spin_rad
                     .into_iter()
                     .map(|spin_rad| rm_simulator_world::WheelSnapshot {
@@ -480,7 +606,7 @@ impl PlayerSnapshot {
                         ..Default::default()
                     })
                     .collect(),
-                defeated: wire.defeated,
+                defeated: record.defeated,
             };
             if normalize {
                 for pose in [&mut snapshot.pose, &mut snapshot.turret] {
@@ -504,23 +630,24 @@ impl PlayerSnapshot {
                 dwell_since_ns: ball.dwell_since_ns,
             })
             .collect();
+        let header = header.0;
         Ok(SimulationState {
-            bots: state.bots,
-            snapshot_id: state.snapshot_id,
-            input_epoch: state.input_epoch,
-            shot_results: state.shot_results,
-            paused: state.paused,
+            bots: header.bots,
+            snapshot_id: header.snapshot_id,
+            input_epoch: header.input_epoch,
+            shot_results: shot_results.0.into_iter().map(|result| result.0).collect(),
+            paused: header.paused,
             field: rm_simulator_world::FieldSnapshot {
-                bases: field.bases,
-                tick: field.tick,
+                bases: bases.0.into_iter().map(|base| base.0).collect(),
+                tick: header.tick,
                 time_ns,
                 runes,
                 outposts,
                 projectiles,
                 chassis,
-                hits: field.hits,
-                shots_fired: field.shots_fired,
-                hits_detected: field.hits_detected,
+                hits: hits.0.into_iter().map(|hit| hit.0).collect(),
+                shots_fired: header.shots_fired,
+                hits_detected: header.hits_detected,
                 referee,
                 restore,
             },
@@ -645,7 +772,7 @@ pub fn decode_checkpoint(
     let node = keep_node
         .then(|| bitpack::to_node_with(&snapshot, fixed_point::Fine::Root))
         .transpose()?;
-    if snapshot.state.input_epoch != epoch {
+    if snapshot.header.input_epoch != epoch {
         return Err(io::Error::other("invalid baseline state/epoch"));
     }
     let message = ServerMessage::Snapshot(Box::new(snapshot.into_state(true)?));
@@ -736,7 +863,7 @@ mod tests {
             state.field = field.snapshot();
             assert!(
                 matches!(
-                    PlayerSnapshot::from_state(&state).state.field.rules,
+                    *PlayerSnapshot::from_state(&state).rules,
                     RulesWire::Derived(_)
                 ),
                 "a field's own snapshot must travel as its restore alone"
@@ -818,7 +945,10 @@ mod tests {
         assert_eq!(rune.completed_groups, 0);
         assert!(rune.activated.contains(&true));
         assert!(
-            !PlayerSnapshot::from_state(&state).sub_tick_ns.is_empty(),
+            !PlayerSnapshot::from_state(&state)
+                .header
+                .sub_tick_ns
+                .is_empty(),
             "the off-grid stage start must ride as a remainder"
         );
         // 40 frames stay inside the one-second second-hit window; the replay
@@ -987,6 +1117,66 @@ mod tests {
         assert!(
             compact_bytes * 4 < full_bytes * 3,
             "expect at least 25% less compressed traffic"
+        );
+    }
+
+    #[test]
+    fn chassis_presets_travel_as_indexes_and_other_values_exactly() {
+        use rm_simulator_world::{ChassisConfig, ChassisPlacement, Pose, Team};
+        let custom = ChassisConfig {
+            mass_kg: 17.25,
+            ..Default::default()
+        };
+        let mut config = FieldConfig::default();
+        for (index, chassis) in [ChassisConfig::default(), ChassisConfig::hero(), custom]
+            .into_iter()
+            .enumerate()
+        {
+            config.chassis.push(ChassisPlacement {
+                team: Team::Red,
+                kind: rm_simulator_world::RobotKind::Infantry,
+                spawn: Pose::at([index as f64, 0., chassis.rest_height_m()]),
+                config: chassis,
+            });
+        }
+        let field = Field::new(&config).unwrap();
+        let mut state = simulation();
+        state.field = field.snapshot();
+        let wire = PlayerSnapshot::from_state(&state);
+        assert!(matches!(
+            wire.chassis
+                .iter()
+                .map(|record| &record.config)
+                .collect::<Vec<_>>()[..],
+            [ConfigWire::Infantry, ConfigWire::Hero, ConfigWire::Exact(_)]
+        ));
+        let RulesWire::Derived(rules) = &*wire.rules else {
+            panic!("a field's own snapshot travels derived");
+        };
+        assert!(matches!(rules.projectile_policy, PolicyWire::Default));
+        // A policy off the preset travels exactly too.
+        if let Some(restore) = &mut state.field.restore {
+            restore.projectile_policy = restore.projectile_policy.without_retirement();
+        }
+        let message = ServerMessage::Snapshot(Box::new(state));
+        let decoded = decode_player_message(&encode_player_message(&message)).unwrap();
+        let (ServerMessage::Snapshot(expected), ServerMessage::Snapshot(actual)) =
+            (&message, &decoded)
+        else {
+            panic!("a snapshot must decode to a snapshot");
+        };
+        let configs = |state: &SimulationState| {
+            state
+                .field
+                .chassis
+                .iter()
+                .map(|chassis| chassis.config.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(configs(actual), configs(expected));
+        assert_eq!(
+            actual.field.restore.as_ref().unwrap().projectile_policy,
+            expected.field.restore.as_ref().unwrap().projectile_policy
         );
     }
 

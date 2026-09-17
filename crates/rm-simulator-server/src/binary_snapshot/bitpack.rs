@@ -21,6 +21,10 @@
 //! tagged form: a legacy grid search, then 32 bits when `f32` holds them
 //! exactly and 64 bits otherwise.
 //!
+//! An [`Aligned`] value starts on a byte boundary in a full frame, so slowly
+//! changing records keep the same bytes at the same bit phase from frame to
+//! frame and the dictionary can match them; a delta ignores the alignment.
+//!
 //! Types that need a self-describing format (`#[serde(flatten)]`, untagged or
 //! internally tagged enums, `skip_serializing_if`) are refused rather than
 //! guessed at.
@@ -329,6 +333,9 @@ pub enum Node {
     Map(Vec<(Node, Node)>),
     /// Enum: gamma-coded variant index, then the payload.
     Variant(u32, Box<Node>),
+    /// An [`Aligned`] value: zero padding to a byte boundary in a full frame,
+    /// then the value. A delta codes the value alone.
+    Aligned(Box<Node>),
 }
 impl PartialEq for Node {
     /// Bit-exact equality: signed zero and NaN payloads differ.
@@ -350,8 +357,63 @@ impl PartialEq for Node {
             (Tuple(a), Tuple(b)) | (Seq(a), Seq(b)) => a == b,
             (Map(a), Map(b)) => a == b,
             (Variant(i, a), Variant(j, b)) => i == j && a == b,
+            (Aligned(a), Aligned(b)) => a == b,
             _ => false,
         }
+    }
+}
+
+/// Serde newtype name that marks an [`Aligned`] value; no other type uses it.
+const ALIGNED: &str = "\u{0}bitpack::Aligned";
+
+/// A value that starts on a byte boundary in a full frame. Wrap slowly
+/// changing records (and each element of a slowly changing sequence) in it so
+/// they keep a fixed byte phase whatever bit widths precede them, which is
+/// what lets a dictionary match them. In a delta the value is coded as if it
+/// were unwrapped. Other serde formats see a plain newtype, i.e. `T` itself.
+///
+/// ```
+/// use rm_simulator_server::binary_snapshot::bitpack::{Aligned, from_bytes, to_bytes};
+/// // One bit, then seven bits of padding, then the byte-aligned value.
+/// let value = (true, Aligned(0x55_u8));
+/// let bytes = to_bytes(&value).unwrap();
+/// assert_eq!(bytes, [0x01, 0x55]);
+/// assert_eq!(from_bytes::<(bool, Aligned<u8>)>(&bytes).unwrap(), value);
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Aligned<T>(pub T);
+impl<T> std::ops::Deref for Aligned<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+impl<T> std::ops::DerefMut for Aligned<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+impl<T: Serialize> Serialize for Aligned<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_newtype_struct(ALIGNED, &self.0)
+    }
+}
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Aligned<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visit<T>(std::marker::PhantomData<T>);
+        impl<'de, T: serde::Deserialize<'de>> de::Visitor<'de> for Visit<T> {
+            type Value = Aligned<T>;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an aligned value")
+            }
+            fn visit_newtype_struct<D: serde::Deserializer<'de>>(
+                self,
+                deserializer: D,
+            ) -> Result<Self::Value, D::Error> {
+                T::deserialize(deserializer).map(Aligned)
+            }
+        }
+        deserializer.deserialize_newtype_struct(ALIGNED, Visit(std::marker::PhantomData))
     }
 }
 
@@ -655,10 +717,15 @@ impl<R: Rounding> ser::Serializer for NodeSerializer<R> {
     }
     fn serialize_newtype_struct<T: Serialize + ?Sized>(
         self,
-        _: &'static str,
+        name: &'static str,
         value: &T,
     ) -> Result<Node> {
-        value.serialize(self)
+        let node = value.serialize(self)?;
+        Ok(if name == ALIGNED {
+            Node::Aligned(Box::new(node))
+        } else {
+            node
+        })
     }
     fn serialize_newtype_variant<T: Serialize + ?Sized>(
         self,
@@ -863,6 +930,7 @@ impl<'de> de::Deserializer<'de> for NodeDe<'_> {
                 Ok(value)
             }
             Node::Variant(index, payload) => visitor.visit_enum(NodeEnum(*index, payload)),
+            Node::Aligned(inner) => NodeDe(inner).deserialize_any(visitor),
         }
     }
     fn deserialize_char<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
@@ -888,7 +956,10 @@ impl<'de> de::Deserializer<'de> for NodeDe<'_> {
         _: &'static str,
         visitor: V,
     ) -> Result<V::Value> {
-        visitor.visit_newtype_struct(self)
+        match self.0 {
+            Node::Aligned(inner) => visitor.visit_newtype_struct(NodeDe(inner)),
+            _ => visitor.visit_newtype_struct(self),
+        }
     }
     fn deserialize_enum<V: de::Visitor<'de>>(
         self,
@@ -1115,6 +1186,10 @@ impl Writer {
         }
     }
     fn full(&mut self, node: &Node, depth: usize) -> Result<()> {
+        if let Node::Aligned(inner) = node {
+            self.align();
+            return self.full(inner, depth);
+        }
         self.visit(depth)?;
         match node {
             Node::Unit => {}
@@ -1154,10 +1229,18 @@ impl Writer {
                 self.gamma(*index);
                 self.full(payload, depth + 1)?;
             }
+            Node::Aligned(_) => unreachable!("aligned values are unwrapped above"),
         }
         Ok(())
     }
     fn delta(&mut self, before: &Node, after: &Node, depth: usize) -> Result<()> {
+        match (before, after) {
+            (Node::Aligned(a), Node::Aligned(b)) => return self.delta(a, b, depth),
+            (Node::Aligned(_), _) | (_, Node::Aligned(_)) => {
+                return Err(Error::new("baseline has a different type"));
+            }
+            _ => {}
+        }
         self.visit(depth)?;
         let unchanged = before == after;
         self.bits(u64::from(!unchanged), 1);
@@ -1425,10 +1508,15 @@ impl<'a> Reader<'a> {
         }
         Self::checked_rotation(Some((index, steps)), [0.; 4])
     }
-    fn blob(&mut self) -> Result<Vec<u8>> {
+    /// Skips to the next byte boundary, refusing nonzero padding.
+    fn align(&mut self) -> Result<()> {
         if !self.bit.is_multiple_of(8) && self.bits(8 - (self.bit % 8) as u32)? != 0 {
             return Err(invalid());
         }
+        Ok(())
+    }
+    fn blob(&mut self) -> Result<Vec<u8>> {
+        self.align()?;
         let len = self.length()?;
         if len > self.remaining() / 8 {
             return Err(invalid());
@@ -1704,10 +1792,28 @@ impl<'de, R: Rounding> de::Deserializer<'de> for BitDe<'_, '_, '_, R> {
     }
     fn deserialize_newtype_struct<V: de::Visitor<'de>>(
         self,
-        _: &'static str,
+        name: &'static str,
         visitor: V,
     ) -> Result<V::Value> {
-        visitor.visit_newtype_struct(self)
+        if name != ALIGNED {
+            return visitor.visit_newtype_struct(self);
+        }
+        // Mirrors the writer: padding only where the value is coded in full,
+        // and a delta recurses against the baseline's unwrapped value.
+        let base = match self.base {
+            None => {
+                self.r.align()?;
+                None
+            }
+            Some(Node::Aligned(inner)) => Some(&**inner),
+            Some(_) => return Err(mismatch()),
+        };
+        visitor.visit_newtype_struct(BitDe {
+            r: self.r,
+            base,
+            depth: self.depth,
+            rule: self.rule,
+        })
     }
     fn deserialize_seq<V: de::Visitor<'de>>(mut self, visitor: V) -> Result<V::Value> {
         let entry = self.enter()?;
@@ -2234,6 +2340,60 @@ mod tests {
         let mut w = Writer::default();
         w.golomb(0, 8);
         assert_eq!(w.bit, 9);
+    }
+
+    #[test]
+    fn aligned_values_pad_full_frames_only_and_refuse_nonzero_padding() {
+        type Record = (bool, Aligned<Vec<Aligned<(bool, u8)>>>, bool);
+        let value: Record = (
+            true,
+            Aligned(vec![Aligned((true, 9)), Aligned((false, 3))]),
+            true,
+        );
+        let node = to_node(&value).unwrap();
+        // A 49-bit header and the flag, padding to byte 7, the length byte, the
+        // first element (already aligned), padding, the second, the last flag.
+        let full = encode(&node, None, 1, 0).unwrap();
+        let (decoded, _) = decode::<Record>(&full, None, 1).unwrap();
+        assert_eq!(decoded, value);
+        assert_eq!(to_node(&decoded).unwrap(), node);
+        assert_eq!(full.len(), 12);
+        // The same value unwrapped packs densely.
+        let dense = encode(
+            &to_node(&(true, vec![(true, 9_u8), (false, 3_u8)], true)).unwrap(),
+            None,
+            1,
+            0,
+        )
+        .unwrap();
+        assert!(dense.len() < full.len());
+        // A delta against an aligned baseline carries no padding and rebuilds
+        // the aligned tree.
+        let next: Record = (
+            true,
+            Aligned(vec![Aligned((true, 9)), Aligned((true, 4))]),
+            false,
+        );
+        let delta = encode(&to_node(&next).unwrap(), Some(&node), 1, 2).unwrap();
+        let (decoded, _) = decode::<Record>(&delta, Some((&node, 2)), 1).unwrap();
+        assert_eq!(decoded, next);
+        // A length change codes the sequence in full inside the delta, padded
+        // on both ends alike.
+        let longer: Record = (false, Aligned(vec![Aligned((true, 1)); 3]), true);
+        let delta = encode(&to_node(&longer).unwrap(), Some(&node), 1, 2).unwrap();
+        assert_eq!(
+            decode::<Record>(&delta, Some((&node, 2)), 1).unwrap().0,
+            longer
+        );
+        // Padding bits must be zero.
+        let mut corrupt = full.clone();
+        corrupt[6] |= 0x80;
+        assert!(decode::<Record>(&corrupt, None, 1).is_err());
+        // Other formats see the plain value.
+        assert_eq!(
+            serde_json::to_string(&value).unwrap(),
+            "[true,[[true,9],[false,3]],true]"
+        );
     }
 
     #[test]
