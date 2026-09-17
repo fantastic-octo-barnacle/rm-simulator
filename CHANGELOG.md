@@ -12,6 +12,16 @@
   its section ablation now measures the live binary pipeline (fine fixed
   point, bitpack, dictionary) with packed and compressed shares per section.
 
+- Compress packed checkpoints at ZSTD level 6 instead of 3. Independent
+  frames measure 10–18% smaller for ~10–35 µs of host encode each against
+  the 89–374 µs bitpack encode beside it, and about 2.5–3% on the live
+  mixed delta stream; decompression is level-independent, so clients pay
+  nothing. The level is not on the wire — ZSTD decodes any level against
+  the same dictionary — so no protocol bump was needed. A new
+  `net_codec` Criterion benchmark covers quantize/bitpack, compression
+  across levels, decompression, bitpack decode and the full
+  acknowledged-baseline round trip.
+
 - Log per-peer network health on the server. The GNS host prints one `net
   peer=ID world=N skipped_congested=N replaced_unsent=N ...` line per admitted
   peer every 10 s, and appends snapshot totals to the disconnect line, so a

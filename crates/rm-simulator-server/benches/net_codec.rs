@@ -15,19 +15,22 @@
 //!
 //! Run with `cargo bench -p rm-simulator-server --locked --bench net_codec`.
 use criterion::{BenchmarkId, Throughput, criterion_group, criterion_main};
-use std::hint::black_box;
 use criterion::{Criterion, measurement::WallTime};
 use rm_simulator_server::binary_snapshot::bitpack;
 use rm_simulator_server::binary_snapshot::fixed_point::{Quantization, checkpoint};
 use rm_simulator_server::protocol::{Command, ServerMessage};
 use rm_simulator_server::{compression, snapshot_codec, udp_snapshot, workload};
 use serde_json::Value;
+use std::hint::black_box;
 use std::time::Duration;
 
 /// Frames per workload sample set, at the 32 ms world publication cadence.
 const FRAMES: usize = 128;
-/// Dictionary compression levels swept against the production level 3.
+/// Dictionary compression levels swept against the production level 6.
 const LEVELS: [i32; 5] = [1, 3, 6, 9, 12];
+/// The production checkpoint level; mirrors `CHECKPOINT_LEVEL`, which the
+/// bench cannot name because it is crate-private.
+const PRODUCTION_LEVEL: i32 = 6;
 
 /// One deterministic sample set: compact checkpoint JSON values plus the
 /// packed `RMB0` bytes and dictionary-framed bytes the live path derives.
@@ -48,11 +51,10 @@ struct Samples {
 /// Frames a packed checkpoint exactly like the production compressor: `RMBZ`
 /// dictionary frame, or the packed frame itself when compression would grow
 /// it.
-fn frame_checkpoint(
-    compressor: &mut zstd::bulk::Compressor<'static>,
-    packed: &[u8],
-) -> Vec<u8> {
-    let body = compressor.compress(packed).expect("bench checkpoint compression");
+fn frame_checkpoint(compressor: &mut zstd::bulk::Compressor<'static>, packed: &[u8]) -> Vec<u8> {
+    let body = compressor
+        .compress(packed)
+        .expect("bench checkpoint compression");
     if rm_simulator_server::binary_snapshot::MAGIC.len() + body.len() >= packed.len() {
         return packed.to_vec();
     }
@@ -91,9 +93,11 @@ fn samples(name: &'static str, players: usize, drive: bool, fire: bool) -> Sampl
     }
     let mut packed = Vec::with_capacity(FRAMES);
     let mut framed = Vec::with_capacity(FRAMES);
-    let mut compressor =
-        zstd::bulk::Compressor::with_dictionary(3, rm_simulator_server::binary_snapshot::dictionary())
-            .unwrap();
+    let mut compressor = zstd::bulk::Compressor::with_dictionary(
+        PRODUCTION_LEVEL,
+        rm_simulator_server::binary_snapshot::dictionary(),
+    )
+    .unwrap();
     for value in &values {
         let mut quantized = value.clone();
         checkpoint(&mut quantized, &mut Default::default(), Quantization::Fine);
@@ -148,7 +152,7 @@ fn bench_compress(c: &mut Criterion<WallTime>) {
         group.throughput(Throughput::Bytes(bytes / FRAMES as u64));
         group.bench_with_input(BenchmarkId::from_parameter(set.name), &set, |b, set| {
             let mut compressor = zstd::bulk::Compressor::with_dictionary(
-                3,
+                PRODUCTION_LEVEL,
                 rm_simulator_server::binary_snapshot::dictionary(),
             )
             .unwrap();
@@ -255,11 +259,9 @@ fn bench_roundtrip(c: &mut Criterion<WallTime>) {
             // Warm the baseline rotation before measuring steady state.
             for bytes in set.compact.iter().take(32) {
                 let wire = encoder.snapshot(0, bytes).unwrap();
-                let parsed = udp_snapshot::parse(
-                    &compression::decompress(&wire, 4 << 20).unwrap(),
-                )
-                .unwrap()
-                .unwrap();
+                let parsed = udp_snapshot::parse(&compression::decompress(&wire, 4 << 20).unwrap())
+                    .unwrap()
+                    .unwrap();
                 let (_, feedback) = decoder.receive(parsed).unwrap();
                 if let Some(feedback) = feedback
                     && let Some(retire) = encoder.feedback(feedback)
@@ -273,10 +275,9 @@ fn bench_roundtrip(c: &mut Criterion<WallTime>) {
                 let bytes = &set.compact[index % FRAMES];
                 index += 1;
                 let wire = encoder.snapshot(0, black_box(bytes)).unwrap();
-                let parsed =
-                    udp_snapshot::parse(&compression::decompress(&wire, 4 << 20).unwrap())
-                        .unwrap()
-                        .unwrap();
+                let parsed = udp_snapshot::parse(&compression::decompress(&wire, 4 << 20).unwrap())
+                    .unwrap()
+                    .unwrap();
                 let (message, feedback) = decoder.receive(parsed).unwrap();
                 black_box(message);
                 if let Some(feedback) = feedback

@@ -18,6 +18,14 @@ pub fn dictionary() -> &'static [u8] {
     include_bytes!("../../assets/binary-fixed-fine.zstd")
 }
 
+/// Dictionary compression level for packed checkpoints. Level 6 measures
+/// 10–18% smaller independent frames than level 3 for ~10–35 µs per frame on
+/// the host, against the 89–374 µs bitpack encode beside it; decompression is
+/// level-independent, so this costs clients nothing. The level is not part of
+/// the wire format — ZSTD decodes any level against the same dictionary — so
+/// there is no selector for it and no protocol bump when it changes.
+const CHECKPOINT_LEVEL: i32 = 6;
+
 pub(crate) struct Compressor {
     inner: zstd::bulk::Compressor<'static>,
     /// Packed frames emitted uncompressed because dictionary compression
@@ -29,7 +37,7 @@ impl Compressor {
     /// The dictionary compressor for packed `RMB0` checkpoints.
     pub(crate) fn new() -> Self {
         Self {
-            inner: zstd::bulk::Compressor::with_dictionary(3, dictionary())
+            inner: zstd::bulk::Compressor::with_dictionary(CHECKPOINT_LEVEL, dictionary())
                 .expect("embedded binary dictionary"),
             raw_fallbacks: 0,
         }
