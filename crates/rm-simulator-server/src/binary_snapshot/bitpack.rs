@@ -12,8 +12,15 @@
 //!
 //! Deltas inherit shape from an explicitly named baseline tree, never the
 //! previous packet. Every value in a delta costs one "changed" bit; a changed
-//! sequence, map, option or enum adds one "same shape" bit and either recurses
-//! against the baseline or carries the new value in full. A [`Rounding`] rule
+//! map, option or enum adds one "same shape" bit and either recurses against
+//! the baseline or carries the new value in full. A changed sequence either
+//! pairs element by element with an equal-length baseline, or names how many
+//! leading baseline elements it drops and its new length, pairs the rest in
+//! order and carries elements past the baseline's end in full; the encoder
+//! aligns records on an integer or text first field such as an id. A delta
+//! header also carries a caller-defined hint ([`encode_hinted`]), which lets a
+//! caller transform the baseline (for instance predict it forward) the same
+//! way on both ends before differencing. A [`Rounding`] rule
 //! chooses by field path how `f64` values pack, and the decoder walks the same
 //! path, so no grid index travels: a [`Fixed::Grid`] value is a flag bit and
 //! its step count, and in a delta an exponential-Golomb step difference; a
@@ -136,9 +143,10 @@ pub const ROTATION_BITS: u32 = 15;
 /// Steps per unit for smallest-three components: the largest scale whose
 /// ±1/√2 range fits [`ROTATION_BITS`] signed bits.
 const ROTATION_SCALE: f64 = ((1_u64 << (ROTATION_BITS - 1)) - 1) as f64 * std::f64::consts::SQRT_2;
-/// Exponential-Golomb order for smallest-three component step differences,
-/// the smallest measured over the dictionary training workloads.
-const ROTATION_K: u32 = 7;
+/// Exponential-Golomb order for smallest-three component step differences
+/// against a dead-reckoned baseline (protocol 42), swept with the grid orders
+/// in `fixed_point`.
+const ROTATION_K: u32 = 4;
 /// Largest accepted |norm² - 1| for a smallest-three quaternion. It must admit
 /// a tie-raised reconstruction (about 1e-4 off unit at most); physics
 /// quaternions are unit far more closely.
@@ -297,9 +305,10 @@ fn invalid() -> Error {
 /// One value in the serde data model with its names stripped. Retained
 /// baselines are kept in this form, so a delta can be decoded without
 /// re-encoding the baseline.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum Node {
     /// `()`, a unit struct, or the payload of a unit variant. Zero bits.
+    #[default]
     Unit,
     /// One bit.
     Bool(bool),
@@ -502,6 +511,31 @@ pub fn encode(
     epoch: u64,
     base_id: u64,
 ) -> io::Result<Vec<u8>> {
+    encode_hinted(node, baseline, epoch, base_id, 0)
+}
+
+/// [`encode`] with a caller-defined `hint` in a delta frame's header, after the
+/// baseline id. The codec gives it no meaning; a caller that transforms the
+/// named baseline before differencing (such as predicting it forward in time)
+/// puts the transform's parameter here, so the decoder can read it with
+/// [`hint`] and apply the same transform before decoding the body. A full frame
+/// carries no hint and ignores `hint`.
+///
+/// ```
+/// use rm_simulator_server::binary_snapshot::bitpack::{encode, encode_hinted, hint, to_node};
+/// let before = to_node(&[1_u32, 2]).unwrap();
+/// let after = to_node(&[1_u32, 3]).unwrap();
+/// let delta = encode_hinted(&after, Some(&before), 3, 1, 300).unwrap();
+/// assert_eq!(hint(&delta).unwrap(), 300);
+/// assert_eq!(hint(&encode(&after, None, 3, 1).unwrap()).unwrap(), 0);
+/// ```
+pub fn encode_hinted(
+    node: &Node,
+    baseline: Option<&Node>,
+    epoch: u64,
+    base_id: u64,
+    hint: u64,
+) -> io::Result<Vec<u8>> {
     if baseline.is_some() && base_id == 0 {
         return Err(invalid().into());
     }
@@ -511,6 +545,9 @@ pub fn encode(
     w.bits(u64::from(baseline.is_some()), 1);
     w.var(epoch);
     w.var(base_id);
+    if baseline.is_some() {
+        w.var(hint);
+    }
     match baseline {
         Some(base) => w.delta(base, node, 0)?,
         None => w.full(node, 0)?,
@@ -527,6 +564,19 @@ pub fn header(bytes: &[u8]) -> io::Result<(bool, u64, u64)> {
     }
     let mut r = Reader::new(bytes, 32);
     Ok((r.bit1()?, r.var()?, r.var()?))
+}
+
+/// The [`encode_hinted`] hint of a delta frame, or zero for a full frame. Like
+/// [`header`], this does not validate the body.
+pub fn hint(bytes: &[u8]) -> io::Result<u64> {
+    let (delta, ..) = header(bytes)?;
+    if !delta {
+        return Ok(0);
+    }
+    let mut r = Reader::new(bytes, 33);
+    r.var()?;
+    r.var()?;
+    Ok(r.var()?)
 }
 
 /// Decode against only the named retained baseline, with every number exact.
@@ -584,6 +634,9 @@ pub fn decode_with<T: DeserializeOwned, R: Rounding>(
     r.bit1()?;
     r.var()?;
     r.var()?;
+    if delta {
+        r.var()?;
+    }
     let value = T::deserialize(BitDe {
         r: &mut r,
         base,
@@ -1294,13 +1347,26 @@ impl Writer {
                 }
             }
             (Node::Seq(a), Node::Seq(b)) => {
-                self.bits(u64::from(a.len() == b.len()), 1);
-                if a.len() == b.len() {
+                let drop = seq_alignment(a, b);
+                if drop == 0 && a.len() == b.len() {
+                    self.bits(1, 1);
                     for (a, b) in a.iter().zip(b) {
                         self.delta(a, b, depth + 1)?;
                     }
                 } else {
-                    self.full(after, depth + 1)?;
+                    // Realigned: the baseline's first `drop` elements are gone,
+                    // the rest pair with the new ones in order, and any new
+                    // element past the baseline travels in full.
+                    self.bits(0, 1);
+                    self.var(drop as u64);
+                    self.var(b.len() as u64);
+                    let mut bases = a[drop..].iter();
+                    for item in b {
+                        match bases.next() {
+                            Some(base) => self.delta(base, item, depth + 1)?,
+                            None => self.full(item, depth + 1)?,
+                        }
+                    }
                 }
             }
             (Node::Map(a), Node::Map(b)) => {
@@ -1339,6 +1405,37 @@ impl Writer {
             _ => return Err(Error::new("baseline has a different type")),
         }
         Ok(())
+    }
+}
+
+/// How many leading baseline elements a changed sequence drops before its
+/// elements pair with the baseline's in order. Records are matched on their
+/// first field when it is an integer or text (an identity such as a projectile
+/// id): the first baseline element whose key equals the new first element's
+/// key starts the pairing. With no such match an equal-length sequence pairs
+/// in place and any other is sent in full (every baseline element dropped).
+fn seq_alignment(a: &[Node], b: &[Node]) -> usize {
+    fn key(node: &Node) -> Option<&Node> {
+        let node = match node {
+            Node::Aligned(inner) => inner,
+            other => other,
+        };
+        match node {
+            Node::Tuple(items) => match items.first()? {
+                key @ (Node::Uint(_) | Node::Int(_) | Node::Text(_)) => Some(key),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    let found = b
+        .first()
+        .and_then(key)
+        .and_then(|first| a.iter().position(|base| key(base) == Some(first)));
+    match found {
+        Some(drop) => drop,
+        None if a.len() == b.len() => 0,
+        None => a.len(),
     }
 }
 
@@ -1674,6 +1771,7 @@ impl<'x, 'b, R: Rounding> BitDe<'_, 'x, 'b, R> {
             bases: bases.map(|b| b.iter()),
             remaining: len,
             fields: fields.map(|f| f.iter()),
+            tail_full: false,
         };
         let value = visitor.visit_seq(&mut seq)?;
         if seq.remaining != 0 {
@@ -1820,10 +1918,29 @@ impl<'de, R: Rounding> de::Deserializer<'de> for BitDe<'_, '_, '_, R> {
         if let Entry::Same(base) = entry {
             return de::Deserializer::deserialize_any(NodeDe(base), visitor);
         }
-        match self.shape(entry)? {
-            Some(Node::Seq(items)) => self.items(Some(items), items.len(), None, visitor),
-            Some(_) => Err(invalid()),
-            None => {
+        match entry {
+            Entry::Changed(Node::Seq(items)) => {
+                if self.r.bit1()? {
+                    return self.items(Some(items), items.len(), None, visitor);
+                }
+                let drop = usize::try_from(self.r.var()?).map_err(|_| invalid())?;
+                let bases = items.get(drop..).ok_or_else(invalid)?;
+                let len = self.r.length()?;
+                let mut seq = BitSeq {
+                    de: self.child(None),
+                    bases: Some(bases.iter()),
+                    remaining: len,
+                    fields: None,
+                    tail_full: true,
+                };
+                let value = visitor.visit_seq(&mut seq)?;
+                if seq.remaining != 0 {
+                    return Err(mismatch());
+                }
+                Ok(value)
+            }
+            Entry::Changed(_) => Err(invalid()),
+            _ => {
                 let len = self.r.length()?;
                 self.items(None, len, None, visitor)
             }
@@ -1917,6 +2034,9 @@ struct BitSeq<'s, 'x, 'b, R> {
     /// A struct's field names in declaration order, which select each field's
     /// rule as the serializer's names did.
     fields: Option<std::slice::Iter<'static, &'static str>>,
+    /// A realigned sequence: elements past the baseline's end arrive in full
+    /// instead of being a shape mismatch.
+    tail_full: bool,
 }
 impl<'de, R: Rounding> de::SeqAccess<'de> for BitSeq<'_, '_, '_, R> {
     type Error = Error;
@@ -1929,7 +2049,11 @@ impl<'de, R: Rounding> de::SeqAccess<'de> for BitSeq<'_, '_, '_, R> {
         }
         self.remaining -= 1;
         let base = match &mut self.bases {
-            Some(bases) => Some(bases.next().ok_or_else(mismatch)?),
+            Some(bases) => match bases.next() {
+                Some(base) => Some(base),
+                None if self.tail_full => None,
+                None => return Err(mismatch()),
+            },
             None => None,
         };
         let rule = match &mut self.fields {
@@ -2454,6 +2578,50 @@ mod tests {
     }
 
     #[test]
+    fn changed_sequences_realign_on_their_first_field() {
+        type Ball = (u64, f64);
+        let round = |base: &[Ball], next: &[Ball]| {
+            let (base, next) = (to_node(&base).unwrap(), to_node(&next).unwrap());
+            let bytes = encode(&next, Some(&base), 0, 1).unwrap();
+            let (value, _) = decode::<Vec<Ball>>(&bytes, Some((&base, 1)), 0).unwrap();
+            assert_eq!(to_node(&value).unwrap(), next);
+            (bytes.len(), encode(&next, None, 0, 0).unwrap().len())
+        };
+        let base: Vec<Ball> = (1..=8).map(|id| (id, id as f64 * 1.5)).collect();
+        // Two retired at the front, two spawned at the back: the six survivors
+        // pair with their own baseline entries and only the spawns go in full.
+        let mut shifted: Vec<Ball> = base[2..].to_vec();
+        shifted.extend([(9, 13.5), (10, 15.)]);
+        let (delta, full) = round(&base, &shifted);
+        assert!(delta * 2 < full, "{delta} >= half of {full}");
+        assert_eq!(seq_alignment(&[to_node(&base[0]).unwrap()], &[]), 1);
+        // Shorter, longer, unkeyed and wholly new sequences stay lossless.
+        round(&base, &base[3..5]);
+        round(&base[..2], &base);
+        round(&base, &[(40, 1.), (41, 2.)]);
+        round(&base, &[]);
+        round(&[], &base);
+        let plain = |v: &[f64]| to_node(&v).unwrap();
+        let bytes = encode(&plain(&[1., 2., 3.]), Some(&plain(&[1., 2.])), 0, 1).unwrap();
+        let (value, _) = decode::<Vec<f64>>(&bytes, Some((&plain(&[1., 2.]), 1)), 0).unwrap();
+        assert_eq!(value, [1., 2., 3.]);
+        // A realignment that drops more than the baseline holds is refused.
+        let mut w = Writer::default();
+        w.bytes.extend_from_slice(MAGIC);
+        w.bit = 32;
+        w.bits(1, 1);
+        w.var(0);
+        w.var(1);
+        w.var(0);
+        w.bits(1, 1);
+        w.bits(0, 1);
+        w.var(9);
+        w.var(0);
+        let short = to_node(&[(1_u64, 1.0_f64)]).unwrap();
+        assert!(decode::<Vec<Ball>>(&w.bytes, Some((&short, 1)), 0).is_err());
+    }
+
+    #[test]
     fn traversal_limits_hold_for_full_and_delta_frames() {
         let value = vec![0_u8; MAX_NODES];
         assert!(encode(&to_node(&value).unwrap(), None, 0, 0).is_err());
@@ -2465,7 +2633,8 @@ mod tests {
         );
         // An unchanged subtree is one visit, however large.
         let bytes = encode(&fits, Some(&fits), 0, 1).unwrap();
-        assert_eq!(bytes.len(), 7);
+        // Magic, flag and epoch, id, the zero hint and the unchanged bit.
+        assert_eq!(bytes.len(), 8);
         assert_eq!(
             decode::<Vec<u8>>(&bytes, Some((&fits, 1)), 0)
                 .unwrap()

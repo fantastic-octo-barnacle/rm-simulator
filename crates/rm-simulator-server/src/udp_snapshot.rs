@@ -175,7 +175,10 @@ pub fn parse(bytes: &[u8]) -> io::Result<Option<Wire>> {
 /// outstanding, so the decoder never has to pin a third baseline. Every frame
 /// also carries an independent encoding of the same state, and the encoder falls
 /// back to it whenever the delta would be larger, which keeps a single lost
-/// baseline from stalling delivery. States are packed as fine fixed point and
+/// baseline from stalling delivery. A delta is coded against its baseline
+/// dead-reckoned to the frame's tick
+/// ([`crate::snapshot_codec::predict_baseline`]), so the decoder predicts the
+/// same tree from its pinned copy before reading the body. States are packed as fine fixed point and
 /// compressed with the embedded checkpoint dictionary; in raw mode the packed
 /// frame is emitted unchanged, so a loopback peer runs the same baseline
 /// rotation without the dictionary.
@@ -192,6 +195,8 @@ pub struct Encoder {
     /// Emit packed frames unchanged instead of dictionary-compressing them.
     raw: bool,
     compressor: crate::binary_snapshot::Compressor,
+    /// The active baseline dead-reckoned to the latest frame.
+    prediction: crate::snapshot_codec::Prediction,
     /// Bytes the same states would have taken as independent frames.
     pub full_bytes: u64,
     /// Bytes actually produced, deltas and full frames together.
@@ -209,6 +214,12 @@ impl Default for Encoder {
 /// Resend an unanswered `Retire` after this many frames; at the 32 ms broadcast
 /// period that is roughly half a second between attempts.
 const RETIRE_RESEND_FRAMES: u64 = 16;
+/// Encoded frames before a new baseline may be proposed. Application choice,
+/// not a rule constant: with dead-reckoned baselines (protocol 42) the
+/// remote-cadence probe measured 12 smallest over 8/12/16/24/32 once the
+/// extra `Retire`, `Stored` and `Retired` traffic is counted, and the scripted
+/// lossy links put 8, 12 and 16 within 0.1% of each other.
+const ROTATION_FRAMES: u64 = 12;
 impl Encoder {
     /// The packed fine fixed-point encoder with its trained dictionary, which is
     /// the network default.
@@ -234,6 +245,7 @@ impl Encoder {
             recover: false,
             raw,
             compressor: crate::binary_snapshot::Compressor::new(),
+            prediction: Default::default(),
             full_bytes: 0,
             sent_bytes: 0,
             deltas: 0,
@@ -296,6 +308,7 @@ impl Encoder {
     /// assert!(encoder.deltas > 0);
     /// ```
     pub fn snapshot(&mut self, epoch: u64, state: &SimulationState) -> io::Result<Vec<u8>> {
+        let tick = state.field.tick;
         let state = crate::snapshot_codec::checkpoint_node(state)?;
         if self.epoch != Some(epoch) {
             self.epoch = Some(epoch);
@@ -321,7 +334,7 @@ impl Encoder {
         }
         if self.pending.is_none()
             && self.retiring.is_none()
-            && (self.active.is_none() || self.count >= 32)
+            && (self.active.is_none() || self.count >= ROTATION_FRAMES)
         {
             self.next_id = self
                 .next_id
@@ -342,7 +355,13 @@ impl Encoder {
             let packed = bitpack::encode(baseline, None, epoch, *id)?;
             self.frame(packed)
         } else if let Some((id, baseline)) = &self.active {
-            let packed = bitpack::encode(&state, Some(baseline), epoch, *id)?;
+            let packed = crate::snapshot_codec::encode_checkpoint(
+                &state,
+                tick,
+                Some((baseline, *id)),
+                epoch,
+                &mut self.prediction,
+            )?;
             let delta = if self.raw {
                 packed
             } else {
@@ -416,6 +435,8 @@ pub struct Decoder {
     epoch: Option<u64>,
     baselines: BTreeMap<u64, Node>,
     retired_through: u64,
+    /// The referenced baseline dead-reckoned to the latest delta.
+    prediction: crate::snapshot_codec::Prediction,
     /// Deltas refused because their baseline was not pinned.
     pub missing: u64,
     /// Deltas applied to a pinned baseline.
@@ -481,8 +502,13 @@ impl Decoder {
                 }
                 // Cache wire-grid values; only the delivered state is normalized,
                 // or later deltas would use a different baseline.
-                let (message, node) =
-                    crate::snapshot_codec::decode_checkpoint(&bytes, base, epoch, pin)?;
+                let (message, node) = crate::snapshot_codec::decode_checkpoint_with(
+                    &bytes,
+                    base,
+                    epoch,
+                    pin,
+                    &mut self.prediction,
+                )?;
                 if let Some(node) = node {
                     if self.baselines.get(&id).is_some_and(|old| old != &node) {
                         return Err(io::Error::other("baseline identity changed"));
@@ -592,6 +618,76 @@ mod tests {
         }
         assert!(decoder.receive(wire(&old.unwrap())).unwrap().0.is_none());
         assert!(encoder.deltas > 100);
+    }
+
+    /// Dead-reckoned deltas deliver exactly the independent decode while
+    /// chassis join and leave, projectiles spawn and retire, the tick lead
+    /// varies and the epoch changes under a pinned baseline.
+    #[test]
+    fn predicted_deltas_survive_joins_leaves_projectiles_and_epochs() {
+        use crate::{layout::ChassisSpawner, protocol::Command};
+        use rm_simulator_world::{ChassisCommand, ChassisConfig, Team};
+        let mut simulation = Simulation::new(Field::new(&FieldConfig::default()).unwrap(), false)
+            .with_spawner(ChassisSpawner {
+                config: ChassisConfig::default(),
+                terrain: None,
+            });
+        let shooter = simulation.spawn_chassis(Team::Red).unwrap();
+        let drive = ChassisCommand {
+            forward_m_s: 1.5,
+            yaw_rate_rad_s: 0.7,
+            aim_yaw_rad: 0.3,
+            ..Default::default()
+        };
+        simulation
+            .apply(&Command::Chassis {
+                chassis: shooter,
+                command: drive,
+            })
+            .unwrap();
+        let mut encoder = Encoder::new();
+        let mut decoder = Decoder::default();
+        let mut guest = None;
+        for frame in 0..240_u64 {
+            simulation.step(1 + frame % 5).unwrap();
+            match frame % 60 {
+                10 => guest = Some(simulation.spawn_chassis(Team::Blue).unwrap()),
+                40 => simulation.remove_chassis(guest.take().unwrap()).unwrap(),
+                _ => {}
+            }
+            if frame % 8 == 0 {
+                simulation
+                    .apply(&Command::Fire {
+                        shooter,
+                        timing: None,
+                    })
+                    .unwrap();
+            }
+            let mut state = simulation.state();
+            let epoch = frame / 100;
+            state.snapshot_id = frame + 1;
+            state.input_epoch = epoch;
+            let independent = bitpack::encode(
+                &crate::snapshot_codec::checkpoint_node(&state).unwrap(),
+                None,
+                epoch,
+                0,
+            )
+            .unwrap();
+            let (expected, _) =
+                crate::snapshot_codec::decode_checkpoint(&independent, None, epoch, false).unwrap();
+            let bytes = encoder.snapshot(epoch, &state).unwrap();
+            let (actual, feedback) = decoder.receive(wire(&bytes)).unwrap();
+            assert_eq!(actual.as_ref(), Some(&expected), "frame {frame}");
+            if let Some(feedback) = feedback
+                && let Some(retire) = encoder.feedback(feedback)
+            {
+                let (_, feedback) = decoder.receive(retire).unwrap();
+                encoder.feedback(feedback.unwrap());
+            }
+            assert!(decoder.pinned() <= 2);
+        }
+        assert!(decoder.deltas > 150, "{} deltas", decoder.deltas);
     }
 
     #[test]

@@ -85,7 +85,7 @@ anchors so the handoff remains usable after line numbers move.
 | `udp_codec.rs`, `PeerCodec::send` | A periodic pilot snapshot produces both an owner anchor and a world checkpoint. Native pending bytes above 64 KiB skip world production but still produce the anchor. Nonperiodic confirmations take the full independent path. |
 | `owner_stream.rs`, `OwnerAnchor::encode` | The `RMO4` anchor is binary and names its chassis configuration by an acknowledged 8-byte `ConfigRevision` instead of repeating it; the earlier `RMO3` layout repeated a deflated JSON configuration in every anchor and is the pre-experiment baseline. The anchor includes 29 f64 values and five f64 values per wheel. With four wheels, the `RMO3` layout is about 438 bytes before compressed configuration: about 109.5 kbps at 31.25 Hz before native/network overhead, by source arithmetic, not measurement. `RMO5` (protocol 37) quantized the dynamics to 202 bytes and `RMO6` (protocol 40) packs both quaternions smallest-three for 198. |
 | `snapshot_codec.rs`, `PlayerSnapshot` | Compact checkpoints already omit and rebuild the field clock (`tick * tick_ns()`), the rune, outpost and referee views (from the restore, falling back to explicit views when they disagree), rune target and outpost armor poses, wheel hubs and tyre targets (only spin travels) and wheel contacts; projectile position/velocity use f32 and spin is omitted. Every absolute timestamp is a whole-tick code (0 = the clock's current time) with an exact sub-tick remainder list; protocol 39 measured checkpoint-relative ages larger in every workload because they change every frame. Since protocol 40 the field path implies each chassis/projectile fixed-point grid (no grid index on the wire), a delta sends an exponential-Golomb step difference (order per grid, picked on the training workloads; it beat a gamma-coded width header by 5% and the old 6-bit width by 7% in raw delta bytes, and dropping the per-component changed bit measured 0.8% larger), and chassis pose/turret rotations are smallest-three at 15 bits (2 + 45 bits against 4 × 16). Since protocol 41 the frame is laid out by change rate: byte-aligned slow records (header, shot results, hits, bases, rules with each rune and outpost aligned, chassis identity/configuration/command) come first and the dense chassis motion and projectiles after, and a chassis configuration or projectile policy equal to its preset travels as a variant index (a configuration otherwise costs about 123 packed bytes). Emulated from the packed tree on the `network_bandwidth` states, with a full-frame dictionary retrained per candidate (mean independent bytes per frame for 0/2/12 players/firing): the protocol 40 layout 35/206/526/499; presets without reordering 34/311/501/602, worse because the one-bit index shifts the bit phase of everything after it; presets plus slow-first reordering without alignment 36/141/444/433; the same with byte alignment 34/146/410/438; a byte-aligned slow body compressed apart from a raw fast body 35/187/948/512. The aligned single stream was taken. Preset index was chosen over a configuration sent once per epoch on the reliable lane because it needs no new acknowledged state and keeps an independent checkpoint decodable alone. Other restoration values retain f64. Failed-contact diagnostics are filtered. Do not propose these existing reductions as new work. |
-| `udp_snapshot.rs`, `Encoder::snapshot` | Acknowledged-baseline patches reference a pinned baseline, never the last transmitted revision. Each candidate is compared with an independent compressed alternative. Rotation becomes eligible after 32 encoded frames; proposal/retirement acknowledgements constrain actual rotation. At most two receiver baselines stay pinned. Since protocol 32 the production path encodes those checkpoints as bitpacked fine fixed point with the embedded ZSTD dictionary, and since protocol 35 that is the only periodic encoding any more: the `RM_NET_SNAPSHOT=json` deflated-JSON comparison path was removed with the selector. Since protocol 41 a packed delta under 128 bytes (`DELTA_COMPRESSION_MIN_BYTES`) is not offered to ZSTD: no delta that small shrank in any workload (idle deltas average 12 bytes, two drivers 61), 128–256-byte firing deltas did not shrink either, and twelve players' 300-byte deltas shrink about 29%. The skipped attempts cost about 0.4 µs idle and 2.5 µs with two drivers per frame. The dictionary is trained on independent frames and only the deltas that are compressed; against training on every delta it measured 0.3–1.5% smaller independent frames. |
+| `udp_snapshot.rs`, `Encoder::snapshot` | Acknowledged-baseline patches reference a pinned baseline, never the last transmitted revision. Each candidate is compared with an independent compressed alternative. Rotation becomes eligible after 32 encoded frames; proposal/retirement acknowledgements constrain actual rotation. At most two receiver baselines stay pinned. Since protocol 32 the production path encodes those checkpoints as bitpacked fine fixed point with the embedded ZSTD dictionary, and since protocol 35 that is the only periodic encoding any more: the `RM_NET_SNAPSHOT=json` deflated-JSON comparison path was removed with the selector. Since protocol 41 a packed delta under 128 bytes (`DELTA_COMPRESSION_MIN_BYTES`) is not offered to ZSTD: no delta that small shrank in any workload (idle deltas average 12 bytes, two drivers 61), 128–256-byte firing deltas did not shrink either, and twelve players' 300-byte deltas shrink about 29%. The skipped attempts cost about 0.4 µs idle and 2.5 µs with two drivers per frame. The dictionary is trained on independent frames and only the deltas that are compressed; against training on every delta it measured 0.3–1.5% smaller independent frames. Since protocol 42 a delta is coded against its baseline dead-reckoned to the frame's tick (`snapshot_codec::predict_baseline`, lead in the delta header), a changed sequence realigns on its elements' first field (projectile ids), the Golomb orders are retuned for residuals and rotation is eligible after 12 frames; see "Predicted baselines (protocol 42)" below. |
 | `snapshot_codec.rs`, `difference` | Arrays get element patches only when their lengths match. Spawn/despawn and changing history lengths can replace whole arrays. Equal-length insertion/removal can also shift identities and amplify patches. |
 | `simulation.rs`, `Simulation::state`; `host.rs`, `observe_simulation` | Every publication includes up to 32 recent shot results per shooter. Registered hits also have a reliable event path while snapshot history supplies recovery. Repetition is a candidate cost, not proof recovery data can safely be deleted. |
 | `udp_codec.rs`, `select_inputs`, `input_batch`, `ClientCodec::submit` | Input is already packed and deflated: 80 bytes/frame before compression. Batches retain four newest samples plus selected movement transitions within the 250 ms useful window, up to 12 frames. Aim/fire has its own unreliable retry path; other control is reliable. |
@@ -329,3 +329,99 @@ DEFLATE) carries every other message.
 Two hazards are worth carrying forward: a shared
 `CARGO_TARGET_DIR` lets a concurrent `cargo test` silently run another
 worktree's artifact, and `git stash` is repository-global across worktrees.
+
+## Predicted baselines (protocol 42)
+
+Measured 17 September 2026 on `feat/optimize-bandwidth`.
+
+**Change.** Before differencing, the encoder and the decoder carry the pinned
+baseline tree forward to the frame's tick from data in the baseline alone:
+chassis and turret translation += body velocity × dt, body rotation integrates
+angular velocity (32 first-order normalized substeps at most), turret rotation
+and held aim integrate the gimbal rates, wheel spin advances at the commanded
+surface speed (the airborne-wheel rate the physics uses), and a ball moves
+`p + v dt - g dt² / 2`, `v - g dt` under `GRAVITY_M_S2` until its first contact
+(after it, no acceleration). Positions, velocities and aims are integer
+arithmetic on grid steps with half-away rounding; rotations and wheel spin use
+only `+ - * / sqrt`; every result is re-quantized onto its grid, so both ends
+agree bit for bit on every platform (a property test compares the encoder's prediction with the decoder's on random snapshots; a UDP lane test covers joins, leaves, ball churn and epoch changes). The lead (`frame tick - baseline tick`) is a zigzag varint hint in the
+delta header, read before the body, and the predicted tick itself makes the
+body's tick field unchanged. Slow sections are not touched; the slow part of
+the predicted tree is cloned once per baseline and only the tick, motion and
+projectile subtrees are rewritten per frame (clone was half the cost at twelve
+chassis). Retained baselines stay unpredicted.
+
+Projectile prediction alone barely moved the firing stream because a delta
+sent any sequence whose length changed in full, and between a baseline and a
+frame balls retire at the front and spawn at the back. A changed sequence now
+codes a drop count and length, pairs the survivors (matched on an integer or
+text first field) and sends only the new elements in full. This generic bitpack
+change is what lets prediction reach the balls.
+
+**Variants** (`network_bandwidth`, 250 frames, sent bytes for 0/2/12
+players/firing; Golomb orders 8/6/7/12/10, rotation order 7, 32-frame rotation,
+before sequence realignment; protocol 41 was 3,291/16,034/56,136/82,800):
+
+| Predictor | Idle | 2 players | 12 players | Firing |
+|---|---:|---:|---:|---:|
+| none (hint only) | 3,536 | 16,279 | 56,387 | 83,060 |
+| tick | 3,112 | 15,855 | 55,961 | 82,633 |
+| + position | 3,112 | 15,392 | 53,314 | 82,115 |
+| + body rotation | 3,112 | 14,701 | 49,251 | 81,417 |
+| + ball linear | 3,112 | 14,701 | 49,251 | 81,086 |
+| + gravity always | 3,112 | 14,701 | 49,251 | 82,139 |
+| + gravity until first contact | 3,112 | 14,701 | 49,251 | 80,994 |
+| + wheels | 3,112 | 13,477 | 44,683 | 79,894 |
+| + gimbal and aim (all) | 3,112 | 13,461 | 43,101 | 79,878 |
+
+Realignment alone took firing from 83,060 to 57,996; with the full predictor it
+was 54,877. Final (retuned orders, 12-frame rotation): 3,382/12,603/29,700/45,702.
+Independent frames are unchanged (8,360/37,355/101,120/110,246).
+
+**CPU** (mean µs/frame, idle/2/12/firing): encode about 10/18/51/36 before and
+10/20/60/38 after; decode about 4/5/15/9 before and 3/7/27/15 after. Without
+the reused predicted tree it was 25/72/48 encode and 11/38/22 decode (2/12/firing).
+
+**Golomb orders.** Compressed sizes jump between neighbouring orders through
+the dictionary, so orders were swept on raw deltas and checked on the probe.
+The raw optimum (4/3/7/9/6, rotation 0) was worse on the probe. Chosen
+translation 6, velocity 4, rate 7, angle 11, projectile 7, rotation 4:
+`network_bandwidth` sum 100,257 (best 98,540) and probe 265,789 (best 263,026),
+both at 32-frame rotation.
+
+**Rotation** (with prediction). Probe downstream world+control plus upstream,
+summed over the four workloads: about 27,164/26,895/27,080/28,470/29,434 B/s for
+8/12/16/24/32 frames. `network_bandwidth` compressed sums:
+94,980/91,022/92,786/95,849/98,540/107,564 for 8/12/16/24/32/48. On the lossy
+`net_harness` scripted links (downstream plus upstream bytes):
+289,342/289,145/289,007/294,619/304,885 for 8/12/16/24/32. Chosen: 12.
+`RETIRE_RESEND_FRAMES` and the two-pinned-baseline limit are unchanged. Probe
+without prediction, realignment only: 6,896/19,745/107,186/115,605 selected
+bytes at 12 frames, 6,781/20,569/120,440/125,241 at 32.
+
+**Headline** (remote cadence probe, protocol 41 → 42):
+
+| Workload | Downstream B/s | Selected world bytes |
+|---|---:|---:|
+| idle | 7,521.5 → 7,591.0 | 6,334 → 6,349 |
+| drive | 8,857.9 → 8,865.3 | 19,698 → 19,092 |
+| fire | 23,712.3 → 16,808.8 | 168,242 → 98,527 |
+| twelve | 24,111.8 → 18,244.9 | 172,111 → 112,552 |
+
+Idle control traffic rises from 53 to 121 B/s with more rotations. Owner fire
+selected bytes fall 65,169 → 40,800. A dictionary retrained on predicted deltas
+gave 3,375/12,764/29,971/45,873 with larger independent frames, so it was kept.
+
+**Owner anchor: not delta-coded.** The anchor (`RMO6`, 198 B, 6,177.6 B/s at
+the remote cadence) is unreliable and independently usable by contract; the
+only acknowledged state the owner codec holds is the static configuration
+revision. Coding it against acknowledged dynamic state would need either anchor
+acknowledgements (new reliable feedback state) or a reference to a pinned world
+baseline, which couples anchor decoding to the checkpoint lane's pinning,
+retirement and `Missing` recovery and to a baseline that is up to 12 frames
+old. Neither fits the existing owner codec, so it was not built. Of the 198 B,
+about 147 are dynamic; a predicted residual might save roughly 100 B
+(≈3 kB/s), an estimate, not a measurement. A cheaper independent cut exists
+without new state: the four wheel hubs and tyre targets (56 B) are derivable
+from pose, configuration and command, as protocol 39 already does for
+checkpoints; that is left for a separate change.

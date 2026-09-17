@@ -4,6 +4,22 @@
 
 ## Unreleased
 
+- Predict checkpoint baselines before differencing them (protocol 42). A
+  delta is now coded against its pinned baseline dead-reckoned to the frame's
+  tick: chassis and turret positions advance by the body velocity, rotations
+  integrate the body and gimbal rates, wheels spin at their commanded speed and
+  balls fly ballistically until their first contact, all in integer grid steps
+  or basic IEEE 754 operations so host and client predict bit for bit. The tick
+  lead rides in the delta header. A changed sequence now realigns on its
+  elements' ids, so retired and newly fired projectiles no longer resend the
+  whole projectile array, and a baseline may rotate after 12 frames instead of
+  32. On the remote-cadence bandwidth probe, downstream bytes fall 29% firing
+  and 24% with twelve chassis, stay flat driving and rise 1% idle (more
+  baseline rotations); in `network_bandwidth`, sent bytes fall 21% with two
+  players, 47% with twelve and 45% firing and rise 3% idle. Host encode costs
+  up to about 9 µs more per frame and client decode up to 12 µs. The owner anchor is
+  unchanged.
+
 - Lay checkpoints out by change rate (protocol 41). Slow records (the header,
   shot results, hits, bases, rule state and each chassis' identity,
   configuration and command) come first, each byte-aligned so the dictionary
