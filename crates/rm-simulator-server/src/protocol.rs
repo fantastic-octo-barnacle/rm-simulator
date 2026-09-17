@@ -51,7 +51,13 @@ use serde::{Deserialize, Serialize};
 /// tyre targets (rebuilt from pose, configuration and command). Every absolute
 /// timestamp becomes a whole-tick code with an exact sub-tick remainder list,
 /// and the dictionary is retrained.
-pub const PROTOCOL_VERSION: u32 = 39;
+/// Version 40 tightens the checkpoint's float coding: the field path implies
+/// each fixed-point grid, so no grid index travels; delta step differences are
+/// exponential-Golomb codes instead of a 6-bit width and raw bits; chassis
+/// pose and turret rotations are smallest-three. The owner anchor (`RMO6`)
+/// packs its two quaternions smallest-three too, and the dictionary is
+/// retrained.
+pub const PROTOCOL_VERSION: u32 = 40;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///

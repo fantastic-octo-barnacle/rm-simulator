@@ -4,14 +4,17 @@
 //! Only dynamic chassis state and compact projectile position/velocity change.
 //! Commands, configuration, clocks, ids, contacts, scoring and hidden rules stay
 //! exact. Reconstructed quaternion components are normalized before physics use.
+use crate::binary_snapshot::bitpack::{Fixed, Grid, Rounding};
 use crate::protocol::ServerMessage;
 
 /// Fine fixed-point rounding for the compact player checkpoint, selected by the
-/// field path while the checkpoint is serialized. Chassis dynamics round onto
-/// their bitpack grids; projectile position and velocity round to 1 mm and
-/// 1 mm/s, both on the 18-bit grid, and a 0.5 mm/s velocity error drifts a
-/// four-second flight by about 2 mm, far below armor scale. A value outside a
-/// grid's range keeps its exact bits instead of clamping.
+/// field path while the checkpoint is serialized and again while it is decoded,
+/// so the wire never names a grid. Chassis dynamics round onto their bitpack
+/// grids and chassis rotations travel smallest-three; projectile position and
+/// velocity round to 1 mm and 1 mm/s, both on the 18-bit grid, and a 0.5 mm/s
+/// velocity error drifts a four-second flight by about 2 mm, far below armor
+/// scale. A value outside a grid's range keeps its exact bits instead of
+/// clamping.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Fine {
     /// The `PlayerSnapshot` itself.
@@ -24,50 +27,58 @@ pub enum Fine {
     Chassis,
     /// Inside the hoisted projectile array.
     Projectiles,
-    /// Every `f64` beneath rounds to `1 / scale` steps within a signed
-    /// integer of `width` bits.
-    Round {
-        /// Steps per unit.
-        scale: f64,
-        /// Signed integer width the rounded value must fit.
-        width: u32,
-    },
+    /// Every `f64` beneath rounds onto this grid.
+    Round(Grid),
+    /// A chassis `rotation_wxyz`, packed smallest-three
+    /// ([`Fixed::Rotation`]).
+    Rotation,
     /// Every value beneath stays exact.
     Exact,
 }
-impl crate::binary_snapshot::bitpack::Rounding for Fine {
+impl Rounding for Fine {
     fn field(self, key: &'static str) -> Self {
-        let round = |scale, width| Fine::Round { scale, width };
+        let round = |scale, width, k| Fine::Round(Grid { scale, width, k });
         match (self, key) {
             (Fine::Root, "state") => Fine::State,
             (Fine::Root, "projectiles") => Fine::Projectiles,
             (Fine::State, "field") => Fine::Field,
             (Fine::Field, "chassis") => Fine::Chassis,
             (Fine::Chassis, "config" | "command") => Fine::Exact,
-            (Fine::Chassis, "translation_m") => round(1000., 18),
-            (Fine::Chassis, "velocity_m_s") => round(100., 16),
-            (Fine::Chassis, "angular_velocity_rad_s" | "gimbal_velocity_rad_s") => round(1000., 18),
-            (Fine::Chassis, "held_aim_rad" | "wheel_spin_rad") => round(10000., 24),
-            (Fine::Chassis, "rotation_wxyz") => round(32767., 16),
+            (Fine::Chassis, "translation_m") => round(1000., 18, K_TRANSLATION),
+            (Fine::Chassis, "velocity_m_s") => round(100., 16, K_VELOCITY),
+            (Fine::Chassis, "angular_velocity_rad_s" | "gimbal_velocity_rad_s") => {
+                round(1000., 18, K_RATE)
+            }
+            (Fine::Chassis, "held_aim_rad" | "wheel_spin_rad") => round(10000., 24, K_ANGLE),
+            (Fine::Chassis, "rotation_wxyz") => Fine::Rotation,
             (Fine::Chassis, _) => Fine::Chassis,
-            (Fine::Projectiles, "position_m" | "velocity_m_s") => round(1000., 18),
+            (Fine::Projectiles, "position_m" | "velocity_m_s") => round(1000., 18, K_PROJECTILE),
             (Fine::Projectiles, _) => Fine::Projectiles,
-            (Fine::Round { .. }, _) => self,
+            (Fine::Round(_), _) => self,
             _ => Fine::Exact,
         }
     }
-    fn round(self, value: f64) -> f64 {
-        let Fine::Round { scale, width } = self else {
-            return value;
-        };
-        let q = (value * scale).round();
-        let bound = (1_u64 << (width - 1)) as f64;
-        if !q.is_finite() || q < -bound || q >= bound {
-            return value;
+    fn fixed(self) -> Fixed {
+        match self {
+            Fine::Round(grid) => Fixed::Grid(grid),
+            Fine::Rotation => Fixed::Rotation,
+            _ => Fixed::Exact,
         }
-        q / scale
     }
 }
+// Exponential-Golomb orders for delta step differences, each the smallest
+// measured over the dictionary training workloads (deltas against 32-frame
+// retained baselines); application choices, not rule constants.
+/// Chassis translation, millimetre steps.
+const K_TRANSLATION: u32 = 8;
+/// Chassis linear velocity, centimetre-per-second steps.
+const K_VELOCITY: u32 = 6;
+/// Chassis and gimbal rates, milliradian-per-second steps.
+const K_RATE: u32 = 7;
+/// Held aim and unbounded wheel spin, 0.1 mrad steps.
+const K_ANGLE: u32 = 12;
+/// Projectile position and velocity, millimetre steps.
+const K_PROJECTILE: u32 = 10;
 
 /// Normalize quantized rotations at the physics adapter boundary. Wire values
 /// stay on their grid so the binary codec and retained baselines remain exact.
@@ -102,27 +113,34 @@ pub fn normalize_pose(pose: &mut rm_simulator_world::Pose) -> std::io::Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::binary_snapshot::bitpack::Rounding;
 
     #[test]
     fn rounding_has_half_step_error_and_never_clamps_extreme_values() {
+        let round = |rule: Fine, v: f64| match rule.fixed() {
+            Fixed::Grid(grid) => grid.round(v),
+            _ => v,
+        };
         let rule = Fine::Root.field("projectiles").field("position_m");
         let values = [-200., -131.072, -1.23456, 0.0005, 131.0709, 200.];
-        let rounded = values.map(|v| rule.round(v));
+        let rounded = values.map(|v| round(rule, v));
         assert_eq!(rounded, [-200., -131.072, -1.235, 0.001, 131.071, 200.]);
         let chassis = Fine::Root.field("state").field("field").field("chassis");
         assert_eq!(
-            chassis.field("pose").field("translation_m").round(1.23456),
+            round(chassis.field("pose").field("translation_m"), 1.23456),
             1.235
         );
         assert_eq!(
-            chassis.field("config").field("hub_m").round(1.23456),
+            round(chassis.field("config").field("hub_m"), 1.23456),
             1.23456
         );
         assert_eq!(
-            chassis.field("command").field("forward_m_s").round(1.23456),
+            round(chassis.field("command").field("forward_m_s"), 1.23456),
             1.23456
         );
         assert_eq!(Fine::Root.field("state").field("paused"), Fine::Exact);
+        assert_eq!(
+            chassis.field("turret").field("rotation_wxyz").fixed(),
+            Fixed::Rotation
+        );
     }
 }

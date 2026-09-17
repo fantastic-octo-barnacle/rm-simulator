@@ -13,10 +13,10 @@ experiment recorded in Git history.
 | Field | Value |
 |---|---|
 | Bytes | 32768 |
-| SHA-256 | `d0b9d360de64060659adeb755d6005c4a1273e1bd6be83f52acd27f0434aa2fb` |
-| Samples | 5314 full and retained-baseline delta candidates, 6,223,193 bytes |
-| Sample digest | `7ad720ca88614e7b45bb201c6a050cd99c6e71947499bcca28881842ecf55c5a` |
-| Encoding | Protocol 39 RMB1 positional bitpack, fixed-point grids, fine projectile precision, derived views and tick-coded stamps omitted |
+| SHA-256 | `611c22cda004091f6ec1c715fa5704fe5706122781d8795bf3cffc3e2c7e8d0a` |
+| Samples | 5314 full and retained-baseline delta candidates, 5,472,540 bytes |
+| Sample digest | `6248be84bfa675afa365d812e4ca4cae2930150a11c79b85543765a80d48eab0` |
+| Encoding | Protocol 40 RMB1 positional bitpack, path-implied fixed-point grids with exponential-Golomb deltas, smallest-three chassis rotations, fine projectile precision, derived views and tick-coded stamps omitted |
 | Compression frame | RMBZ + ZSTD level 6 |
 | Trainer | `train_binary_dictionaries`, separate training/evaluation scenarios |
 

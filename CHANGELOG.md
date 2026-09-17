@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+- Tighten checkpoint float coding (protocol 40). The field path now implies
+  each fixed-point grid, so no grid index travels; a delta codes the step
+  difference as an exponential-Golomb number instead of a 6-bit width and raw
+  bits; chassis pose and turret rotations are sent smallest-three (15-bit
+  components, at most 0.13 mrad of rotation error). The owner anchor (`RMO6`)
+  packs its quaternions the same way, 202 to 198 bytes. The dictionary is
+  retrained. Sent checkpoint bytes in `network_bandwidth` fall 31% with two
+  players, 40% with twelve and 13% firing; idle rises 2% (3,294 to 3,367).
+
 - Drop derived data from UDP checkpoints (protocol 39). The field clock, the
   rune, outpost and referee views, wheel hubs and tyre targets are rebuilt on
   decode from the tick, the restore's rule state and each chassis' pose,
