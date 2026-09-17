@@ -13,10 +13,10 @@ experiment recorded in Git history.
 | Field | Value |
 |---|---|
 | Bytes | 32768 |
-| SHA-256 | `611c22cda004091f6ec1c715fa5704fe5706122781d8795bf3cffc3e2c7e8d0a` |
-| Samples | 5314 full and retained-baseline delta candidates, 5,472,540 bytes |
-| Sample digest | `6248be84bfa675afa365d812e4ca4cae2930150a11c79b85543765a80d48eab0` |
-| Encoding | Protocol 40 RMB1 positional bitpack, path-implied fixed-point grids with exponential-Golomb deltas, smallest-three chassis rotations, fine projectile precision, derived views and tick-coded stamps omitted |
+| SHA-256 | `1484dbcb040b052659ce5bae1150b9152027c9f4a540a6703d9bdca2eaf5abd4` |
+| Samples | 4823 full frames and retained-baseline deltas of at least 128 bytes (smaller deltas are never compressed), 4,026,319 bytes |
+| Sample digest | `0f0a52d529c18f82fcb4b616ee864b72d71eab484fd6146afdf8387b1c1f5d6b` |
+| Encoding | Protocol 41 RMB1 positional bitpack laid out by change rate (byte-aligned slow records, then dense motion; chassis configuration and projectile policy presets), path-implied fixed-point grids with exponential-Golomb deltas, smallest-three chassis rotations, fine projectile precision, derived views and tick-coded stamps omitted |
 | Compression frame | RMBZ + ZSTD level 6 |
 | Trainer | `train_binary_dictionaries`, separate training/evaluation scenarios |
 

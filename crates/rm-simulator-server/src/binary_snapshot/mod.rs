@@ -12,7 +12,7 @@ pub mod fixed_point;
 /// Binary dictionary frame marker, distinct from plain ZSTD's [`crate::compression::MAGIC`].
 pub const MAGIC: &[u8; 4] = b"RMBZ";
 
-/// The fine fixed-point dictionary embedded in protocol 40. Replacing these
+/// The fine fixed-point dictionary embedded in protocol 41. Replacing these
 /// bytes requires a protocol version bump and held-out bandwidth evaluation.
 pub fn dictionary() -> &'static [u8] {
     include_bytes!("../../assets/binary-fixed-fine.zstd")
@@ -26,12 +26,22 @@ pub fn dictionary() -> &'static [u8] {
 /// there is no selector for it and no protocol bump when it changes.
 const CHECKPOINT_LEVEL: i32 = 6;
 
+/// Smallest packed delta worth a compression attempt. Application choice,
+/// measured on the protocol 41 `network_bandwidth` workloads: no delta under
+/// 128 bytes shrank at all (idle deltas are about 12 bytes, two drivers about
+/// 61), because the ZSTD frame and `RMBZ` magic cost more than the dense
+/// Golomb bits leave to find, while twelve players' 300-byte deltas shrink by
+/// about 29%. A delta below this is sent packed without trying.
+pub const DELTA_COMPRESSION_MIN_BYTES: usize = 128;
+
 pub(crate) struct Compressor {
     inner: zstd::bulk::Compressor<'static>,
     /// Packed frames emitted uncompressed because dictionary compression
     /// would not have shrunk them. The bare `RMB1` framing is the
     /// already-decoded signal, so no new header was needed.
     raw_fallbacks: u64,
+    /// Deltas sent packed without a compression attempt.
+    skipped_deltas: u64,
 }
 impl Compressor {
     /// The dictionary compressor for packed `RMB0` checkpoints.
@@ -40,6 +50,7 @@ impl Compressor {
             inner: zstd::bulk::Compressor::with_dictionary(CHECKPOINT_LEVEL, dictionary())
                 .expect("embedded binary dictionary"),
             raw_fallbacks: 0,
+            skipped_deltas: 0,
         }
     }
 
@@ -63,9 +74,26 @@ impl Compressor {
         frame
     }
 
+    /// [`Compressor::compress`] for a packed delta: one shorter than
+    /// [`DELTA_COMPRESSION_MIN_BYTES`] is returned unchanged without an
+    /// attempt and counted in [`Compressor::skipped_deltas`], not as a
+    /// fallback.
+    pub(crate) fn compress_delta(&mut self, raw: &[u8]) -> Vec<u8> {
+        if raw.len() < DELTA_COMPRESSION_MIN_BYTES {
+            self.skipped_deltas += 1;
+            return raw.to_vec();
+        }
+        self.compress(raw)
+    }
+
     /// Packed frames returned uncompressed by [`Compressor::compress`].
     pub(crate) fn raw_fallbacks(&self) -> u64 {
         self.raw_fallbacks
+    }
+
+    /// Small deltas [`Compressor::compress_delta`] sent without an attempt.
+    pub(crate) fn skipped_deltas(&self) -> u64 {
+        self.skipped_deltas
     }
 }
 
@@ -79,7 +107,7 @@ mod tests {
         assert_eq!(dictionary().len(), 32768);
         assert_eq!(
             format!("{:x}", Sha256::digest(dictionary())),
-            "611c22cda004091f6ec1c715fa5704fe5706122781d8795bf3cffc3e2c7e8d0a"
+            "1484dbcb040b052659ce5bae1150b9152027c9f4a540a6703d9bdca2eaf5abd4"
         );
         assert_eq!(
             dictionary(),
@@ -96,6 +124,22 @@ mod tests {
         assert!(framed.starts_with(MAGIC));
         assert!(framed.len() < packed.len());
         assert_eq!(compressor.raw_fallbacks(), 0);
+    }
+
+    #[test]
+    fn small_deltas_skip_the_compression_attempt() {
+        let mut compressor = Compressor::new();
+        let mut small = bitpack::MAGIC.to_vec();
+        small.extend([7u8; DELTA_COMPRESSION_MIN_BYTES - 5]);
+        assert_eq!(compressor.compress_delta(&small), small);
+        assert_eq!(
+            (compressor.skipped_deltas(), compressor.raw_fallbacks()),
+            (1, 0)
+        );
+        let mut large = small.clone();
+        large.push(7);
+        assert!(compressor.compress_delta(&large).starts_with(MAGIC));
+        assert_eq!(compressor.skipped_deltas(), 1);
     }
 
     #[test]

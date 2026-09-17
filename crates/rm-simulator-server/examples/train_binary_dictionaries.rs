@@ -4,8 +4,10 @@
 //! Usage: `cargo run --release --locked -p rm-simulator-server --example
 //! train_binary_dictionaries -- OUTPUT_DIRECTORY > training.csv`.
 //! Training uses independent synthetic scenarios, never evaluation checkpoints.
-//! Each candidate contributes full frames and deltas against 32-frame retained
-//! baselines. Dictionaries serve both forms, including recovery full frames.
+//! Each candidate contributes its full frame and, when it is at least
+//! `DELTA_COMPRESSION_MIN_BYTES`, its delta against a 32-frame retained
+//! baseline: smaller deltas are never compressed, so they would only dilute the
+//! dictionary. It serves both forms, including recovery full frames.
 #[path = "support/binary_dictionary.rs"]
 mod binary_dictionary;
 #[path = "support/bitpack.rs"]
@@ -48,13 +50,20 @@ fn main() {
                 samples.push(
                     bitpack::encode(&node, None, epoch, if proposing { id } else { 0 }).unwrap(),
                 );
+                let mut added = 1;
                 if proposing {
                     base = Some(node.clone());
                 } else {
-                    samples.push(bitpack::encode(&node, base.as_ref(), epoch, id).unwrap());
+                    let delta = bitpack::encode(&node, base.as_ref(), epoch, id).unwrap();
+                    if delta.len()
+                        >= rm_simulator_server::binary_snapshot::DELTA_COMPRESSION_MIN_BYTES
+                    {
+                        samples.push(delta);
+                        added = 2;
+                    }
                 }
                 // Verify full and delta samples against the same retained state.
-                for sample in samples.iter().rev().take(if proposing { 1 } else { 2 }) {
+                for sample in samples.iter().rev().take(added) {
                     let (_, decoded) =
                         decode_checkpoint(sample, base.as_ref().map(|b| (b, id)), epoch, true)
                             .unwrap();

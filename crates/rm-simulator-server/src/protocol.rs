@@ -57,7 +57,13 @@ use serde::{Deserialize, Serialize};
 /// pose and turret rotations are smallest-three. The owner anchor (`RMO6`)
 /// packs its two quaternions smallest-three too, and the dictionary is
 /// retrained.
-pub const PROTOCOL_VERSION: u32 = 40;
+/// Version 41 lays the checkpoint out by change rate: byte-aligned slow
+/// records (header, shot results, hits, bases, rules, chassis identity,
+/// configuration and command) precede the dense chassis motion and
+/// projectiles; chassis configurations and the projectile policy travel as a
+/// preset index when they equal one, exactly otherwise. Deltas under 128
+/// bytes skip compression, and the dictionary is retrained.
+pub const PROTOCOL_VERSION: u32 = 41;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///

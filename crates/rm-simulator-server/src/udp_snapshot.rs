@@ -246,6 +246,12 @@ impl Encoder {
     pub fn raw_fallbacks(&self) -> u64 {
         self.compressor.raw_fallbacks()
     }
+    /// Deltas below
+    /// [`crate::binary_snapshot::DELTA_COMPRESSION_MIN_BYTES`] sent packed
+    /// without a compression attempt, because none that small shrinks.
+    pub fn skipped_deltas(&self) -> u64 {
+        self.compressor.skipped_deltas()
+    }
     /// The `Retire` to resend, if its `Retired` answer has not arrived in time.
     /// Callers send it on the same reliable lane as the original.
     pub fn resend_retire(&mut self) -> Option<Wire> {
@@ -337,7 +343,11 @@ impl Encoder {
             self.frame(packed)
         } else if let Some((id, baseline)) = &self.active {
             let packed = bitpack::encode(&state, Some(baseline), epoch, *id)?;
-            let delta = self.frame(packed);
+            let delta = if self.raw {
+                packed
+            } else {
+                self.compressor.compress_delta(&packed)
+            };
             if delta.len() < independent.len() {
                 self.deltas += 1;
                 delta

@@ -4,6 +4,20 @@
 
 ## Unreleased
 
+- Lay checkpoints out by change rate (protocol 41). Slow records (the header,
+  shot results, hits, bases, rule state and each chassis' identity,
+  configuration and command) come first, each byte-aligned so the dictionary
+  matches them frame after frame; chassis motion and projectiles follow as
+  dense bits. A chassis configuration equal to the Infantry or Hero preset
+  travels as a one- or three-bit index instead of about 123 packed bytes, and
+  the default projectile policy as one bit; anything else still travels
+  exactly, so an independent checkpoint needs no earlier frame. Deltas under
+  128 bytes are no longer offered to ZSTD, which never shrank them. The
+  dictionary is retrained on independent frames and compressible deltas only.
+  In `network_bandwidth`, independent checkpoint bytes fall 23% idle, 28% with
+  two players, 23% with twelve and 12% firing (now below protocol 39 in every
+  workload); sent bytes fall 2%, 5%, 3% and 2%.
+
 - Tighten checkpoint float coding (protocol 40). The field path now implies
   each fixed-point grid, so no grid index travels; a delta codes the step
   difference as an exponential-Golomb number instead of a 6-bit width and raw
