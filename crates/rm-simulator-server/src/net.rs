@@ -417,7 +417,7 @@ fn record_loopback_frame(inbox: &ClientInbox, payload: &[u8]) {
         Some(b"RMRW") => "RMRW",
         Some(b"RMZ1") => "RMZ1",
         Some(b"RMBZ") => "RMBZ",
-        Some(b"RMO4") => "RMO4",
+        Some(b"RMO5") => "RMO5",
         Some(b"RMI3") => "RMI3",
         Some(b"RMC1") => "RMC1",
         Some(b"RMA1") => "RMA1",

@@ -14,10 +14,16 @@ use rm_simulator_world::{ChassisConfig, ChassisSnapshot};
 use serde::{Deserialize, Serialize};
 use std::io;
 
-/// Anchor magic, `RMO4`, checked before any field is read. The fourth revision
-/// replaces the deflated configuration that `RMO3` repeated in every anchor with
-/// a [`ConfigRevision`] reference, so the two layouts are not interchangeable.
-pub const MAGIC: &[u8; 4] = b"RMO4";
+/// Anchor magic, `RMO5`, checked before any field is read. The fifth revision
+/// keeps the `RMO4` header and configuration reference but quantizes every
+/// dynamic float: translations to millimetres, quaternions to 1/32767,
+/// velocities to 1 cm/s, rates to 1 mrad/s and aims to 0.1 mrad. Aims ride
+/// 32-bit alongside wheel roll because both rotate without bound; every other
+/// range fits 16 bits with room for violent motion (±327 m/s, ±32 rad/s). A
+/// hostile or corrupt anchor still decodes to finite values, and
+/// out-of-range or non-finite dynamics fail at encode time, so the datagram
+/// size stays fixed whatever the motion.
+pub const MAGIC: &[u8; 4] = b"RMO5";
 /// Largest accepted anchor datagram in bytes. An encoding past this fails
 /// rather than fragmenting, because one anchor must fit one datagram.
 pub const MAX_BYTES: usize = 1000;
@@ -143,11 +149,11 @@ impl OwnerAnchor {
     }
     /// Encode the anchor as a little-endian datagram.
     ///
-    /// Every f64 keeps full precision at a fixed eight bytes, so motion values
-    /// cannot change the datagram size. The chassis configuration is replaced by
-    /// its eight-byte [`ConfigRevision`], which the receiver must already hold
-    /// (see [`OwnerAnchor::decode`]). Errors only when the whole anchor exceeds
-    /// [`MAX_BYTES`].
+    /// The header (snapshot, epoch, time, placement, chassis, flags and the
+    /// configuration reference) keeps full width; every dynamic float is
+    /// quantized (see [`MAGIC`]), so motion values cannot change the datagram
+    /// size. Errors when a dynamic value is non-finite or outside its
+    /// quantized range, or when the whole anchor exceeds [`MAX_BYTES`].
     pub fn encode(&self) -> io::Result<Vec<u8>> {
         let mut bytes = MAGIC.to_vec();
         for n in [
@@ -163,38 +169,43 @@ impl OwnerAnchor {
         bytes.push(u8::from(self.owner.defeated));
         bytes.push(u8::from(self.owner.team == rm_simulator_world::Team::Blue));
         bytes.extend(self.config_revision().raw().to_le_bytes());
+        for v in self.owner.pose.translation_m {
+            bytes.extend(quantize_i32(v, POS_MM)?.to_le_bytes());
+        }
+        for v in self.owner.pose.rotation_wxyz {
+            bytes.extend(quantize_i16(v, QUAT_SCALE)?.to_le_bytes());
+        }
+        for v in self.owner.turret.translation_m {
+            bytes.extend(quantize_i32(v, POS_MM)?.to_le_bytes());
+        }
+        for v in self.owner.turret.rotation_wxyz {
+            bytes.extend(quantize_i16(v, QUAT_SCALE)?.to_le_bytes());
+        }
+        for v in self.owner.velocity_m_s {
+            bytes.extend(quantize_i16(v, VEL_SCALE)?.to_le_bytes());
+        }
+        for v in self.owner.angular_velocity_rad_s {
+            bytes.extend(quantize_i16(v, RATE_SCALE)?.to_le_bytes());
+        }
         let c = self.owner.command;
-        for n in self
-            .owner
-            .pose
-            .translation_m
-            .into_iter()
-            .chain(self.owner.pose.rotation_wxyz)
-            .chain(self.owner.turret.translation_m)
-            .chain(self.owner.turret.rotation_wxyz)
-            .chain(self.owner.velocity_m_s)
-            .chain(self.owner.angular_velocity_rad_s)
-            .chain([
-                c.forward_m_s,
-                c.left_m_s,
-                c.yaw_rate_rad_s,
-                c.aim_yaw_rad,
-                c.aim_pitch_rad,
-            ])
-            .chain(self.owner.held_aim_rad)
-            .chain(self.owner.gimbal_velocity_rad_s)
-        {
-            bytes.extend(n.to_le_bytes());
+        bytes.extend(quantize_i16(c.forward_m_s, POS_MM)?.to_le_bytes());
+        bytes.extend(quantize_i16(c.left_m_s, POS_MM)?.to_le_bytes());
+        bytes.extend(quantize_i16(c.yaw_rate_rad_s, RATE_SCALE)?.to_le_bytes());
+        bytes.extend(quantize_i32(c.aim_yaw_rad, AIM_SCALE)?.to_le_bytes());
+        bytes.extend(quantize_i32(c.aim_pitch_rad, AIM_SCALE)?.to_le_bytes());
+        for v in self.owner.held_aim_rad {
+            bytes.extend(quantize_i32(v, AIM_SCALE)?.to_le_bytes());
+        }
+        for v in self.owner.gimbal_velocity_rad_s {
+            bytes.extend(quantize_i16(v, RATE_SCALE)?.to_le_bytes());
         }
         bytes.push(u8::try_from(self.owner.wheels.len()).map_err(|_| invalid())?);
         for wheel in &self.owner.wheels {
-            for n in wheel
-                .hub_m
-                .into_iter()
-                .chain([wheel.spin_rad, wheel.target_m_s])
-            {
-                bytes.extend(n.to_le_bytes());
+            for v in wheel.hub_m {
+                bytes.extend(quantize_i32(v, POS_MM)?.to_le_bytes());
             }
+            bytes.extend(quantize_i32(wheel.spin_rad, AIM_SCALE)?.to_le_bytes());
+            bytes.extend(quantize_i16(wheel.target_m_s, POS_MM)?.to_le_bytes());
         }
         if bytes.len() > MAX_BYTES {
             return Err(io::Error::other("owner anchor exceeds datagram budget"));
@@ -255,31 +266,24 @@ impl OwnerAnchor {
             return Err(invalid());
         }
         let pose = Pose {
-            translation_m: reader.array()?,
-            rotation_wxyz: reader.array()?,
+            translation_m: reader.q32_array::<3>(POS_MM)?,
+            rotation_wxyz: normalize(reader.q16_array::<4>(QUAT_SCALE)?)?,
         };
         let turret = Pose {
-            translation_m: reader.array()?,
-            rotation_wxyz: reader.array()?,
+            translation_m: reader.q32_array::<3>(POS_MM)?,
+            rotation_wxyz: normalize(reader.q16_array::<4>(QUAT_SCALE)?)?,
         };
-        let velocity_m_s = reader.array()?;
-        let angular_velocity_rad_s = reader.array()?;
-        let [
-            forward_m_s,
-            left_m_s,
-            yaw_rate_rad_s,
-            aim_yaw_rad,
-            aim_pitch_rad,
-        ] = reader.array()?;
+        let velocity_m_s = reader.q16_array::<3>(VEL_SCALE)?;
+        let angular_velocity_rad_s = reader.q16_array::<3>(RATE_SCALE)?;
         let command = ChassisCommand {
-            forward_m_s,
-            left_m_s,
-            yaw_rate_rad_s,
-            aim_yaw_rad,
-            aim_pitch_rad,
+            forward_m_s: reader.q16(POS_MM)?,
+            left_m_s: reader.q16(POS_MM)?,
+            yaw_rate_rad_s: reader.q16(RATE_SCALE)?,
+            aim_yaw_rad: reader.q32(AIM_SCALE)?,
+            aim_pitch_rad: reader.q32(AIM_SCALE)?,
         };
-        let held_aim_rad = reader.array()?;
-        let gimbal_velocity_rad_s = reader.array()?;
+        let held_aim_rad = reader.q32_array::<2>(AIM_SCALE)?;
+        let gimbal_velocity_rad_s = reader.q16_array::<2>(RATE_SCALE)?;
         let count = reader.take::<1>()?[0] as usize;
         if count != config.wheel_hubs_m.len() || count > 16 {
             return Err(invalid());
@@ -287,9 +291,9 @@ impl OwnerAnchor {
         let mut wheels = Vec::with_capacity(count);
         for _ in 0..count {
             wheels.push(WheelSnapshot {
-                hub_m: reader.array()?,
-                spin_rad: reader.array::<1>()?[0],
-                target_m_s: reader.array::<1>()?[0],
+                hub_m: reader.q32_array::<3>(POS_MM)?,
+                spin_rad: reader.q32(AIM_SCALE)?,
+                target_m_s: reader.q16(POS_MM)?,
                 contact: None,
             });
         }
@@ -319,9 +323,58 @@ impl OwnerAnchor {
         })
     }
 }
+/// Quantizer scales for the `RMO5` dynamic body, chosen to mirror the
+/// checkpoint precisions: millimetre positions, 1/32767 quaternions,
+/// centimetre-per-second velocities, milliradian-per-second rates and
+/// 0.1 mrad aims. Wheel roll keeps 0.1 mrad in 32 bits because roll is
+/// unbounded; every other range fits 16 bits with room for violent motion
+/// (±327 m/s, ±32 rad/s, ±3.27 rad of aim).
+const POS_MM: f64 = 1000.;
+/// Quaternion component scale, matching the checkpoint wire grid.
+const QUAT_SCALE: f64 = 32767.;
+/// Body and wheel velocity scale, in units per m/s.
+const VEL_SCALE: f64 = 100.;
+/// Body, gimbal and yaw rate scale, in units per rad/s.
+const RATE_SCALE: f64 = 1000.;
+/// Aim, held aim and wheel roll scale, in units per radian.
+const AIM_SCALE: f64 = 10000.;
 /// The single error every anchor or configuration parsing failure produces.
 fn invalid() -> io::Error {
     io::Error::other("invalid owner anchor")
+}
+/// Quantize one dynamic value to a signed wire integer, refusing a
+/// non-finite value or one outside the integer range instead of wrapping it.
+fn quantize_i16(value: f64, scale: f64) -> io::Result<i16> {
+    if !value.is_finite() {
+        return Err(invalid());
+    }
+    let quantized = (value * scale).round();
+    if !(i16::MIN as f64..=i16::MAX as f64).contains(&quantized) {
+        return Err(invalid());
+    }
+    Ok(quantized as i16)
+}
+/// Quantize one dynamic value to a signed 32-bit wire integer, refusing a
+/// non-finite value or one outside the integer range instead of wrapping it.
+fn quantize_i32(value: f64, scale: f64) -> io::Result<i32> {
+    if !value.is_finite() {
+        return Err(invalid());
+    }
+    let quantized = (value * scale).round();
+    if !(i32::MIN as f64..=i32::MAX as f64).contains(&quantized) {
+        return Err(invalid());
+    }
+    Ok(quantized as i32)
+}
+/// Normalize a decoded quaternion, rejecting a zero or grossly non-unit norm
+/// the same way the checkpoint boundary does: integers always decode finite,
+/// but a hostile anchor may still send a degenerate rotation.
+fn normalize(rotation_wxyz: [f64; 4]) -> io::Result<[f64; 4]> {
+    let norm = rotation_wxyz.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if !norm.is_finite() || norm < 0.5 || norm > 1.5 {
+        return Err(invalid());
+    }
+    Ok(rotation_wxyz.map(|v| v / norm))
 }
 /// A cursor over the anchor body after the four magic bytes.
 struct Reader<'a>(&'a [u8]);
@@ -350,15 +403,28 @@ impl Reader<'_> {
             _ => Err(invalid()),
         }
     }
-    /// Read `N` little-endian f64 values, rejecting any non-finite one because a
-    /// non-finite pose would poison the restored body.
-    fn array<const N: usize>(&mut self) -> io::Result<[f64; N]> {
+    /// Read one little-endian i16 and return its value in source units. The
+    /// integer always decodes finite; range is enforced at encode time.
+    fn q16(&mut self, scale: f64) -> io::Result<f64> {
+        Ok(i16::from_le_bytes(self.take()?) as f64 / scale)
+    }
+    /// Read `N` little-endian i16 values, each in source units.
+    fn q16_array<const N: usize>(&mut self, scale: f64) -> io::Result<[f64; N]> {
         let mut values = [0.; N];
         for value in &mut values {
-            *value = f64::from_le_bytes(self.take()?);
-            if !value.is_finite() {
-                return Err(invalid());
-            }
+            *value = self.q16(scale)?;
+        }
+        Ok(values)
+    }
+    /// Read one little-endian i32 and return its value in source units.
+    fn q32(&mut self, scale: f64) -> io::Result<f64> {
+        Ok(i32::from_le_bytes(self.take()?) as f64 / scale)
+    }
+    /// Read `N` little-endian i32 values, each in source units.
+    fn q32_array<const N: usize>(&mut self, scale: f64) -> io::Result<[f64; N]> {
+        let mut values = [0.; N];
+        for value in &mut values {
+            *value = self.q32(scale)?;
         }
         Ok(values)
     }
@@ -420,6 +486,106 @@ mod tests {
         assert!(mismatched.validate().is_err());
     }
 
+    /// Dynamics decode within their quantization steps: millimetre
+    /// positions, 1/32767 quaternions, 1 cm/s velocities, 1 mrad/s rates and
+    /// 0.1 mrad aims. Wheel roll keeps 0.1 mrad in 32 bits.
+    fn assert_quantized(expected: &OwnerAnchor, actual: &OwnerAnchor) {
+        assert_eq!(expected.snapshot_id, actual.snapshot_id);
+        assert_eq!(expected.input_epoch, actual.input_epoch);
+        assert_eq!(expected.time_ns, actual.time_ns);
+        assert_eq!(expected.paused, actual.paused);
+        assert_eq!(expected.owner.id, actual.owner.id);
+        assert_eq!(expected.owner.team, actual.owner.team);
+        assert_eq!(expected.owner.defeated, actual.owner.defeated);
+        assert_eq!(
+            expected.owner.placement_revision,
+            actual.owner.placement_revision
+        );
+        let close = |a: f64, b: f64, step: f64| {
+            assert!((a - b).abs() <= step, "{a} != {b} within one {step} step");
+        };
+        for (a, b) in expected
+            .owner
+            .pose
+            .translation_m
+            .into_iter()
+            .zip(actual.owner.pose.translation_m)
+        {
+            close(a, b, 0.001);
+        }
+        for (a, b) in expected
+            .owner
+            .pose
+            .rotation_wxyz
+            .into_iter()
+            .zip(actual.owner.pose.rotation_wxyz)
+        {
+            close(a, b, 1. / 32767. + 1e-9);
+        }
+        for (a, b) in expected
+            .owner
+            .velocity_m_s
+            .into_iter()
+            .zip(actual.owner.velocity_m_s)
+        {
+            close(a, b, 0.01);
+        }
+        for (a, b) in expected
+            .owner
+            .angular_velocity_rad_s
+            .into_iter()
+            .zip(actual.owner.angular_velocity_rad_s)
+        {
+            close(a, b, 0.001);
+        }
+        let pairs = [
+            (
+                expected.owner.command.forward_m_s,
+                actual.owner.command.forward_m_s,
+                0.001,
+            ),
+            (
+                expected.owner.command.left_m_s,
+                actual.owner.command.left_m_s,
+                0.001,
+            ),
+            (
+                expected.owner.command.yaw_rate_rad_s,
+                actual.owner.command.yaw_rate_rad_s,
+                0.001,
+            ),
+            (
+                expected.owner.command.aim_yaw_rad,
+                actual.owner.command.aim_yaw_rad,
+                0.0001,
+            ),
+            (
+                expected.owner.command.aim_pitch_rad,
+                actual.owner.command.aim_pitch_rad,
+                0.0001,
+            ),
+        ];
+        for (a, b, step) in pairs {
+            close(a, b, step);
+        }
+        for (a, b) in expected
+            .owner
+            .held_aim_rad
+            .into_iter()
+            .zip(actual.owner.held_aim_rad)
+        {
+            close(a, b, 0.0001);
+        }
+        assert_eq!(expected.owner.wheels.len(), actual.owner.wheels.len());
+        for (a, b) in expected.owner.wheels.iter().zip(&actual.owner.wheels) {
+            for (x, y) in a.hub_m.into_iter().zip(b.hub_m) {
+                close(x, y, 0.001);
+            }
+            close(a.spin_rad, b.spin_rad, 0.0001);
+            close(a.target_m_s, b.target_m_s, 0.001);
+        }
+    }
+
     #[test]
     fn anchor_round_trips_against_its_named_configuration_only() {
         let (state, chassis) = anchored(177, 5, 3);
@@ -429,16 +595,16 @@ mod tests {
             OwnerAnchor::config_revision_of(&bytes).unwrap(),
             anchor.config_revision()
         );
-        assert_eq!(
-            OwnerAnchor::decode(&bytes, &anchor.owner.config).unwrap(),
-            anchor
+        assert_quantized(
+            &anchor,
+            &OwnerAnchor::decode(&bytes, &anchor.owner.config).unwrap(),
         );
-        // The dynamic values stay lossless f64: a noisy anchor decodes exactly.
+        // The quantized layout is fixed: a noisy anchor costs the same bytes.
         let mut noisy = anchor.clone();
         noisy.owner.pose.translation_m = [1.12345678912345, -8.98765432123456, 0.12345678987654];
-        noisy.owner.velocity_m_s = [0.0000000000003726741, 1.9982749813213, 0.0017218836524];
+        noisy.owner.velocity_m_s = [0.3726741, 1.9982749813213, 0.0017218836524];
         for wheel in &mut noisy.owner.wheels {
-            wheel.spin_rad = 2.197827635331;
+            wheel.spin_rad = 200.197827635331;
             wheel.target_m_s = std::f64::consts::SQRT_2;
         }
         let packed = noisy.encode().unwrap();
@@ -447,9 +613,13 @@ mod tests {
             bytes.len(),
             "motion precision cannot grow the datagram"
         );
-        assert_eq!(
-            OwnerAnchor::decode(&packed, &noisy.owner.config).unwrap(),
-            noisy
+        assert_quantized(
+            &noisy,
+            &OwnerAnchor::decode(&packed, &noisy.owner.config).unwrap(),
+        );
+        assert!(
+            packed.len() < 230,
+            "the quantized anchor must stay near 202 bytes, not 444"
         );
         // A different configuration must not decode an anchor that names the
         // old one, even when its wheel count happens to agree.
@@ -471,16 +641,21 @@ mod tests {
         assert!(OwnerAnchor::decode(&vec![0; MAX_BYTES + 1], &config).is_err());
         // A wrong magic is not an anchor at all.
         let mut wrong_magic = bytes.clone();
-        wrong_magic[..4].copy_from_slice(b"RMO3");
+        wrong_magic[..4].copy_from_slice(b"RMO4");
         assert!(OwnerAnchor::decode(&wrong_magic, &config).is_err());
         // Trailing bytes mean the sender and receiver disagree.
         let mut trailing = bytes.clone();
         trailing.push(0);
         assert!(OwnerAnchor::decode(&trailing, &config).is_err());
-        // A non-finite dynamic value would poison the restored body.
+        // A non-finite dynamic value never reaches the wire: encode refuses
+        // it instead of silently sending a clamped integer.
         let mut nonfinite = anchor.clone();
         nonfinite.owner.pose.translation_m[0] = f64::NAN;
-        assert!(OwnerAnchor::decode(&nonfinite.encode().unwrap(), &config).is_err());
+        assert!(nonfinite.encode().is_err());
+        // An out-of-range dynamic value is refused the same way.
+        let mut far = anchor.clone();
+        far.owner.velocity_m_s[0] = 1e9;
+        assert!(far.encode().is_err());
         // A zero snapshot id is invalid on the wire.
         let mut zero = anchor;
         zero.snapshot_id = 0;

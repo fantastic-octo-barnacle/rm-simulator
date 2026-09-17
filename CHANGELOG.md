@@ -28,6 +28,21 @@
   restores balls from a compact checkpoint and holds four seconds of
   flight within 5 cm. No wire change: values stay f64, only coarser.
 
+- Carry projectile timestamps as checkpoint-relative ages in nanoseconds
+  instead of absolute simulation times (protocol 37). Ages stay under 2^33
+  for a four-second ball; reconstruction is exact, so replays retire the
+  same balls on the same ticks.
+
+- Quantize the owner anchor (`RMO5`, protocol 37): millimetre positions,
+  1/32767 quaternions, centimetre-per-second velocities,
+  milliradian-per-second rates and 0.1 mrad aims (32-bit, since aims and
+  wheel roll rotate without bound). The anchor drops from 444 bytes toward
+  202, cutting the fixed owner floor from 111 kbps to about 50 kbps;
+  out-of-range or non-finite dynamics fail at encode time so the size
+  stays fixed. Combined with the checkpoint work above, the probe's remote
+  workloads measure 87/114/287/299 kbps for idle/drive/fire/twelve, down
+  from 151/178/412/422 kbps.
+
 - Log per-peer network health on the server. The GNS host prints one `net
   peer=ID world=N skipped_congested=N replaced_unsent=N ...` line per admitted
   peer every 10 s, and appends snapshot totals to the disconnect line, so a

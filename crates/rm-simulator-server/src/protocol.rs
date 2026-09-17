@@ -38,7 +38,10 @@ use serde::{Deserialize, Serialize};
 /// Version 37 carries projectile timestamps as checkpoint-relative ages in
 /// nanoseconds instead of absolute simulation times, which keeps every age
 /// under 2^33 for a four-second ball. Reconstruction is exact, so prediction
-/// replays retire the same balls on the same ticks.
+/// replays retire the same balls on the same ticks. It also quantizes the
+/// owner anchor (`RMO5`): millimetre positions, 1/32767 quaternions,
+/// centimetre-per-second velocities, milliradian-per-second rates and
+/// 0.1 mrad aims cut the anchor from 444 bytes toward 202.
 pub const PROTOCOL_VERSION: u32 = 37;
 
 /// Explains incompatible host and client wire versions and how to resolve them.

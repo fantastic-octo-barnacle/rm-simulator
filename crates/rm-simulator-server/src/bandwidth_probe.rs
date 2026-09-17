@@ -143,7 +143,7 @@ pub(crate) struct Totals {
     pub(crate) down_packets: u64,
     /// Downstream application bytes, fragment headers included.
     pub(crate) down_bytes: u64,
-    /// Downstream bytes in RMO3 owner anchors, as delivered.
+    /// Downstream bytes in RMO5 owner anchors, as delivered.
     pub(crate) down_owner_bytes: u64,
     /// Owner anchor bytes produced before pacing replaced or dropped them.
     pub(crate) produced_owner_bytes: u64,
@@ -167,7 +167,7 @@ pub(crate) struct Totals {
     pub(crate) down_incomplete_frames: u64,
     /// Checkpoints the client dropped as no newer than the last one delivered.
     pub(crate) down_stale_updates: u64,
-    /// RMO3 owner anchor datagrams delivered to the client.
+    /// RMO5 owner anchor datagrams delivered to the client.
     pub(crate) down_anchors: u64,
     /// Upstream datagrams the client pacer released.
     pub(crate) up_packets: u64,
