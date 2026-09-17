@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
-//! Standalone Valve GameNetworkingSockets. Commands share a reliable ordered
-//! lane. Periodic state consists of independently compressed, sequenced frames;
-//! no shared delta baseline crosses this transport. All native I/O stays on workers.
+//! Standalone Valve GameNetworkingSockets. The shared peer codec selects reliable
+//! and unreliable lanes and encodes periodic state against acknowledged baselines.
+//! All native I/O stays on workers.
 use super::*;
-use crate::udp_codec::{ClientCodec, ClientEvent, HostPeer, io_error};
+use crate::udp_codec::{ClientCodec, HostPeer, io_error};
 use gns::sys::{ESteamNetworkingConfigValue as Config, ESteamNetworkingConnectionState as State};
 use gns::{GnsConfig, GnsConnection, GnsGlobal, GnsSocket, IsReady, IsServer, SendFlags};
 use std::collections::BTreeMap;
@@ -417,11 +417,13 @@ impl Client {
             .spawn(move || {
                 let result = (|| {
                     send(&socket, connection, hello, true, &incoming.observer, None)?;
-                    let mut codec = ClientCodec::new(
+                    let mut driver = ClientDriver::new(
                         epoch,
                         crate::pacing::configured_rate("RM_NET_UP_KIB_S", crate::pacing::upstream_default()),
-                        crate::udp_codec::MAX_INPUT_FRAMES,
                         false,
+                        incoming.clone(),
+                        commands,
+                        PumpBudget { commands: Some(64), packets: Some(16) },
                     );
                     let mut last_stats = Instant::now() - Duration::from_secs(1);
                     while !stopping.wait(POLL) {
@@ -440,25 +442,10 @@ impl Client {
                         }
                         for message in socket.receive_messages::<256>().map_err(io_error)? {
                             incoming.observer.packet("receive", None, message.payload());
-                            let started = Instant::now();
-                            let decoded = codec.receive(message.payload(), started);
-                            incoming.observer.work("client_decode", started.elapsed());
-                            match decoded? {
-                                Some(ClientEvent::Welcome(welcome)) => {
-                                    welcome_tx.try_send(Ok(*welcome)).map_err(io_error)?
-                                }
-                                Some(ClientEvent::Anchor(anchor)) => {
-                                    incoming
-                                        .data
-                                        .lock()
-                                        .unwrap_or_else(|p| p.into_inner())
-                                        .owner_anchor = Some(*anchor)
-                                }
-                                Some(ClientEvent::Message(message)) => incoming.publish(message)?,
-                                None => {}
+                            if let Some(welcome) = driver.receive(message.payload(), Instant::now())? {
+                                welcome_tx.try_send(Ok(welcome)).map_err(io_error)?;
                             }
                         }
-                        codec.acknowledge(Instant::now())?;
                         if last_stats.elapsed() >= Duration::from_millis(250) {
                             if let Ok((status, _)) =
                                 socket.get_connection_real_time_status(connection, 0)
@@ -476,7 +463,7 @@ impl Client {
                                     pending_unreliable_bytes: Some(
                                         status.pending_bytes_unreliable(),
                                     ),
-                                    ..codec.stats()
+                                    ..driver.stats()
                                 };
                                 incoming
                                     .data
@@ -486,12 +473,7 @@ impl Client {
                             }
                             last_stats = Instant::now();
                         }
-                        for _ in 0..64 {
-                            let queued = match commands.try_recv() {
-                                Ok(Some(queued)) => queued,
-                                Ok(None) | Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
-                                Err(mpsc::TryRecvError::Empty) => break,
-                            };
+                        if !driver.submit_pending(Instant::now, || {
                             let (status, _) = socket
                                 .get_connection_real_time_status(connection, 0)
                                 .map_err(io_error)?;
@@ -500,20 +482,13 @@ impl Client {
                             {
                                 return Err(io_error("GNS command backlog"));
                             }
-                            if let Some(command) = queued.command {
-                                incoming.observer.client("dequeue", None, &ClientMessage::Command(command), None);
-                            }
-                            let started = Instant::now();
-                            let result = codec.submit(queued, started);
-                            incoming.observer.work("client_encode", started.elapsed());
-                            result?;
+                            Ok(())
+                        })? {
+                            return Ok(());
                         }
-                        for _ in 0..16 {
-                            let Some(packet) = codec.next(Instant::now())? else {
-                                break;
-                            };
-                            send(&socket, connection, packet.bytes, packet.reliable, &incoming.observer, None)?;
-                        }
+                        driver.send_pending(Instant::now, |packet| {
+                            send(&socket, connection, packet.bytes, packet.reliable, &incoming.observer, None)
+                        })?;
                     }
                     Ok(())
                 })();
@@ -535,22 +510,7 @@ impl Client {
                 anyhow::bail!("GNS hello failed: {error}");
             }
         };
-        Ok(Self {
-            stream: stop,
-            timing,
-            transport_stats: None,
-            host_telemetry: None,
-            delivery_stats: None,
-            owner_anchor: None,
-            outbox,
-            inbox,
-            welcome,
-            latest: None,
-            roster: Vec::new(),
-            disconnected: None,
-            sent_confirmation: 0,
-            acknowledged: 0,
-        })
+        Ok(Self::new(stop, timing, outbox, inbox, welcome))
     }
 }
 /// Preserves peer rejection details, including the first release's legacy reason.
