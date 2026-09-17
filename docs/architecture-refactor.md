@@ -15,9 +15,9 @@ what it owns, its module layout and its permitted dependencies, and
 
 See [physics reuse](physics-reuse.md) for the public integration API and examples,
 and [development](development.md) for the targets that build and test the
-workspace. The broader standalone gameplay engine remains only partly integrated
-through `live::Resources`; extracting physics did not enable additional live
-rules. [Gameplay](gameplay.md) covers that engine's own coverage.
+workspace. The world referee runs the gameplay engine as the live
+rules authority; [Gameplay](gameplay.md) covers what it owns and what stays
+outside the live integration.
 
 ## Ownership
 
@@ -25,7 +25,8 @@ rules. [Gameplay](gameplay.md) covers that engine's own coverage.
 |---|---|
 | Rigid bodies, suspension, ballistics, raw contacts | Physics library |
 | Prescribed rotor/rail motion and fitted armor geometry | Physics library |
-| Activation, HP, detection intervals, damage, match state | World rules and referee |
+| Detection intervals, rune activation, match phase and clock | World rules and referee |
+| HP, damage, heat, allowance, economy, experience, respawn, round result | Gameplay engine, run by the referee |
 | Motion stop decisions and resolved mechanism positions | World, supplied to physics |
 | Complete restore and tick orchestration | `Field` facade |
 | Entity lifecycle, transforms and materials | Renderer |

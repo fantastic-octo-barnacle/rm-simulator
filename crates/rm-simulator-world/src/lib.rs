@@ -29,6 +29,9 @@ use rune::{BigRune, RuneError, SmallRune};
 pub use rune::{BigRuneMotion, HitOutcome, Rune, RuneKind, RuneSnapshot, RuneState};
 use serde::{Deserialize, Serialize};
 
+/// The match engine the referee runs, so callers can read
+/// [`RefereeSnapshot::game`] without depending on it directly.
+pub use rm_simulator_gameplay as gameplay;
 pub use rm_simulator_physics::{Pose, tick_ns};
 
 /// One armor module pose on a rotating mechanism, keyed by face index.
@@ -90,6 +93,10 @@ pub struct ChassisPlacement {
     /// is an infantry, which is what older serialized layouts hold.
     #[serde(default)]
     pub kind: RobotKind,
+    /// Section 5.4.2 performance type the robot selected; `None` takes the
+    /// class default (a long-range Hero, an HP-focused cooling-focused Infantry).
+    #[serde(default)]
+    pub performance: Option<rm_simulator_gameplay::Performance>,
 }
 
 /// Static field layout. Everything here is placed once; motion comes from the clock.
@@ -347,6 +354,13 @@ impl Field {
             })
             .transpose()
             .map_err(FieldError::Referee)?;
+        if referee.is_some()
+            && Team::BOTH
+                .iter()
+                .any(|team| config.bases.iter().filter(|b| b.team == *team).count() > 1)
+        {
+            return Err(FieldError::Referee("a team can have at most one base"));
+        }
         let bases: Vec<_> = config
             .bases
             .iter()
@@ -505,9 +519,10 @@ impl Field {
     }
 
     /// Launch a projectile along the muzzle's +x at the current tick,
-    /// credited to the chassis `shooter` when a pilot fires. A defeated
-    /// robot cannot fire, and a referee in a running round charges the
-    /// shooter's allowance. Returns the ball's identity.
+    /// credited to the chassis `shooter` when a pilot fires. With a referee a
+    /// defeated, weakened or overheated robot cannot fire, a robot fires only
+    /// its own caliber, and a running round charges heat, allowance and launch
+    /// experience. Returns the ball's identity.
     ///
     /// ```rust
     /// use rm_simulator_world::{BaseConfig, Caliber, Field, FieldConfig, Pose, Shot, Team};
@@ -564,19 +579,17 @@ impl Field {
         }
         Ok(id)
     }
-    /// Immediate pilot resupply using the live resource policy and team gold.
+    /// Immediate pilot resupply with team gold during a running round: one
+    /// Table 5-6 exchange unit, ten 17 mm rounds or one 42 mm round.
     pub fn buy_ammo(&mut self, chassis: u32, caliber: Caliber) -> Result<(), FieldError> {
-        let caliber = match caliber {
-            Caliber::Mm17 => rm_simulator_gameplay::Caliber::Mm17,
-            Caliber::Mm42 => rm_simulator_gameplay::Caliber::Mm42,
-        };
-        self.referee_command(RefereeCommand::Gameplay(
-            rm_simulator_gameplay::live::Edit::BuyAmmo {
-                id: chassis,
-                caliber,
-                amount: 1,
+        self.referee_command(RefereeCommand::BuyAmmo {
+            robot: chassis,
+            caliber,
+            amount: match caliber {
+                Caliber::Mm17 => 10,
+                Caliber::Mm42 => 1,
             },
-        ))
+        })
     }
 
     /// Put a chassis on the field and return its id; ids count up and are
@@ -598,7 +611,8 @@ impl Field {
     ///     config: ChassisConfig::default(),
     ///     spawn: Pose::at([x_m, 0.0, ChassisConfig::default().rest_height_m()]),
     ///     team: Team::Blue,
-    /// kind: RobotKind::Infantry,
+    ///     kind: RobotKind::Infantry,
+    ///     performance: None,
     /// };
     /// assert_eq!(field.add_chassis(&placement(0.0)).unwrap(), 0);
     /// assert_eq!(field.add_chassis(&placement(1.0)).unwrap(), 1);
@@ -614,7 +628,7 @@ impl Field {
             .map_err(FieldError::Chassis)?;
         if let Some(referee) = &mut self.referee {
             referee
-                .add_robot(id, placement.team, placement.kind)
+                .add_robot(id, placement.team, placement.kind, placement.performance)
                 .map_err(FieldError::Referee)?;
         }
         Ok(id)
@@ -645,6 +659,25 @@ impl Field {
     pub fn chassis_defeated(&self, id: u32) -> Option<bool> {
         self.physics.chassis_defeated(id)
     }
+    /// Mirror the gameplay engine's base and outpost HP onto the physical
+    /// bases and outposts at `time_ns`. Without a referee the physical objects
+    /// are their own authority.
+    fn sync_structures(&mut self, time_ns: u64) {
+        let Some(referee) = &self.referee else {
+            return;
+        };
+        for base in &mut self.bases {
+            (base.hp, base.shield_hp) = referee.base_hp(base.config.team);
+        }
+        for (index, outpost) in self.outposts.iter_mut().enumerate() {
+            if let Some(hp) = referee.outpost_hp(index)
+                && hp != outpost.hp()
+            {
+                // The game bounds outpost HP to 1500, which `set_hp` accepts.
+                let _ = outpost.set_hp(time_ns, hp);
+            }
+        }
+    }
     /// Cut the drive of every chassis whose robot the referee has defeated
     /// and restore the revived ones.
     fn sync_defeats(&mut self) {
@@ -670,7 +703,8 @@ impl Field {
     ///         config: ChassisConfig::default(),
     ///         spawn: Pose::at([0.0, 0.0, ChassisConfig::default().rest_height_m()]),
     ///         team: Team::Red,
-    /// kind: RobotKind::Infantry,
+    ///         kind: RobotKind::Infantry,
+    ///         performance: None,
     ///     }],
     ///     runes: vec![],
     ///     outposts: vec![],
@@ -808,50 +842,24 @@ impl Field {
             .referee
             .as_mut()
             .ok_or(FieldError::Referee("the field has no referee"))?;
-        if let RefereeCommand::SetBaseHp {
-            team,
-            hp,
-            shield_hp,
-        } = command
-        {
-            if hp > base::INITIAL_HP || shield_hp > base::INITIAL_HP {
-                return Err(FieldError::Referee("base HP or shield out of range"));
-            }
-            let base = self
-                .bases
-                .iter_mut()
-                .find(|b| b.config.team == team)
-                .ok_or(FieldError::Referee("unknown base"))?;
-            base.hp = hp;
-            base.shield_hp = shield_hp;
-            return Ok(());
-        }
-        if let RefereeCommand::SetOutpostHp { outpost, hp } = command {
-            let outpost = self
-                .outposts
-                .get_mut(outpost as usize)
-                .ok_or(FieldError::Referee("unknown outpost"))?;
-            outpost.set_hp(now_ns, hp).map_err(FieldError::Referee)?;
-            referee.observe_outposts(self.outposts.iter().map(|o| o.hp() == 0));
-            return Ok(());
-        }
         referee
             .command(command, now_ns, &mut self.runes)
             .map_err(FieldError::Referee)?;
-        if matches!(
-            command,
-            RefereeCommand::StartMatch | RefereeCommand::ResetMatch
-        ) {
-            for base in &mut self.bases {
-                base.reset();
+        match command {
+            RefereeCommand::StartMatch => {
+                let start_ns = now_ns.saturating_add(referee.config().countdown_ns);
+                for outpost in &mut self.outposts {
+                    outpost.start_match(start_ns);
+                }
             }
-            for outpost in &mut self.outposts {
-                outpost
-                    .set_hp(now_ns, outpost::INITIAL_HP)
-                    .map_err(FieldError::Referee)?;
+            RefereeCommand::ResetMatch => {
+                for outpost in &mut self.outposts {
+                    outpost.reset_training();
+                }
             }
+            _ => {}
         }
-        referee.observe_outposts(self.outposts.iter().map(|o| o.hp() == 0));
+        self.sync_structures(now_ns);
         self.sync_mechanisms();
         self.sync_defeats();
         Ok(())
@@ -940,6 +948,16 @@ impl Field {
                 for rune in &mut self.runes {
                     rune.advance_to(next_ns)?;
                 }
+                // Section 5.5.1: the middle armor stops for the round at 3:00.
+                if referee.phase() == MatchPhase::Running
+                    && referee.match_time_ns() >= referee::OUTPOST_ROTOR_STOP_NS
+                {
+                    for outpost in &mut self.outposts {
+                        outpost.stop(next_ns);
+                    }
+                }
+                self.sync_structures(next_ns);
+                self.sync_defeats();
             }
             self.sync_mechanisms();
             if idle {
@@ -971,15 +989,70 @@ impl Field {
                 observer(&hit);
                 self.hits.push(hit);
             }
-            if let Some(referee) = &mut self.referee {
-                referee.observe_outposts(self.outposts.iter().map(|outpost| outpost.hp() == 0));
-            }
+            self.apply_collisions(next_ns);
+            self.observe_zones();
+            self.sync_structures(next_ns);
             self.sync_mechanisms();
             self.sync_defeats();
             self.hits
                 .retain(|hit| next_ns.saturating_sub(hit.time_ns) < HIT_MEMORY_NS);
         }
         Ok(())
+    }
+    /// Table 5-2 collision damage for chassis armor modules that struck
+    /// something during a running round, at most once per module per 17 mm
+    /// detection interval.
+    fn apply_collisions(&mut self, time_ns: u64) {
+        let collisions = self.physics.take_armor_collisions();
+        let Some(referee) = &mut self.referee else {
+            return;
+        };
+        if referee.phase() != MatchPhase::Running {
+            return;
+        }
+        for collision in collisions {
+            let target = ArmorTarget::Chassis {
+                chassis: collision.chassis,
+                plate: collision.plate,
+            };
+            if self.physics.chassis_defeated(collision.chassis) != Some(false) {
+                continue;
+            }
+            if let Some(last) = self.last_detection_ns.get(&target)
+                && time_ns.saturating_sub(*last) < Caliber::Mm17.detection_interval_ns()
+            {
+                continue;
+            }
+            self.last_detection_ns.insert(target, time_ns);
+            referee.damage(
+                rm_simulator_gameplay::Target::Robot(collision.chassis),
+                referee::COLLISION_DAMAGE_HP,
+                rm_simulator_gameplay::DamageKind::Collision,
+            );
+        }
+    }
+    /// Report each robot's presence in its own outpost zone, within
+    /// [`referee::OUTPOST_ZONE_RADIUS_M`] of the outpost's origin, so a
+    /// running round can clear weakness and rebuild a destroyed outpost.
+    fn observe_zones(&mut self) {
+        let Some(referee) = &mut self.referee else {
+            return;
+        };
+        if referee.phase() != MatchPhase::Running {
+            return;
+        }
+        let robots: Vec<(u32, Team)> = referee.robots().map(|r| (r.id, r.team)).collect();
+        for (id, team) in robots {
+            let Some(position) = self.physics.chassis_position_m(id) else {
+                continue;
+            };
+            let detected = referee.outpost_of(team).is_some_and(|index| {
+                let origin = self.outposts[index].origin().translation_m;
+                (position[0] - origin[0]).hypot(position[1] - origin[1])
+                    <= referee::OUTPOST_ZONE_RADIUS_M
+            });
+            referee.observe_outpost_zone(id, detected);
+        }
     }
     /// Resolve match state only when articulated scenery actually needs it.
     fn sync_mechanisms(&mut self) {
@@ -1211,12 +1284,22 @@ mod tests {
                     config: ChassisConfig::default(),
                     team: Team::Red,
                     kind: RobotKind::Infantry,
+                    // A heat limit the eight quick shots below stay under.
+                    performance: Some(rm_simulator_gameplay::Performance::Fixed(
+                        rm_simulator_gameplay::Stats {
+                            max_hp: 200,
+                            chassis_power_w: 60,
+                            heat_limit: 1_000,
+                            cooling_per_s: 20,
+                        },
+                    )),
                     spawn: Pose::at([0.0, 0.0, spawn]),
                 },
                 ChassisPlacement {
                     config: ChassisConfig::default(),
                     team: Team::Blue,
                     kind: RobotKind::Infantry,
+                    performance: None,
                     spawn: Pose::at([1.5, 0.6, spawn]),
                 },
             ],
@@ -1225,6 +1308,7 @@ mod tests {
         };
         let mut field = Field::new(&config).unwrap();
         field.referee_command(RefereeCommand::StartMatch).unwrap();
+        field.step(ticks(referee::COUNTDOWN_NS)).unwrap();
         let drive = ChassisCommand {
             forward_m_s: 1.2,
             yaw_rate_rad_s: 0.4,
@@ -1865,6 +1949,7 @@ mod tests {
                 spawn: Pose::at([-10.0, -5.0, chassis.rest_height_m()]),
                 team: Team::Red,
                 kind: RobotKind::Infantry,
+                performance: None,
             }],
             ..FieldConfig::default()
         })
@@ -1989,6 +2074,7 @@ mod tests {
                 spawn: Pose::at([0.0, 0.0, ChassisConfig::default().rest_height_m()]),
                 team: Team::Red,
                 kind: RobotKind::Infantry,
+                performance: None,
             }],
         }
     }
@@ -2132,6 +2218,7 @@ mod tests {
             spawn: Pose::at([x, 0.0, ChassisConfig::default().rest_height_m()]),
             team,
             kind: RobotKind::Infantry,
+            performance: None,
         };
         let red = field.add_chassis(&placement(-2.0, Team::Red)).unwrap();
         let blue = field.add_chassis(&placement(-4.0, Team::Blue)).unwrap();
@@ -2190,6 +2277,7 @@ mod tests {
             spawn: Pose::at([x, 0.0, chassis.rest_height_m()]),
             team,
             kind: RobotKind::Infantry,
+            performance: None,
         };
         let red = field.add_chassis(&placement(0.0, Team::Red)).unwrap();
         let blue = field.add_chassis(&placement(-2.0, Team::Blue)).unwrap();
@@ -2226,8 +2314,8 @@ mod tests {
             }
         );
         assert!(hit.detected, "{hit:?}");
-        assert_eq!((hit.shooter, hit.damage), (Some(blue), 10));
-        assert_eq!(snapshot.referee.unwrap().robots[0].hp, 190);
+        assert_eq!((hit.shooter, hit.damage), (Some(blue), 20));
+        assert_eq!(snapshot.referee.unwrap().robots[0].hp, 180);
         assert!(!snapshot.chassis[0].defeated);
         // Wear it down; each shot waits out the 50 ms detection interval.
         // Inelastic spent balls can intercept later rounds; allow a bounded
@@ -2251,7 +2339,7 @@ mod tests {
         assert!(snapshot.chassis[0].defeated);
         assert!(matches!(
             field.fire(muzzle, Shot::at_limit(Caliber::Mm17), Some(red)),
-            Err(FieldError::Shot(_))
+            Err(FieldError::Referee(_))
         ));
         let drive = ChassisCommand {
             forward_m_s: 1.0,
@@ -2364,6 +2452,7 @@ mod tests {
             .add_chassis(&ChassisPlacement {
                 team: Team::Red,
                 kind: RobotKind::Infantry,
+                performance: None,
                 config: Default::default(),
                 spawn: Pose::at([0., 0., 2.]),
             })
@@ -2516,6 +2605,7 @@ mod tests {
                     spawn: Pose::default(),
                     team: Team::Red,
                     kind: RobotKind::Infantry,
+                    performance: None,
                 }],
                 ..FieldConfig::default()
             }),
@@ -2591,9 +2681,139 @@ mod tests {
         assert!(referee::ring_of(centre.local_offset_m) >= 4, "{centre:?}");
         assert!(centre.detected, "{centre:?}");
     }
+    fn referee_events(field: &Field) -> Vec<RefereeEvent> {
+        field
+            .snapshot()
+            .referee
+            .unwrap()
+            .events
+            .into_iter()
+            .map(|timed| timed.event)
+            .collect()
+    }
+    /// A defeated robot respawns where it stands, weakened until its own
+    /// outpost zone clears it; the rotor stops at 3:00 and a destroyed base
+    /// ends the round with a result.
     #[test]
-    fn live_resources_count_only_successful_running_shots_and_follow_roster() {
-        use rm_simulator_gameplay::live::{Edit, Settings};
+    fn a_match_respawns_in_place_stops_the_rotor_and_ends_on_a_base() {
+        let (mut config, _) = stationary_outpost();
+        config.outposts[0].speed_rad_s = 0.8;
+        config.referee = Some(RefereeConfig::alternating(0, 1));
+        let mut field = Field::new(&config).unwrap();
+        let red = field
+            .add_chassis(&ChassisPlacement {
+                config: ChassisConfig::default(),
+                spawn: Pose::at([4.0, 1.0, 1.0]),
+                team: Team::Red,
+                kind: RobotKind::Infantry,
+                performance: None,
+            })
+            .unwrap();
+        field.referee_command(RefereeCommand::StartMatch).unwrap();
+        // The match rotor rests through the countdown.
+        let resting = field.snapshot().outposts[0].angle_rad;
+        field.step(ticks(referee::COUNTDOWN_NS)).unwrap();
+        assert_eq!(field.snapshot().outposts[0].angle_rad, resting);
+        field.step(ticks(1_000_000_000)).unwrap();
+        let before = field.snapshot().chassis[0].pose.translation_m;
+        field
+            .referee_command(RefereeCommand::SetRobotHp { robot: red, hp: 0 })
+            .unwrap();
+        assert!(field.snapshot().chassis[0].defeated);
+        // Section 5.2.2: 10 s plus a tenth of the elapsed round.
+        field.step(ticks(10_200_000_000)).unwrap();
+        let events = referee_events(&field);
+        assert!(events.contains(&RefereeEvent::RobotRespawned { robot: red }));
+        assert!(events.contains(&RefereeEvent::WeaknessCleared { robot: red }));
+        let snapshot = field.snapshot();
+        let robot = &snapshot.referee.as_ref().unwrap().robots[0];
+        assert_eq!((robot.hp, robot.weakened), (20, false));
+        assert!(!snapshot.chassis[0].defeated);
+        let after = snapshot.chassis[0].pose.translation_m;
+        assert!((after[0] - before[0]).hypot(after[1] - before[1]) < 0.05);
+        // Section 5.5.1: the living rotor stops and homes at 3:00.
+        field
+            .referee_command(RefereeCommand::SkipTo {
+                match_time_ns: referee::OUTPOST_ROTOR_STOP_NS,
+            })
+            .unwrap();
+        field.step(1).unwrap();
+        let outpost = &field.snapshot().outposts[0];
+        assert!(
+            outpost.stopped_ns.is_some() && outpost.homing,
+            "{outpost:?}"
+        );
+        field
+            .referee_command(RefereeCommand::SetBaseHp {
+                team: Team::Blue,
+                hp: 0,
+                shield_hp: 0,
+            })
+            .unwrap();
+        field.step(1).unwrap();
+        assert_eq!(field.referee().unwrap().phase(), MatchPhase::Finished);
+        assert!(referee_events(&field).iter().any(|event| matches!(
+            event,
+            RefereeEvent::RoundResult(rm_simulator_gameplay::RoundResult::Decided {
+                winner: Some(rm_simulator_gameplay::Team::Red),
+                ..
+            })
+        )));
+    }
+    /// Driving armor into a wall during a round costs collision HP; idle
+    /// practice and a slow approach do not.
+    #[test]
+    fn armor_collisions_cost_hp_only_in_a_running_round() {
+        let run = |start: bool| {
+            let mut field = Field::new(&FieldConfig {
+                runes: Vec::new(),
+                outposts: Vec::new(),
+                referee: Some(RefereeConfig::alternating(0, 0)),
+                ..FieldConfig::default()
+            })
+            .unwrap();
+            field
+                .add_chassis(&ChassisPlacement {
+                    config: ChassisConfig::default(),
+                    spawn: Pose::at([0.0, 0.0, 1.0]),
+                    team: Team::Red,
+                    kind: RobotKind::Infantry,
+                    performance: None,
+                })
+                .unwrap();
+            field
+                .add_static_mesh(
+                    vec![
+                        [4.0, -2.0, 0.0],
+                        [4.0, 2.0, 0.0],
+                        [4.0, -2.0, 1.0],
+                        [4.0, 2.0, 1.0],
+                    ],
+                    vec![[0, 1, 2], [1, 3, 2]],
+                )
+                .unwrap();
+            if start {
+                field.referee_command(RefereeCommand::StartMatch).unwrap();
+            }
+            field.step(ticks(referee::COUNTDOWN_NS)).unwrap();
+            field
+                .command_chassis(
+                    0,
+                    ChassisCommand {
+                        forward_m_s: 3.0,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            field.step(ticks(4_000_000_000)).unwrap();
+            field.snapshot().referee.unwrap().robots[0].hp
+        };
+        let hp = run(true);
+        assert!(hp < 200 && hp % referee::COLLISION_DAMAGE_HP == 0, "{hp}");
+        assert_eq!(run(false), 200);
+    }
+    #[test]
+    fn launches_follow_the_gameplay_rules_and_roster() {
         let mut field = Field::new(&FieldConfig {
             referee: Some(RefereeConfig::alternating(1, 2)),
             ..Default::default()
@@ -2604,72 +2824,83 @@ mod tests {
             spawn: Pose::at([0.0, 0.0, 1.0]),
             team: Team::Red,
             kind: RobotKind::Infantry,
+            performance: None,
         };
         let id = field.add_chassis(&placement).unwrap();
         let shot = Shot::at_limit(Caliber::Mm17);
         let muzzle = Pose::at([0.0, 0.0, 2.0]);
+        let game = |field: &Field| field.snapshot().referee.unwrap().game;
+        // Idle practice fires freely without accounting, but only the
+        // robot's own caliber.
         field.fire(muzzle, shot, Some(id)).unwrap();
+        assert_eq!(game(&field).robots[0].shots_launched, [0; 2]);
         assert_eq!(
-            field.snapshot().referee.unwrap().gameplay.robots[0].shots,
-            [0; 2]
+            field.fire(muzzle, Shot::at_limit(Caliber::Mm42), Some(id)),
+            Err(FieldError::Referee(
+                "the robot has no launcher for that caliber"
+            ))
         );
-        field
-            .referee_command(RefereeCommand::Gameplay(Edit::Settings(Settings {
-                enforce_allowance: true,
-                initial_allowance: [1, 2],
-                ..Default::default()
-            })))
-            .unwrap();
         field.referee_command(RefereeCommand::StartMatch).unwrap();
-        field.step(5000).unwrap();
-        let before = field.snapshot().referee.unwrap().gameplay;
-        assert!(
-            field
-                .fire(
-                    muzzle,
-                    Shot {
-                        speed_m_s: f64::NAN,
-                        ..shot
-                    },
-                    Some(id)
-                )
-                .is_err()
+        assert_eq!(
+            field.fire(muzzle, shot, Some(id)),
+            Err(FieldError::Referee("the round is not running"))
         );
-        assert_eq!(field.snapshot().referee.unwrap().gameplay, before);
-        field.fire(muzzle, shot, Some(id)).unwrap();
-        assert!(field.fire(muzzle, shot, Some(id)).is_err());
-        field
-            .fire(muzzle, Shot::at_limit(Caliber::Mm42), Some(id))
-            .unwrap();
-        let r = field.snapshot().referee.unwrap().gameplay.robots.remove(0);
-        assert_eq!(r.allowance, [0, 1]);
-        assert_eq!(r.shots, [1, 1]);
+        field.step(ticks(6_100_000_000)).unwrap();
+        assert_eq!(field.referee().unwrap().phase(), MatchPhase::Running);
+        // A failed launch changes nothing.
+        let before = game(&field);
+        let nan = Shot {
+            speed_m_s: f64::NAN,
+            ..shot
+        };
+        assert!(field.fire(muzzle, nan, Some(id)).is_err());
+        assert_eq!(game(&field).robots, before.robots);
+        // Table 5-14 cooling-focused launcher: a 40 heat limit, 10 per shot.
+        for _ in 0..5 {
+            field.fire(muzzle, shot, Some(id)).unwrap();
+        }
+        let robot = game(&field).robots.remove(0);
+        assert_eq!(robot.shots_launched, [5, 0]);
+        assert!(robot.overheated);
+        assert_eq!(
+            field.fire(muzzle, shot, Some(id)),
+            Err(FieldError::Referee("the barrel is overheated"))
+        );
+        // Income arrived at 0:01, so ten rounds can be bought anywhere.
+        field.buy_ammo(id, Caliber::Mm17).unwrap();
+        assert_eq!(game(&field).robots[0].allowance, [10, 0]);
         field
             .referee_command(RefereeCommand::SetRobotHp { robot: id, hp: 0 })
             .unwrap();
-        let before = field.snapshot().referee.unwrap().gameplay;
-        assert!(
-            field
-                .fire(muzzle, Shot::at_limit(Caliber::Mm42), Some(id))
-                .is_err()
+        assert_eq!(
+            field.fire(muzzle, shot, Some(id)),
+            Err(FieldError::Referee("the robot is defeated"))
         );
-        assert_eq!(field.snapshot().referee.unwrap().gameplay, before);
+        assert_eq!(field.chassis_defeated(id), Some(true));
         let other = field
             .add_chassis(&ChassisPlacement {
                 spawn: Pose::at([3.0, 0.0, 1.0]),
                 ..placement
             })
             .unwrap();
+        field
+            .referee_command(RefereeCommand::SetPolicy(rm_simulator_gameplay::Policy {
+                enforce_allowance: true,
+                exchange_requires_zone: false,
+            }))
+            .unwrap();
         assert_eq!(
-            field.snapshot().referee.unwrap().gameplay.robots[1].allowance,
-            [1, 2]
+            field.fire(muzzle, shot, Some(other)),
+            Err(FieldError::Referee("no projectile allowance"))
         );
         field.remove_chassis(other).unwrap();
         field.referee_command(RefereeCommand::ResetMatch).unwrap();
-        let r = field.snapshot().referee.unwrap().gameplay;
-        assert_eq!(r.robots.len(), 1);
-        assert_eq!(r.robots[0].shots, [0; 2]);
-        assert_eq!(r.robots[0].allowance, [1, 2]);
+        let reset = game(&field);
+        assert_eq!(reset.robots.len(), 1);
+        assert_eq!(reset.robots[0].shots_launched, [0; 2]);
+        assert!(reset.robots[0].alive());
+        assert!(reset.policy.enforce_allowance);
+        assert_eq!(field.chassis_defeated(id), Some(false));
     }
     #[test]
     fn equipment_edits_affect_physics_defense_and_reset() {

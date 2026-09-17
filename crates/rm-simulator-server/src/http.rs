@@ -537,6 +537,7 @@ mod tests {
                 spawn: rm_simulator_world::Pose::at([0.0, 0.0, 1.0]),
                 team: rm_simulator_world::Team::Red,
                 kind: rm_simulator_world::RobotKind::Infantry,
+                performance: None,
             })
             .unwrap();
         let host = Host::new(Simulation::new(field, true), true).unwrap();
@@ -551,34 +552,29 @@ mod tests {
                 &simulation,
             )
         };
-        assert_eq!(post(serde_json::json!({"Gameplay":{"Settings":{"enforce_allowance":true,"initial_allowance":[3,2],"economy_enabled":true,"initial_gold":20,"minute_gold":5,"final_minute_gold":8,"ammo_price":[2,10]}}})).status, 200);
+        assert_eq!(post(serde_json::json!({"SetPolicy":{"enforce_allowance":true,"exchange_requires_zone":false}})).status, 200);
         assert_eq!(post(serde_json::json!("StartMatch")).status, 200);
         simulation.apply(&Command::Step { ticks: 6000 }).unwrap();
+        let game = || simulation.state().unwrap().field.referee.unwrap().game;
+        let gold = game().teams[0].gold;
         assert_eq!(
-            post(serde_json::json!({"Gameplay":{"BuyAmmo":{"id":id,"caliber":"Mm17","amount":4}}}))
-                .status,
+            post(serde_json::json!({"BuyAmmo":{"robot":id,"caliber":"Mm17","amount":20}})).status,
             200
         );
-        let snapshot = simulation.state().unwrap().field;
-        let g = &snapshot.referee.unwrap().gameplay;
-        assert_eq!(g.gold, [12, 20]);
-        assert_eq!(g.robots[0].allowance, [7, 2]);
+        assert_eq!(game().teams[0].gold, gold - 20);
+        assert_eq!(game().robots[0].allowance, [20, 0]);
         let before = simulation.state().unwrap();
         assert_eq!(
-            post(serde_json::json!({"Gameplay":{"BuyAmmo":{"id":id,"caliber":"Mm42","amount":2}}}))
-                .status,
+            post(serde_json::json!({"BuyAmmo":{"robot":id,"caliber":"Mm42","amount":2}})).status,
             400
         );
         assert_eq!(simulation.state().unwrap(), before);
         assert_eq!(
-            post(
-                serde_json::json!({"Gameplay":{"Robot":{"id":id,"allowance":[50,6],"shots":[8,9]}}})
-            )
-            .status,
+            post(serde_json::json!({"SetAllowance":{"robot":id,"allowance":[50,6]}})).status,
             200
         );
         assert_eq!(
-            post(serde_json::json!({"Gameplay":{"Gold":{"team":"Blue","gold":123}}})).status,
+            post(serde_json::json!({"SetGold":{"team":"Blue","gold":123}})).status,
             200
         );
         assert_eq!(
@@ -612,10 +608,10 @@ mod tests {
             &simulation,
         );
         let json: serde_json::Value = serde_json::from_slice(&state.body).unwrap();
-        assert_eq!(json["field"]["referee"]["gameplay"]["gold"][1], 123);
+        assert_eq!(json["field"]["referee"]["game"]["teams"][1]["gold"], 123);
         assert_eq!(
-            json["field"]["referee"]["gameplay"]["robots"][0]["shots"],
-            serde_json::json!([8, 9])
+            json["field"]["referee"]["game"]["robots"][0]["allowance"],
+            serde_json::json!([50, 6])
         );
         assert_eq!(json["field"]["outposts"][0]["hp"], 750);
         assert_eq!(

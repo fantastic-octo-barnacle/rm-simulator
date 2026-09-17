@@ -168,9 +168,9 @@ rules![
     ),
     (
         Damage,
-        "5.1.1; 5.5.3.1",
+        "5.1.1; 5.5.3.1; Table 5-2",
         External,
-        "Caller supplies detected raw damage and attribution; buffs, HP and attack totals applied here"
+        "Caller reports detected hits; Table 5-2 amounts, strongest attack/defense/vulnerability, centre-square 150 %, Hero 42 mm immunity and attack totals applied here"
     ),
     (
         LaunchSpeed,
@@ -224,7 +224,7 @@ rules![
         Allowance,
         "5.3.2; Tables 5-7-5-9",
         Implemented,
-        "Initial allowance, exchange limits/delays, consumption and sentry resupply; hero 42 mm immunity remains tracked"
+        "Initial allowance, exchange limits/delays, consumption and sentry resupply; over-allowance Hero 42 mm suspension"
     ),
     (
         Assembly,
@@ -234,15 +234,15 @@ rules![
     ),
     (
         Experience,
-        "5.4.1; Table 5-11",
-        External,
-        "Explicit experience awards, shot awards and capped level thresholds; kill/shared XP attribution not automatic"
+        "5.4.1; 5.5.2; Table 5-11",
+        Implemented,
+        "Launch, damage and kill experience, shared unattributed awards, Small Rune doubling and Large Rune sharing, capped level thresholds"
     ),
     (
         Performance,
-        "5.4.2; Tables 5-12-5-15",
-        Tracked,
-        "Caller supplies HP/heat/cooling configuration; level-up does not select performance tables"
+        "5.4.2; Tables 5-12-5-14",
+        Implemented,
+        "Hero and Infantry performance types by level; other kinds use caller-fixed values; chassis power reported only"
     ),
     (
         Base,

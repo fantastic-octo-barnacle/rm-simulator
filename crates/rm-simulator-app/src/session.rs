@@ -296,6 +296,13 @@ impl Session {
         let client_id = welcome.client_id;
         let chassis_id = welcome.chassis.as_ref().map(|c| c.id);
         let weapon = welcome.weapon;
+        if let (Some(chassis), Some(choice)) = (chassis_id, args.performance) {
+            // A refusal comes back as a notice; the rulebook default stays.
+            client.send(Command::SetPerformance {
+                chassis,
+                performance: choice.performance(),
+            })?;
+        }
         println!(
             "joined as client {}, {}",
             client_id,

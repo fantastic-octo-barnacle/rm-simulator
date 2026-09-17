@@ -17,9 +17,12 @@ fn game() -> Game {
             id: 1,
             team: Team::Red,
             kind: RobotKind::Sentry,
-            max_hp: 400,
-            heat_limit: 1_000_000,
-            cooling_per_s: 0,
+            performance: Performance::Fixed(Stats {
+                max_hp: 400,
+                chassis_power_w: 0,
+                heat_limit: 1_000_000,
+                cooling_per_s: 0,
+            }),
         }],
         ..Config::default()
     })

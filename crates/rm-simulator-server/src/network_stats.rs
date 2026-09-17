@@ -300,6 +300,7 @@ mod correction_tests {
             .add_chassis(&rm_simulator_world::ChassisPlacement {
                 team: rm_simulator_world::Team::Red,
                 kind: rm_simulator_world::RobotKind::Infantry,
+                performance: None,
                 spawn: rm_simulator_world::Pose::default(),
                 config: rm_simulator_world::ChassisConfig::default(),
             })

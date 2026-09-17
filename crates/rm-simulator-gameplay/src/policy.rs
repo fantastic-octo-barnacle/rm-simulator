@@ -63,8 +63,3 @@ pub(crate) fn record_ammo_launch(allowance: &mut u32, shots: &mut u64) -> bool {
     *allowance = allowance.saturating_sub(1);
     over_allowance
 }
-
-/// Whether an allowance permits a launch. An unenforced policy always permits.
-pub(crate) fn allowance_permits_launch(allowance: u32, enforce: bool) -> bool {
-    !enforce || allowance > 0
-}

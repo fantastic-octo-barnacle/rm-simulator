@@ -11,9 +11,11 @@ say. Live policy is in `crates/rm-simulator-world/src/referee.rs`, `rune.rs`,
 motion live in `rm-simulator-physics`. The base damage table below is a limited
 V2.2.0 source update; the other clauses retain their documented baseline.
 
-The `rm-simulator-gameplay::live` component now supplies resource tracking to
-this referee. The separate full-match engine also extends standalone coverage. See [gameplay.md](gameplay.md) for its implemented
-rules, integration boundary and ambiguous clauses in the English manual.
+The referee runs the `rm-simulator-gameplay` engine (`Game`) as the authority
+for every rule below except the clock's rune schedule and rune activation,
+which stay in the world. See [gameplay.md](gameplay.md) for the engine's
+implemented rules, its integration boundary and the manual's ambiguous
+clauses.
 
 ## Contents
 
@@ -23,8 +25,11 @@ rules, integration boundary and ambiguous clauses in the English manual.
 - [Rune activation mechanics (section 5.5.2.1)](#rune-activation-mechanics-section-5521)
 - [Rune buffs (Tables 5-16 and 5-17)](#rune-buffs-tables-5-16-and-5-17)
 - [Outposts (section 5.5.1, Tables 5-1 and 5-2, Figure 5-16)](#outposts-section-551-tables-5-1-and-5-2-figure-5-16)
-- [Robots (Tables 5-1, 5-2 and 5-13, Figure 5-16)](#robots-tables-5-1-5-2-and-5-13-figure-5-16)
-- [Live resources and operator overrides](#live-resources-and-operator-overrides)
+- [Robots (Tables 5-1, 5-2 and 5-11 to 5-14, Figure 5-16)](#robots-tables-5-1-5-2-and-5-11-to-5-14-figure-5-16)
+- [Death, respawn and weakness (section 5.2.2)](#death-respawn-and-weakness-section-522)
+- [Heat, allowance and economy (sections 5.1.3, 5.3)](#heat-allowance-and-economy-sections-513-53)
+- [Victory (section 5.8)](#victory-section-58)
+- [Operator overrides](#operator-overrides)
 - [Live base scoring and training bots](#live-base-scoring-and-training-bots)
 - [Assumptions, not rules](#assumptions-not-rules)
 - [Citation index](#citation-index)
@@ -36,6 +41,12 @@ rules, integration boundary and ambiguous clauses in the English manual.
 | Countdown before the round | 5 s | 6.5 |
 | Round length | 7 min | 6.6 |
 | Phases modelled | Idle, Countdown, Running, Finished | |
+| Rounds | One; no BO2/BO3/BO5 series | assumption |
+
+Idle is free practice: damage applies, but nothing is counted (no heat,
+allowance, experience, respawn timer or base-loss accounting) and outpost
+protection does not cover the base. The engine ticks at 1 ms; the referee
+advances it to the world's round time at the start of each 128 Hz tick.
 
 `StartMatch` enters Countdown; the round clock starts at 0:00 when Running
 begins. `SkipTo` jumps the round clock forward, at most to the end of the
@@ -120,85 +131,128 @@ Buff by average ring:
 | 8 to 9 | 200 % | 25 % | 3× |
 | > 9 | 300 % | 50 % | 5× |
 
-A Small Rune hit that lands on the wrong arm clears the recorded rings. In
-the simulator only the defense share does anything: it scales damage to the
-team's bases, outposts and robots, rounded to the
-nearest HP. Attack and cooling are carried in the snapshot for clients.
+A Small Rune hit that lands on the wrong arm clears the recorded rings. All
+three shares apply (section 5.5.3.1): attack scales the team's projectile
+damage, defense reduces damage to its bases, outposts and robots, and the
+cooling multiplier speeds its barrels' cooling. When buffs overlap the
+strongest of each kind applies. Penalty damage ignores defense. An activation
+also rewards experience (section 5.5.2): the Small Rune raises the team's
+experience rate while its buff lasts, the Big Rune shares a fixed award among
+the team's living robots.
 
 ## Outposts (section 5.5.1, Tables 5-1 and 5-2, Figure 5-16)
 
 | Item | Value |
 |---|---|
-| HP | 1500 |
-| Rotor speed | 0.8π rad/s, frozen when destroyed |
+| HP | 1500; 750 after a rebuild |
+| Rotor speed | 0.8π rad/s after a 5 s spin-up from the round start |
+| Rotor stop | At first destruction (holds the angle) or at 3:00 while alive (returns to its initial position over 10 s) |
 | Detection area | 101 × 94 mm effective rectangle of the middle armor |
 | Detection speed | > 12 m/s (17 mm), > 10 m/s (42 mm) normal speed |
 | Detection interval | 50 ms (17 mm), 200 ms (42 mm) per module |
 | Damage | 20 HP (17 mm), 200 HP (42 mm); ×1.5 in the 10 mm centre square |
 
-The referee applies the owning team's defense buff to outpost damage and
-reports `OutpostDestroyed` when HP reaches zero.
+In a match the rotor rests through the countdown and stays stopped for the rest
+of the round once it stops; a rebuilt outpost does not spin again. The spin-up
+and homing durations are assumptions: the manual says the rotor accelerates and
+returns, not how fast. Outside a match the rotor turns at full speed and
+restoring HP resumes it.
 
-## Robots (Tables 5-1, 5-2 and 5-13, Figure 5-16)
+Destroying an outpost opens its base to damage (`OutpostDestroyed`). Every
+1000 HP a base loses in a round gives its team one rebuild opportunity. A
+living robot that stays 10 s within 1.5 m (horizontally) of its team's
+destroyed outpost origin, before 5:00, rebuilds it with one opportunity
+(`OutpostRebuilt`). The 1.5 m zone stands in for the outpost RFID card,
+whose placement the simulator does not model.
 
-Every chassis on the field is a robot: the referee opens an HP record under
-the chassis id and team when the field adds it (`RobotJoined`) and drops it
-when the chassis leaves. Each `ChassisPlacement` names its `RobotKind`
-(Infantry or Hero, from the robot the pilot picked); all robots share the
-one `RobotConfig { max_hp }` of the configuration, by default the level-1
-HP-focused infantry's 200 HP (Table 5-13); no levelling and no per-kind HP
-is modelled.
+## Robots (Tables 5-1, 5-2 and 5-11 to 5-14, Figure 5-16)
+
+Every chassis on the field is a robot: the referee opens a record under the
+chassis id and team when the field adds it (`RobotJoined`) and drops it when
+the chassis leaves. Each `ChassisPlacement` names its `RobotKind` (Infantry or
+Hero) and an optional `performance` type; without one the section 5.4.2
+default applies (a long-range Hero, an HP-focused cooling-focused Infantry).
+HP, heat limit and cooling come from Tables 5-12 to 5-14 at the robot's
+level. Pilots pick a type with `--performance`; it cannot change while a
+round runs.
+
+Experience follows section 5.4.1 and Table 5-11: launches, damage dealt and
+kills award it, up to level 10 (`LevelUp`). A level-up raises current HP by the
+maximum HP gained.
 
 A chassis carries four small armor modules (front, left, back, right) on its
 body sides, leaning back 15° (an assumption; the manual gives no single
 angle). They detect like the outpost's small armor: the 101 × 94 mm area of
 Figure 5-16, above the Table 5-1 normal speeds (12 m/s for 17 mm, 10 m/s for
 42 mm), at most once per 50 ms (17 mm) or 200 ms (42 mm) per module. A
-detected strike removes 10 HP (17 mm) or 100 HP (42 mm), the Table 5-2
-values as recalled, through the owning team's defense buff; `RobotDamaged`
-names the chassis that fired. At zero HP the robot is defeated
-(`RobotDefeated`): its drive is cut, its aim freezes and it cannot fire until
-`ReviveRobot` or `SetRobotHp` restores it. Hosted pilots explicitly request revival through the defeat menu
-as a training shortcut, restoring only HP and retaining position and ammo/gold.
-The separate **Reset robot to spawn** button in the F3 debug panel also returns
-the robot upright to its original spawn. This is a server policy, not the competition respawn rule;
-standalone world rules still retain defeated robots until explicitly revived. A defeated robot absorbs no
-further damage. `DamageRobot` applies the same path without a shooter.
+detected strike removes 20 HP (17 mm) or 200 HP (42 mm, Table 5-2), scaled by
+the shooter's attack buff and the target's defense buff; `RobotDamaged` names
+the chassis that fired. 42 mm strikes score only while the attacking team
+has a Hero that launched 42 mm recently; a Hero launching past its allowance
+(with enforcement on) or three times after a defeat suspends that (section
+5.3.2).
 
-The sentry and full competition progression remain outside this live referee.
-Live base scoring is described below.
+An armor module struck by scenery or another robot faster than 1.5 m/s along
+its normal loses 2 HP (collision damage, section 5.1.1), at most once per
+module per 50 ms, only while Running. The speed threshold is an assumption.
 
-## Live resources and operator overrides
+## Death, respawn and weakness (section 5.2.2)
 
-The referee drives `rm-simulator-gameplay::live::Resources` on its round clock.
-Table 5-5 supplies default income at elapsed 1, 61, 121, 181, 241, 301 and
-361 seconds. Income amounts and enablement are editable in the HTTP panel.
-Disabled grants are skipped; clock skips process crossed boundaries on the next
-tick. Pause freezes them. Start/reset clears gold and counts but preserves policy.
+At zero HP a robot is defeated (`RobotDefeated`): its drive is cut, its aim
+freezes, it cannot fire and it absorbs no further damage. In a running round
+it respawns where it stands (`RobotRespawned`), after 10 s plus a tenth of the
+elapsed round in seconds plus 20 s per earlier paid respawn. Standing in its
+own base, resupply or living outpost zone accelerates the timer fourfold, as
+does a base below 2000 HP; of those zones only the outpost zone is detected.
 
-Successful Running-phase shots consume one allowance and increment the matching
-17 mm or 42 mm count. Exhaustion blocks fire only when enabled in the panel;
-tracking alone defaults on, enforcement off. Invalid and defeated-shooter launches
-do not count. Initial allowances default to zero for the simulated infantry,
-from Table 5-7, and apply on start/reset and robot admission. Operators can edit
-current allowances/counters and perform immediate resupply against team gold at
-configurable per-projectile prices. This is an operator facility, not a claim
-that RFID, exchange limits or remote purchases are implemented.
+A respawned robot comes back with 10 % of its maximum HP, weakened and
+invincible for 30 s. Weakened robots cannot fire. Reaching an own living
+outpost zone clears weakness (`WeaknessCleared`). A paid instant respawn
+(`InstantRespawn`, `80 × started minutes + 20 × level` gold) restores full HP
+with 3 s of weakness and invincibility.
 
-`SetOutpostHp` changes the physical outpost, including destruction and revival.
-Start/reset restores 1500 HP. `SetRuneOpportunities` adjusts availability;
-`SetRuneBuff` overrides defense, reported attack/cooling and expiry, cancelling
-an in-progress activation. These are simulator controls, not additional rules.
-Live base damage now follows the base scoring path described below.
+Respawning in place is an assumption: the manual respawns robots in their
+base, which the simulator does not locate. Outside a match pilots still revive
+themselves from the defeat menu, restoring only HP; during a match the host
+refuses that and the respawn timer applies.
 
-Pilots can use O/I to buy one 17 mm/42 mm round during Running. Purchases use
-team gold and the configured prices, defaulting to 1/10, and fail atomically
-when funds are insufficient. The host restricts purchases to the sender's chassis.
+## Heat, allowance and economy (sections 5.1.3, 5.3)
+
+Heat is always on in a match: each 17 mm launch adds 10 heat, each 42 mm launch
+100, cooling runs at 10 Hz, and a barrel over its limit locks launches until it
+cools; overshooting the limit by a further 100 (17 mm) or 200 (42 mm) locks
+the barrel for the round (Figure 5-1's `Q1 >= Q2`).
+Every launch in a match consumes allowance and counts toward experience.
+Refusing launches at zero allowance is the policy toggle `enforce_allowance`,
+off by default; `exchange_requires_zone` (also off) would require a service
+zone for exchanges, which the simulator does not detect.
+
+Table 5-5 grants income at elapsed 1, 61, 121, 181, 241, 301 and 361 seconds.
+Pilots exchange one Table 5-6 unit with O (ten 17 mm rounds for 10 gold) or
+I (one 42 mm round for 10 gold); a robot class that cannot fire the caliber is
+refused. Per-team exchange limits apply. Remote exchanges, HP purchases,
+assembly, highland, fortress and other buff zones are not connected.
+
+## Victory (section 5.8)
+
+A destroyed base ends the round. At 7:00 the round is compared in order: base
+HP, outposts, attack damage, then remaining robot HP. The result travels as
+`RoundResult`. When the manual does not decide the comparison the result is
+`NeedsRefereeDecision` and a referee settles it with `Adjudicate`.
+
+## Operator overrides
+
+`SetBaseHp`, `SetOutpostHp`, `SetGold`, `SetAllowance`, `SetPolicy`,
+`SetPerformance`, `SetRobotHp`, `DamageRobot` (penalty damage),
+`ReviveRobot`, `ClearWeakened`, `InstantRespawn`, `BuyAmmo`,
+`SetRuneOpportunities` and `SetRuneBuff` edit the match directly. A zero
+`SetOutpostHp` counts as a destruction. `SetRuneBuff` cancels an in-progress
+activation. These are simulator controls, not additional rules.
 
 ## Live base scoring and training bots
 
 Section 5.5.1 supplies 5,000 base HP, a separate initial 150-point shield, and
-outpost protection. Live bases spend shield before HP, receive the existing team
+outpost protection. Live bases spend shield before HP, receive the team's
 defense buff, and end Running on destruction. Idle training bypasses outpost
 protection. Start/reset restores HP and shield; `SetBaseHp` is an operator override.
 The CAD shields still physically block covered lower plates.
@@ -207,7 +261,7 @@ The base-specific damage table was checked in the locally available V2.2.0 manua
 Table 5-2: 17 mm does 5 HP to the upper front and 20 to the other five plates;
 42 mm does 200. Section 5.5.1's 10 mm centre square multiplies damage by 1.5,
 rounded to the nearest HP. Detection geometry/cadence reuse the small-armor path.
-Unrelated robot damage constants are unchanged. The seventh, dart plate accepts
+The seventh, dart plate accepts
 20/200 projectile damage without the centre bonus solely as a requested training
 override. Real dart launch/target-mode rules are not implemented here.
 
@@ -218,13 +272,18 @@ and scoring. Lower placements inherit the exporter's approximate reconstruction.
 
 Bots are privileged training chassis, capped at 32. Constant spin commands use the
 ordinary motors and suspension on world ticks. They have normal HP, stop on defeat,
-resume after revival, never shoot, and are removed independently of connected pilots.
+respawn like any robot, never shoot, and are removed independently of connected pilots.
 
 ## Assumptions, not rules
 
 - Activated rune arms blink three times at 2 Hz, then stay lit.
 - A struck armor module shows grey for 50 ms (`--hit-flash-ms`).
 - Ring width 15 mm (figure reading).
+- Robots respawn where they fell; the manual respawns them in the base.
+- The outpost zone is a 1.5 m circle around the outpost origin.
+- Rotor spin-up takes 5 s and homing 10 s.
+- Collision damage needs 1.5 m/s along the armor normal.
+- One round per match.
 - Robot damage rounding to the nearest HP follows the manual's rounding
   note in its terms section; the exact rounding rule for buffs is not
   spelled out for every case.
@@ -234,7 +293,15 @@ resume after revival, never shoot, and are removed independently of connected pi
 | Citation | Clause it maps to |
 |---|---|
 | Section 4.3.2.2 | Team assignment: one team per end, rune face and outpost ownership |
-| Section 5.5.1 | Outpost HP and behaviour; base HP, shield and outpost protection; rebuild scans; base damage centre square |
+| Section 5.1.1 | Collision damage |
+| Section 5.1.3 | Barrel heat, cooling and locks |
+| Section 5.2.2 | Respawn timer, weakness, invincibility, paid respawn |
+| Section 5.3.2 | Allowance, Hero 42 mm suspension |
+| Section 5.4.1 | Experience |
+| Section 5.4.2 | Performance types |
+| Section 5.5.1 | Outpost HP, rotor start and stop; base HP, shield and outpost protection; rebuild opportunities and scans; base damage centre square |
+| Section 5.5.3.1 | Strongest attack, defense and cooling buffs |
+| Section 5.8 | Round result |
 | Section 5.5.2 | Rune stages, opportunities and buff sources |
 | Section 5.5.2.1 | Rune activation mechanics and ring restrictions |
 | Section 6.5 | Countdown before the round, 5 s |
@@ -244,7 +311,8 @@ resume after revival, never shoot, and are removed independently of connected pi
 | Table 5-5 | Income schedule |
 | Table 5-6 | Resupply exchange |
 | Table 5-7 | Initial allowances |
-| Table 5-13 | Robot max HP, 200 HP infantry |
+| Table 5-11 | Experience per level |
+| Tables 5-12 to 5-14 | Hero and Infantry HP, heat limit and cooling by performance type and level |
 | Table 5-16 | Big Rune buff from the number of lit arms |
 | Table 5-17 | Big Rune buff from the average hit ring |
 | Figure 5-16 | Armor detection area, 101 × 94 mm |

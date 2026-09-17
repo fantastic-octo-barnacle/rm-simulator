@@ -9,41 +9,56 @@ fn config() -> Config {
                 id: 1,
                 team: Team::Red,
                 kind: RobotKind::Infantry,
-                max_hp: 200,
-                heat_limit: 100,
-                cooling_per_s: 20,
+                performance: Performance::Fixed(Stats {
+                    max_hp: 200,
+                    chassis_power_w: 0,
+                    heat_limit: 100,
+                    cooling_per_s: 20,
+                }),
             },
             RobotConfig {
                 id: 2,
                 team: Team::Blue,
                 kind: RobotKind::Infantry,
-                max_hp: 200,
-                heat_limit: 100,
-                cooling_per_s: 20,
+                performance: Performance::Fixed(Stats {
+                    max_hp: 200,
+                    chassis_power_w: 0,
+                    heat_limit: 100,
+                    cooling_per_s: 20,
+                }),
             },
             RobotConfig {
                 id: 3,
                 team: Team::Red,
                 kind: RobotKind::Engineer,
-                max_hp: 500,
-                heat_limit: 0,
-                cooling_per_s: 0,
+                performance: Performance::Fixed(Stats {
+                    max_hp: 500,
+                    chassis_power_w: 0,
+                    heat_limit: 0,
+                    cooling_per_s: 0,
+                }),
             },
             RobotConfig {
                 id: 4,
                 team: Team::Red,
                 kind: RobotKind::Sentry,
-                max_hp: 400,
-                heat_limit: 100,
-                cooling_per_s: 20,
+                performance: Performance::Fixed(Stats {
+                    max_hp: 400,
+                    chassis_power_w: 0,
+                    heat_limit: 100,
+                    cooling_per_s: 20,
+                }),
             },
             RobotConfig {
                 id: 5,
                 team: Team::Red,
                 kind: RobotKind::Drone,
-                max_hp: 100,
-                heat_limit: 100,
-                cooling_per_s: 20,
+                performance: Performance::Fixed(Stats {
+                    max_hp: 100,
+                    chassis_power_w: 0,
+                    heat_limit: 100,
+                    cooling_per_s: 20,
+                }),
             },
         ],
         ..Config::default()
@@ -493,9 +508,9 @@ fn speed_lock_is_independent_of_heat_and_respawn() {
     .unwrap();
     assert_eq!(game.snapshot().robots[3].speed_locked_until_ticks, 20_000);
     game.step(19_999).unwrap();
-    assert!(!game.snapshot().robots[3].can_launch(19_999, Caliber::Mm17));
+    assert!(!game.snapshot().robots[3].can_launch(19_999, Caliber::Mm17, true));
     game.step(1).unwrap();
-    assert!(game.snapshot().robots[3].can_launch(20_000, Caliber::Mm17));
+    assert!(game.snapshot().robots[3].can_launch(20_000, Caliber::Mm17, true));
     game.command(Command::LaunchSpeed {
         robot: 4,
         caliber: Caliber::Mm17,
@@ -751,7 +766,7 @@ fn strongest_defense_and_vulnerability_expire_before_damage() {
         (coverage::Mechanic::Fortress, 0, 10),
     ] {
         game.command(Command::ApplyBuff(Buff {
-            target: Target::Robot(1),
+            target: BuffTarget::Robot(1),
             source,
             attack_pct: 100,
             defense_pct: defense,
@@ -855,4 +870,320 @@ fn chassis_energy_is_clamped_and_requires_resupply_for_charging() {
     })
     .unwrap();
     assert_eq!(game.snapshot().robots[0].chassis_energy_j, Some(40_000));
+}
+
+/// Red Hero 10 and Infantry 11 against Blue Infantry 20, all with the section
+/// 5.4.2 default performance types.
+fn duel() -> Game {
+    let robot = |id, team, kind| RobotConfig {
+        id,
+        team,
+        kind,
+        performance: Performance::default_for(kind).unwrap(),
+    };
+    let mut game = Game::new(Config {
+        robots: vec![
+            robot(10, Team::Red, RobotKind::Hero),
+            robot(11, Team::Red, RobotKind::Infantry),
+            robot(20, Team::Blue, RobotKind::Infantry),
+        ],
+        ..Config::default()
+    })
+    .unwrap();
+    game.command(Command::BeginCountdown).unwrap();
+    game.step(COUNTDOWN_TICKS).unwrap();
+    game
+}
+fn shot(target: Target, caliber: Caliber, shooter: u32) -> ProjectileHit {
+    ProjectileHit {
+        target,
+        caliber,
+        shooter: Some(shooter),
+        upper_front: false,
+        critical: false,
+    }
+}
+fn robot(game: &Game, id: u32) -> &RobotState {
+    let i = game.robot_index(id).unwrap();
+    &game.snapshot().robots[i]
+}
+
+#[test]
+fn projectile_damage_experience_kill_and_level_up() {
+    let mut game = duel();
+    let hit = shot(Target::Robot(20), Caliber::Mm17, 11);
+    // Table 5-2: 20 HP; section 5.4.1: 4 points per robot HP.
+    assert_eq!(
+        game.projectile_hit(hit).unwrap(),
+        Applied { hp: 20, shield: 0 }
+    );
+    assert_eq!(robot(&game, 11).experience_tenths, 800);
+    for _ in 0..9 {
+        game.projectile_hit(hit).unwrap();
+    }
+    let red = robot(&game, 11);
+    // 200 HP of damage plus a level-1 kill by a level-2 destroyer.
+    assert_eq!(red.experience_tenths, 8000 + 500);
+    assert_eq!(red.level, 2);
+    // Level 2 HP-focused chassis: the 25 HP gained is added to current HP.
+    assert_eq!(red.hp, 225);
+    let blue = robot(&game, 20);
+    assert!(!blue.alive() && blue.respawn.is_some());
+    assert_eq!(blue.defeated_at_ticks, Some(0));
+    // A defeated robot takes no further damage.
+    assert_eq!(game.projectile_hit(hit).unwrap(), Applied::default());
+    // A critical hit is only meaningful on an outpost.
+    assert_eq!(
+        game.projectile_hit(ProjectileHit {
+            critical: true,
+            ..hit
+        }),
+        Err(Error::Invalid)
+    );
+}
+
+#[test]
+fn unattributed_projectile_experience_is_shared_by_eligible_shooters() {
+    let mut game = duel();
+    game.projectile_hit(ProjectileHit {
+        shooter: None,
+        ..shot(Target::Outpost(Team::Blue), Caliber::Mm17, 0)
+    })
+    .unwrap();
+    // 20 outpost HP x 2 points goes only to the red 17 mm shooter.
+    assert_eq!(robot(&game, 11).experience_tenths, 400);
+    assert_eq!(robot(&game, 10).experience_tenths, 0);
+}
+
+#[test]
+fn hero_42mm_damage_needs_a_recent_launch_and_stops_after_defeat() {
+    let mut game = duel();
+    let hit = shot(Target::Outpost(Team::Blue), Caliber::Mm42, 10);
+    assert_eq!(game.projectile_hit(hit).unwrap(), Applied::default());
+    game.command(Command::SetAllowance {
+        robot: 10,
+        allowance: [0, 10],
+    })
+    .unwrap();
+    game.command(Command::Launch {
+        robot: 10,
+        caliber: Caliber::Mm42,
+    })
+    .unwrap();
+    assert_eq!(game.projectile_hit(hit).unwrap().hp, 200);
+    // Section 5.1.1: four seconds without a launch.
+    let now = game.snapshot().round_elapsed_ticks;
+    game.command(Command::SkipTo {
+        round_ticks: now + MM42_IDLE_TICKS,
+    })
+    .unwrap();
+    assert!(!game.mm42_effective(Team::Red));
+
+    game.command(Command::Launch {
+        robot: 10,
+        caliber: Caliber::Mm42,
+    })
+    .unwrap();
+    game.command(Command::SetRobotHp { robot: 10, hp: 0 })
+        .unwrap();
+    let defeated = game.snapshot().round_elapsed_ticks;
+    game.command(Command::SkipTo {
+        round_ticks: defeated + MM42_DEFEAT_TICKS - 1,
+    })
+    .unwrap();
+    assert!(game.mm42_effective(Team::Red));
+    game.step(1).unwrap();
+    // Section 5.3.2: three seconds after the Hero's defeat.
+    assert!(!game.mm42_effective(Team::Red));
+    assert!(robot(&game, 10).mm42_suspended);
+    game.command(Command::Revive { robot: 10 }).unwrap();
+    game.step(1).unwrap();
+    assert!(!robot(&game, 10).mm42_suspended);
+    game.command(Command::Launch {
+        robot: 10,
+        caliber: Caliber::Mm42,
+    })
+    .unwrap();
+    assert!(game.mm42_effective(Team::Red));
+}
+
+#[test]
+fn runes_double_capped_experience_and_share_large_rune_points() {
+    let mut game = duel();
+    game.command(Command::RuneActivated {
+        team: Team::Red,
+        stage: RuneStage::Small,
+        attack_pct: 100,
+        defense_pct: 25,
+        cooling_multiplier: 1,
+        duration_ticks: 45 * SECOND_TICKS,
+    })
+    .unwrap();
+    game.projectile_hit(shot(Target::Robot(20), Caliber::Mm17, 11))
+        .unwrap();
+    assert_eq!(robot(&game, 11).experience_tenths, 1600);
+    assert_eq!(
+        game.snapshot().teams[Team::Red.index()].rune_bonus_tenths,
+        SMALL_RUNE_BONUS_TENTHS - 800
+    );
+    // The team buff defends every red target.
+    assert_eq!(game.defense_pct(Target::Base(Team::Red)), (25, 0));
+
+    let mut large = duel();
+    large
+        .command(Command::RuneActivated {
+            team: Team::Red,
+            stage: RuneStage::Large,
+            attack_pct: 200,
+            defense_pct: 0,
+            cooling_multiplier: 1,
+            duration_ticks: 45 * SECOND_TICKS,
+        })
+        .unwrap();
+    assert_eq!(robot(&large, 10).experience_tenths, 3750);
+    assert_eq!(robot(&large, 11).experience_tenths, 3750);
+    // Attack multiplies Table 5-2 damage.
+    assert_eq!(
+        large
+            .projectile_hit(shot(Target::Robot(20), Caliber::Mm17, 11))
+            .unwrap()
+            .hp,
+        40
+    );
+}
+
+#[test]
+fn idle_practice_damages_without_rules_and_revives_for_free() {
+    let mut game = Game::new(duel().config().clone()).unwrap();
+    // No outpost protection, experience or respawn timer in practice.
+    let base = game
+        .projectile_hit(shot(Target::Base(Team::Blue), Caliber::Mm17, 11))
+        .unwrap();
+    assert_eq!(base.hp + base.shield, 20);
+    game.command(Command::SetRobotHp { robot: 20, hp: 20 })
+        .unwrap();
+    game.projectile_hit(shot(Target::Robot(20), Caliber::Mm17, 11))
+        .unwrap();
+    assert!(!robot(&game, 20).alive());
+    assert!(robot(&game, 20).respawn.is_none());
+    assert_eq!(robot(&game, 11).experience_tenths, 0);
+    assert_eq!(game.snapshot().teams[Team::Red.index()].attack_damage, 0);
+    assert_eq!(game.snapshot().phase, Phase::Idle);
+    assert!(game.can_launch(11, Caliber::Mm17));
+    game.command(Command::Launch {
+        robot: 11,
+        caliber: Caliber::Mm17,
+    })
+    .unwrap();
+    assert_eq!(robot(&game, 11).heat_tenths, 0);
+    game.command(Command::Revive { robot: 20 }).unwrap();
+    assert_eq!(robot(&game, 20).hp, 200);
+}
+
+#[test]
+fn roster_and_performance_changes() {
+    let mut game = Game::new(duel().config().clone()).unwrap();
+    let infantry = game.config().robots[1].clone();
+    assert_eq!(
+        game.command(Command::AddRobot(infantry.clone())),
+        Err(Error::Invalid)
+    );
+    game.command(Command::AddRobot(RobotConfig { id: 30, ..infantry }))
+        .unwrap();
+    let power = Performance::Infantry {
+        chassis: InfantryChassis::PowerFocused,
+        launcher: InfantryLauncher::BurstFocused,
+    };
+    game.command(Command::SetPerformance {
+        robot: 30,
+        performance: power,
+    })
+    .unwrap();
+    assert_eq!(robot(&game, 30).hp, 150);
+    assert_eq!(
+        game.command(Command::SetPerformance {
+            robot: 10,
+            performance: power,
+        }),
+        Err(Error::Invalid)
+    );
+    // A round starts from the current roster, not the initial one.
+    game.command(Command::BeginCountdown).unwrap();
+    game.step(COUNTDOWN_TICKS).unwrap();
+    assert_eq!(robot(&game, 30).stats().heat_limit, 170);
+    assert_eq!(
+        game.command(Command::SetPerformance {
+            robot: 30,
+            performance: power,
+        }),
+        Err(Error::Phase)
+    );
+    game.command(Command::RemoveRobot { robot: 30 }).unwrap();
+    assert_eq!(game.robot_index(30), Err(Error::Robot));
+}
+
+#[test]
+fn skip_to_matches_stepping_except_the_simulation_tick() {
+    let mut skipped = duel();
+    let mut stepped = skipped.clone();
+    skipped
+        .command(Command::SkipTo {
+            round_ticks: 61 * SECOND_TICKS,
+        })
+        .unwrap();
+    stepped.step(61 * SECOND_TICKS).unwrap();
+    assert_eq!(
+        skipped.snapshot().tick + 61 * SECOND_TICKS,
+        stepped.snapshot().tick
+    );
+    assert_eq!(skipped.snapshot().teams, stepped.snapshot().teams);
+    assert_eq!(skipped.snapshot().robots, stepped.snapshot().robots);
+    assert_eq!(
+        skipped.command(Command::SkipTo { round_ticks: 0 }),
+        Err(Error::Invalid)
+    );
+}
+
+#[test]
+fn operator_overrides_apply_in_any_phase() {
+    let mut game = duel();
+    game.command(Command::SetBase {
+        team: Team::Blue,
+        hp: 1000,
+        shield_hp: 0,
+    })
+    .unwrap();
+    game.command(Command::SetOutpostHp {
+        team: Team::Blue,
+        hp: 0,
+    })
+    .unwrap();
+    assert!(game.snapshot().teams[Team::Blue.index()].outpost_ever_destroyed);
+    game.command(Command::SetRobotHp { robot: 20, hp: 0 })
+        .unwrap();
+    // An operator defeat awards no kill experience.
+    assert_eq!(robot(&game, 11).experience_tenths, 0);
+    game.command(Command::SetGold {
+        team: Team::Red,
+        gold: 999,
+    })
+    .unwrap();
+    game.command(Command::SetBase {
+        team: Team::Blue,
+        hp: 0,
+        shield_hp: 0,
+    })
+    .unwrap();
+    assert_eq!(game.snapshot().phase, Phase::RoundEnded);
+    game.command(Command::SetGold {
+        team: Team::Red,
+        gold: 5,
+    })
+    .unwrap();
+    assert_eq!(game.snapshot().teams[Team::Red.index()].gold, 5);
+    // Hits are refused once the round has ended.
+    assert_eq!(
+        game.projectile_hit(shot(Target::Robot(11), Caliber::Mm17, 20)),
+        Err(Error::Phase)
+    );
 }

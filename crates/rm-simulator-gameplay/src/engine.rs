@@ -4,6 +4,29 @@ use crate::policy::{IncomeSchedule, record_ammo_launch};
 use crate::*;
 use serde::{Deserialize, Serialize};
 
+/// Table 5-11: total experience, in tenths, required for levels 1 to 10.
+const LEVEL_XP_TENTHS: [u32; 10] = [
+    0, 5500, 11000, 16500, 22000, 27500, 33000, 38500, 44000, 50000,
+];
+/// Section 5.5.2: the Small Rune doubles earned experience up to 1,200 points
+/// per buff period, in tenths.
+const SMALL_RUNE_BONUS_TENTHS: u32 = 12_000;
+/// Section 5.5.2: a Large Rune activation shares 750 points, in tenths.
+const LARGE_RUNE_TENTHS: u32 = 7_500;
+/// Sections 5.1.1 and 5.3.2: seconds without a 42 mm launch, and seconds after
+/// defeat, before 42 mm damage stops counting.
+const MM42_IDLE_TICKS: u64 = 4 * SECOND_TICKS;
+const MM42_DEFEAT_TICKS: u64 = 3 * SECOND_TICKS;
+
+/// Power Rune stage (section 5.5.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RuneStage {
+    /// Small Power Rune: doubles experience, capped at 1,200 points.
+    Small,
+    /// Large Power Rune: 750 experience points shared by the team.
+    Large,
+}
+
 /// A validated input or authoritative observation. [`Game::command`] applies
 /// one at a time, and a rejected command changes nothing.
 ///
@@ -57,11 +80,33 @@ pub enum Command {
     /// Record the current result and advance the match. It requires a decided
     /// result.
     ConfirmResult,
-    /// Clear every result and restore the configured roster, keeping the
-    /// simulation tick.
+    /// Clear every result and return to Idle with the current roster and
+    /// policy, keeping the simulation tick.
     ResetMatch,
+    /// Add a robot to the roster in any phase. Its id must be new and its
+    /// performance must fit its kind.
+    AddRobot(RobotConfig),
+    /// Remove a robot, its buffs and its pending deliveries, in any phase.
+    RemoveRobot {
+        /// Robot to remove.
+        robot: u32,
+    },
+    /// Select a robot's performance type (section 5.4.2). Refused while a
+    /// round is running; the robot returns to its new maximum HP.
+    SetPerformance {
+        /// Robot to configure.
+        robot: u32,
+        /// New performance source; it must fit the robot's kind.
+        performance: Performance,
+    },
+    /// Replace the rule switches, in any phase.
+    SetPolicy(Policy),
+    /// A detected projectile strike on armor. In Idle it is free practice:
+    /// damage without protection, invincibility, experience or respawn timers.
+    ProjectileHit(ProjectileHit),
     /// Detected damage after attacker buffs, before target defenses. Caller
-    /// handles detection, attacker effects and special target immunities.
+    /// handles detection, attacker effects and special target immunities. In
+    /// Idle it is free practice like [`Command::ProjectileHit`].
     Damage {
         /// Robot, base or outpost taking the damage.
         target: Target,
@@ -72,6 +117,82 @@ pub enum Command {
         kind: DamageKind,
         /// Team credited with the damage. `None` credits the opposing team.
         attacker: Option<Team>,
+    },
+    /// A team activated its Power Rune (section 5.5.2): a team-wide buff for
+    /// `duration_ticks`, plus the stage's experience effect.
+    RuneActivated {
+        /// Team that activated its rune.
+        team: Team,
+        /// Small or Large Rune.
+        stage: RuneStage,
+        /// Attack multiplier in percent, at most 1000 (Table 5-16).
+        attack_pct: u32,
+        /// Defense in percent, at most 100.
+        defense_pct: u32,
+        /// Cooling multiplier, at most 100.
+        cooling_multiplier: u32,
+        /// Buff length in round ticks; positive.
+        duration_ticks: u64,
+    },
+    /// Advance the round clock to `round_ticks` without advancing the
+    /// simulation tick, processing every timer on the way. Testing and
+    /// operator use; `round_ticks` must not be in the past.
+    SkipTo {
+        /// Round tick to reach, at most [`ROUND_TICKS`].
+        round_ticks: u64,
+    },
+    /// Operator override: set a robot's HP, clamped to its maximum. Zero
+    /// defeats it without a destroyer; a positive value on a defeated robot
+    /// revives it unweakened.
+    SetRobotHp {
+        /// Robot to edit.
+        robot: u32,
+        /// New HP.
+        hp: u32,
+    },
+    /// Operator override: restore a robot to full HP, clearing its respawn
+    /// timer, weakness and ejection.
+    Revive {
+        /// Robot to revive.
+        robot: u32,
+    },
+    /// Operator override: end a robot's weakened state as an own service zone
+    /// contact would (section 5.2.2).
+    ClearWeakened {
+        /// Robot to clear.
+        robot: u32,
+    },
+    /// Operator override: set a base's HP and virtual shield. Zero HP during a
+    /// round destroys the base and ends the round.
+    SetBase {
+        /// Team whose base to edit.
+        team: Team,
+        /// New HP, at most [`BASE_HP`].
+        hp: u32,
+        /// New shield, at most [`BASE_HP`].
+        shield_hp: u32,
+    },
+    /// Operator override: set an outpost's HP, at most [`OUTPOST_HP`]. Zero
+    /// during a round counts as a destruction.
+    SetOutpostHp {
+        /// Team whose outpost to edit.
+        team: Team,
+        /// New HP.
+        hp: u32,
+    },
+    /// Operator override: set a team's gold.
+    SetGold {
+        /// Team to edit.
+        team: Team,
+        /// New balance.
+        gold: u32,
+    },
+    /// Operator override: set a robot's projectile allowance.
+    SetAllowance {
+        /// Robot to edit.
+        robot: u32,
+        /// New allowance in caliber index order.
+        allowance: [u32; 2],
     },
     /// Report a zone contact sample for a robot. A false sample keeps the
     /// contact for two more seconds (section 5.5.3.1).
@@ -113,7 +234,8 @@ pub enum Command {
         /// Rounds to buy; positive and a multiple of the exchange unit.
         amount: u32,
         /// True for a remote purchase, which requires out-of-combat status and
-        /// arrives six seconds later. False requires an own service zone.
+        /// arrives six seconds later. False requires an own service zone
+        /// unless the policy waives it.
         remote: bool,
     },
     /// Buy remote HP recovery for a robot. It requires out-of-combat status and
@@ -129,7 +251,7 @@ pub enum Command {
         robot: u32,
     },
     /// Authorise a launch and account for it. It is rejected unless the robot
-    /// may launch in the running round.
+    /// may launch now; in Idle it only checks that the robot is alive and armed.
     Launch {
         /// Robot launching.
         robot: u32,
@@ -175,6 +297,14 @@ pub enum Command {
     },
     /// Replace the buff for its target and source with a certified active buff.
     ApplyBuff(Buff),
+    /// Remove the buff for a target and source, if there is one. Accepted in
+    /// any phase.
+    ClearBuff {
+        /// Target the buff applies to.
+        target: BuffTarget,
+        /// Mechanic that granted it.
+        source: coverage::Mechanic,
+    },
     /// Switch a drone's air support on or off (section 5.6.3).
     AirSupport {
         /// Drone changing state.
@@ -240,7 +370,8 @@ pub enum Error {
 ///
 /// ```
 /// use rm_simulator_gameplay::{
-///     Caliber, Command, Config, Game, RobotConfig, RobotKind, Team, COUNTDOWN_TICKS,
+///     Caliber, Command, Config, Game, Performance, RobotConfig, RobotKind, Stats, Team,
+///     COUNTDOWN_TICKS,
 /// };
 ///
 /// let mut game = Game::new(Config {
@@ -248,9 +379,12 @@ pub enum Error {
 ///         id: 7,
 ///         team: Team::Red,
 ///         kind: RobotKind::Sentry,
-///         max_hp: 400,
-///         heat_limit: 100,
-///         cooling_per_s: 20,
+///         performance: Performance::Fixed(Stats {
+///             max_hp: 400,
+///             chassis_power_w: 100,
+///             heat_limit: 100,
+///             cooling_per_s: 20,
+///         }),
 ///     }],
 ///     ..Config::default()
 /// })?;
@@ -263,28 +397,27 @@ pub enum Error {
 /// assert_eq!(game.snapshot().robots[0].shots_launched[0], 1);
 /// # Ok::<(), rm_simulator_gameplay::Error>(())
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Game {
     config: Config,
     state: Snapshot,
 }
 impl Game {
-    /// Build a game from a fixed roster. Returns [`Error::Invalid`] when an id
-    /// repeats or a robot's `max_hp` is zero.
+    /// Build a game from an initial roster. Returns [`Error::Invalid`] when an
+    /// id repeats or a robot's performance does not fit its kind.
     ///
     /// ```
-    /// use rm_simulator_gameplay::{Config, Error, Game, RobotConfig, RobotKind, Team};
+    /// use rm_simulator_gameplay::{Config, Error, Game, HeroType, Performance, RobotConfig, RobotKind, Team};
     ///
     /// let infantry = RobotConfig {
     ///     id: 1,
     ///     team: Team::Red,
     ///     kind: RobotKind::Infantry,
-    ///     max_hp: 200,
-    ///     heat_limit: 100,
-    ///     cooling_per_s: 20,
+    ///     performance: Performance::Hero(HeroType::MeleeFocused),
     /// };
+    /// // Hero tables cannot describe an Infantry.
     /// let roster = Config {
-    ///     robots: vec![infantry.clone(), infantry],
+    ///     robots: vec![infantry],
     ///     ..Config::default()
     /// };
     /// assert_eq!(Game::new(roster), Err(Error::Invalid));
@@ -294,11 +427,12 @@ impl Game {
         if config
             .robots
             .iter()
-            .any(|r| r.max_hp == 0 || !ids.insert(r.id))
+            .any(|r| !r.performance.fits(r.kind) || !ids.insert(r.id))
         {
             return Err(Error::Invalid);
         }
-        let state = Self::fresh_state(&config);
+        let mut state = Self::fresh_state(Policy::default());
+        state.robots = config.robots.iter().map(Self::fresh_robot).collect();
         Ok(Self { config, state })
     }
     /// Current state. The reference is read-only and valid until the next
@@ -306,31 +440,27 @@ impl Game {
     pub fn snapshot(&self) -> &Snapshot {
         &self.state
     }
-    /// Roster and match format the game was built with.
+    /// Match format, initial roster and event retention the game was built with.
     pub fn config(&self) -> &Config {
         &self.config
     }
     /// Match-aware launch permission for adapters; robot-local locks alone
-    /// do not include round phase.
+    /// do not include round phase. Idle practice allows any living robot to
+    /// fire its caliber.
     ///
     /// ```
     /// use rm_simulator_gameplay::{
-    ///     Caliber, Command, Config, Game, RobotConfig, RobotKind, Team, COUNTDOWN_TICKS,
+    ///     Caliber, Command, Config, Game, RobotConfig, RobotKind, Stats, Team, COUNTDOWN_TICKS,
     /// };
     ///
+    /// # let fixed = Stats { max_hp: 400, chassis_power_w: 0, heat_limit: 100, cooling_per_s: 20 };
     /// # let mut game = Game::new(Config {
-    /// #     robots: vec![RobotConfig {
-    /// #         id: 4,
-    /// #         team: Team::Red,
-    /// #         kind: RobotKind::Sentry,
-    /// #         max_hp: 400,
-    /// #         heat_limit: 100,
-    /// #         cooling_per_s: 20,
-    /// #     }],
+    /// #     robots: vec![RobotConfig::standard(4, Team::Red, RobotKind::Sentry, fixed)],
     /// #     ..Config::default()
     /// # })?;
-    /// assert!(!game.can_launch(4, Caliber::Mm17));
+    /// assert!(game.can_launch(4, Caliber::Mm17));
     /// game.command(Command::BeginCountdown)?;
+    /// assert!(!game.can_launch(4, Caliber::Mm17));
     /// game.step(COUNTDOWN_TICKS)?;
     /// assert!(game.can_launch(4, Caliber::Mm17));
     /// game.command(Command::EndRound)?;
@@ -338,18 +468,67 @@ impl Game {
     /// # Ok::<(), rm_simulator_gameplay::Error>(())
     /// ```
     pub fn can_launch(&self, robot: u32, caliber: Caliber) -> bool {
-        self.state.phase == Phase::Running
-            && self.robot_index(robot).is_ok_and(|i| {
-                self.state.robots[i].can_launch(self.state.round_elapsed_ticks, caliber)
-            })
+        let Ok(i) = self.robot_index(robot) else {
+            return false;
+        };
+        let r = &self.state.robots[i];
+        match self.state.phase {
+            Phase::Idle => r.alive() && r.config.kind.shoots(caliber),
+            Phase::Running => r.can_launch(
+                self.state.round_elapsed_ticks,
+                caliber,
+                self.state.policy.enforce_allowance,
+            ),
+            _ => false,
+        }
     }
-    fn fresh_state(config: &Config) -> Snapshot {
+    /// Apply a projectile strike and report what it removed. Equivalent to
+    /// [`Command::ProjectileHit`].
+    ///
+    /// ```
+    /// use rm_simulator_gameplay::{
+    ///     Applied, Caliber, Command, Config, Game, ProjectileHit, Target, Team, COUNTDOWN_TICKS,
+    /// };
+    ///
+    /// let mut game = Game::new(Config::default())?;
+    /// game.command(Command::BeginCountdown)?;
+    /// game.step(COUNTDOWN_TICKS)?;
+    /// let hit = ProjectileHit {
+    ///     target: Target::Outpost(Team::Blue),
+    ///     caliber: Caliber::Mm17,
+    ///     shooter: None,
+    ///     upper_front: false,
+    ///     critical: true,
+    /// };
+    /// // Table 5-2's 20 HP, times 150 % in the centre square (section 5.5.1).
+    /// assert_eq!(game.projectile_hit(hit)?, Applied { hp: 30, shield: 0 });
+    /// # Ok::<(), rm_simulator_gameplay::Error>(())
+    /// ```
+    pub fn projectile_hit(&mut self, hit: ProjectileHit) -> Result<Applied, Error> {
+        let applied = self.hit(hit)?;
+        Ok(applied)
+    }
+    /// Apply damage with an explicit amount and report what it removed.
+    /// Equivalent to [`Command::Damage`].
+    pub fn damage(
+        &mut self,
+        target: Target,
+        amount: u32,
+        kind: DamageKind,
+        attacker: Option<Team>,
+    ) -> Result<Applied, Error> {
+        self.accepts_damage()?;
+        self.target_team(target)?;
+        Ok(self.apply_damage(target, u64::from(amount) * 200, kind, attacker, None, None))
+    }
+    fn fresh_state(policy: Policy) -> Snapshot {
         Snapshot {
             tick: 0,
             phase: Phase::Idle,
             phase_elapsed_ticks: 0,
             round: 0,
             round_elapsed_ticks: 0,
+            policy,
             teams: Team::BOTH.map(|team| TeamState {
                 team,
                 gold: 0,
@@ -360,58 +539,17 @@ impl Game {
                 base_armor_expanded: false,
                 outpost_hp: OUTPOST_HP,
                 outpost_ever_destroyed: false,
+                outpost_first_destroyed_ticks: None,
                 outpost_rebuild_opportunities: 0,
                 attack_damage: 0,
                 level_cap: 5,
                 assembly_completions: [0; 4],
                 assembly_income_per_10_s: 0,
                 assembly_defense_pct: 0,
+                rune_bonus_tenths: 0,
+                rune_bonus_until_ticks: 0,
             }),
-            robots: config
-                .robots
-                .iter()
-                .map(|r| RobotState {
-                    config: r.clone(),
-                    hp: r.max_hp,
-                    level: 1,
-                    experience_tenths: 0,
-                    allowance: match r.kind {
-                        RobotKind::Sentry => [300, 0],
-                        RobotKind::Drone => [750, 0],
-                        _ => [0; 2],
-                    },
-                    shots_launched: [0; 2],
-                    shots_over_allowance: [0; 2],
-                    heat_tenths: 0,
-                    overheated: false,
-                    heat_locked_for_round: false,
-                    speed_locked_until_ticks: 0,
-                    speed_locked_for_round: false,
-                    instant_respawns: 0,
-                    respawn: None,
-                    weakened: false,
-                    weakened_until_ticks: None,
-                    respawned_at_ticks: None,
-                    invincible_until_ticks: 0,
-                    irregularly_disconnected: false,
-                    ejected: false,
-                    out_of_combat: false,
-                    zones: Vec::new(),
-                    rebuild_progress_ticks: 0,
-                    sentry_resupply_claimed: 0,
-                    chassis_energy_j: matches!(
-                        r.kind,
-                        RobotKind::Hero | RobotKind::Infantry | RobotKind::Sentry
-                    )
-                    .then_some(20_000),
-                    air_support_ticks: if r.kind == RobotKind::Drone {
-                        30 * SECOND_TICKS
-                    } else {
-                        0
-                    },
-                    air_support_active: false,
-                })
-                .collect(),
+            robots: Vec::new(),
             buffs: Vec::new(),
             observations: Vec::new(),
             result: None,
@@ -420,6 +558,53 @@ impl Game {
             recent_events: Vec::new(),
             next_event_id: 0,
             pending_deliveries: Vec::new(),
+        }
+    }
+    fn fresh_robot(r: &RobotConfig) -> RobotState {
+        RobotState {
+            config: r.clone(),
+            hp: r.performance.stats(1).max_hp,
+            level: 1,
+            experience_tenths: 0,
+            allowance: match r.kind {
+                RobotKind::Sentry => [300, 0],
+                RobotKind::Drone => [750, 0],
+                _ => [0; 2],
+            },
+            shots_launched: [0; 2],
+            shots_over_allowance: [0; 2],
+            heat_tenths: 0,
+            overheated: false,
+            heat_locked_for_round: false,
+            speed_locked_until_ticks: 0,
+            speed_locked_for_round: false,
+            instant_respawns: 0,
+            respawn: None,
+            weakened: false,
+            weakened_until_ticks: None,
+            respawned_at_ticks: None,
+            invincible_until_ticks: 0,
+            irregularly_disconnected: false,
+            ejected: false,
+            out_of_combat: false,
+            zones: Vec::new(),
+            rebuild_progress_ticks: 0,
+            sentry_resupply_claimed: 0,
+            chassis_energy_j: matches!(
+                r.kind,
+                RobotKind::Hero | RobotKind::Infantry | RobotKind::Sentry
+            )
+            .then_some(20_000),
+            air_support_ticks: if r.kind == RobotKind::Drone {
+                30 * SECOND_TICKS
+            } else {
+                0
+            },
+            air_support_active: false,
+            last_launch_ticks: [None; 2],
+            defeated_at_ticks: None,
+            launches_since_defeat: 0,
+            mm42_suspended: false,
         }
     }
     fn emit(&mut self, kind: EventKind) {
@@ -431,10 +616,11 @@ impl Game {
             kind,
         });
         state.next_event_id += 1;
-        // Application event-retention policy, not a rulebook constant.
-        if state.recent_events.len() > 512 {
-            state.recent_events.remove(0);
-        }
+        let excess = state
+            .recent_events
+            .len()
+            .saturating_sub(self.config.event_memory);
+        state.recent_events.drain(..excess);
     }
     fn phase(&mut self, phase: Phase) {
         self.state.phase = phase;
@@ -450,6 +636,13 @@ impl Game {
     }
     fn running(&self) -> Result<(), Error> {
         if self.state.phase == Phase::Running {
+            Ok(())
+        } else {
+            Err(Error::Phase)
+        }
+    }
+    fn accepts_damage(&self) -> Result<(), Error> {
+        if matches!(self.state.phase, Phase::Running | Phase::Idle) {
             Ok(())
         } else {
             Err(Error::Phase)
@@ -481,7 +674,8 @@ impl Game {
     ///
     /// ```
     /// use rm_simulator_gameplay::{
-    ///     Caliber, Command, Config, Error, Game, RobotConfig, RobotKind, Team, COUNTDOWN_TICKS,
+    ///     Caliber, Command, Config, Error, Game, Performance, RobotConfig, RobotKind, Team,
+    ///     COUNTDOWN_TICKS,
     /// };
     ///
     /// # let mut game = Game::new(Config {
@@ -489,9 +683,7 @@ impl Game {
     /// #         id: 1,
     /// #         team: Team::Red,
     /// #         kind: RobotKind::Infantry,
-    /// #         max_hp: 200,
-    /// #         heat_limit: 100,
-    /// #         cooling_per_s: 20,
+    /// #         performance: Performance::default_for(RobotKind::Infantry).unwrap(),
     /// #     }],
     /// #     ..Config::default()
     /// # })?;
@@ -516,14 +708,12 @@ impl Game {
                 | Command::Disconnection { .. }
                 | Command::Launch { .. }
                 | Command::ObserveLaunch { .. }
+                | Command::ProjectileHit(_)
         ) {
-            self.apply(command)?;
-            self.emit(EventKind::CommandAccepted);
-            return Ok(());
+            return self.apply(command);
         }
         let mut next = self.clone();
         next.apply(command)?;
-        next.emit(EventKind::CommandAccepted);
         *self = next;
         Ok(())
     }
@@ -533,9 +723,14 @@ impl Game {
                 if !matches!(self.state.phase, Phase::Idle | Phase::Confirmed) {
                     return Err(Error::Phase);
                 }
-                let fresh = Self::fresh_state(&self.config);
+                let fresh = Self::fresh_state(self.state.policy);
                 self.state.teams = fresh.teams;
-                self.state.robots = fresh.robots;
+                self.state.robots = self
+                    .state
+                    .robots
+                    .iter()
+                    .map(|r| Self::fresh_robot(&r.config))
+                    .collect();
                 self.state.buffs.clear();
                 self.state.observations.clear();
                 self.state.pending_deliveries.clear();
@@ -550,9 +745,15 @@ impl Game {
             }
             Command::ResetMatch => {
                 let tick = self.state.tick;
-                self.state = Self::fresh_state(&self.config);
-                self.state.tick = tick;
-                self.state.pending_deliveries.clear();
+                let mut fresh = Self::fresh_state(self.state.policy);
+                fresh.robots = self
+                    .state
+                    .robots
+                    .iter()
+                    .map(|r| Self::fresh_robot(&r.config))
+                    .collect();
+                fresh.tick = tick;
+                self.state = fresh;
             }
             Command::EndRound => {
                 self.running()?;
@@ -631,6 +832,134 @@ impl Game {
                 });
                 self.state.observations.push(observation);
             }
+            Command::AddRobot(config) => {
+                if !config.performance.fits(config.kind) || self.robot_index(config.id).is_ok() {
+                    return Err(Error::Invalid);
+                }
+                let id = config.id;
+                self.state.robots.push(Self::fresh_robot(&config));
+                self.emit(EventKind::RobotAdded(id));
+            }
+            Command::RemoveRobot { robot } => {
+                let i = self.robot_index(robot)?;
+                self.state.robots.remove(i);
+                self.state.pending_deliveries.retain(|d| d.robot != robot);
+                self.state
+                    .buffs
+                    .retain(|b| b.target != BuffTarget::Robot(robot));
+                self.emit(EventKind::RobotRemoved(robot));
+            }
+            Command::SetPerformance { robot, performance } => {
+                let i = self.robot_index(robot)?;
+                if self.state.phase == Phase::Running {
+                    return Err(Error::Phase);
+                }
+                if !performance.fits(self.state.robots[i].config.kind) {
+                    return Err(Error::Invalid);
+                }
+                let r = &mut self.state.robots[i];
+                r.config.performance = performance;
+                if r.alive() {
+                    r.hp = r.stats().max_hp;
+                }
+            }
+            Command::SetPolicy(policy) => self.state.policy = policy,
+            Command::ClearBuff { target, source } => self
+                .state
+                .buffs
+                .retain(|b| (b.target, b.source) != (target, source)),
+            Command::ProjectileHit(hit) => {
+                self.hit(hit)?;
+            }
+            Command::Damage {
+                target,
+                amount,
+                kind,
+                attacker,
+            } => {
+                self.damage(target, amount, kind, attacker)?;
+            }
+            Command::Launch { robot, caliber } if self.state.phase == Phase::Idle => {
+                let i = self.robot_index(robot)?;
+                let r = &self.state.robots[i];
+                if !r.alive() || !r.config.kind.shoots(caliber) {
+                    return Err(Error::Ineligible);
+                }
+            }
+            Command::ObserveLaunch { robot, caliber } if self.state.phase == Phase::Idle => {
+                let i = self.robot_index(robot)?;
+                if !self.state.robots[i].config.kind.shoots(caliber) {
+                    return Err(Error::Invalid);
+                }
+            }
+            Command::SetRobotHp { robot, hp } => {
+                let i = self.robot_index(robot)?;
+                let r = &self.state.robots[i];
+                let max = r.stats().max_hp;
+                if hp == 0 {
+                    if r.alive() {
+                        // An operator defeat bypasses defenses and invincibility
+                        // and gives nobody experience or attack credit.
+                        let scaled = u64::from(r.hp) * 200;
+                        self.apply_damage(
+                            Target::Robot(robot),
+                            scaled,
+                            DamageKind::Disconnection,
+                            None,
+                            None,
+                            None,
+                        );
+                    }
+                } else if self.state.robots[i].alive() {
+                    self.state.robots[i].hp = hp.min(max);
+                } else {
+                    self.revive(i, hp.min(max));
+                }
+            }
+            Command::Revive { robot } => {
+                let i = self.robot_index(robot)?;
+                let max = self.state.robots[i].stats().max_hp;
+                self.revive(i, max);
+            }
+            Command::ClearWeakened { robot } => {
+                let i = self.robot_index(robot)?;
+                if self.state.robots[i].weakened {
+                    self.clear_weakness(i);
+                }
+            }
+            Command::SetBase {
+                team,
+                hp,
+                shield_hp,
+            } => {
+                if hp > BASE_HP || shield_hp > BASE_HP {
+                    return Err(Error::Invalid);
+                }
+                let t = &mut self.state.teams[team.index()];
+                t.base_hp = hp;
+                t.base_shield_hp = shield_hp;
+                if hp == 0 && self.state.phase == Phase::Running {
+                    self.finish();
+                }
+            }
+            Command::SetOutpostHp { team, hp } => {
+                if hp > OUTPOST_HP {
+                    return Err(Error::Invalid);
+                }
+                let now = self.state.round_elapsed_ticks;
+                let running = self.state.phase == Phase::Running;
+                let t = &mut self.state.teams[team.index()];
+                t.outpost_hp = hp;
+                if hp == 0 && running {
+                    t.outpost_ever_destroyed = true;
+                    t.outpost_first_destroyed_ticks.get_or_insert(now);
+                }
+            }
+            Command::SetGold { team, gold } => self.state.teams[team.index()].gold = gold,
+            Command::SetAllowance { robot, allowance } => {
+                let i = self.robot_index(robot)?;
+                self.state.robots[i].allowance = allowance;
+            }
             other => {
                 self.running()?;
                 self.gameplay_command(other)?;
@@ -641,12 +970,63 @@ impl Game {
     fn gameplay_command(&mut self, command: Command) -> Result<(), Error> {
         let now = self.state.round_elapsed_ticks;
         match command {
-            Command::Damage {
-                target,
-                amount,
-                kind,
-                attacker,
-            } => self.damage(target, amount, kind, attacker)?,
+            Command::RuneActivated {
+                team,
+                stage,
+                attack_pct,
+                defense_pct,
+                cooling_multiplier,
+                duration_ticks,
+            } => {
+                if duration_ticks == 0
+                    || attack_pct > 1000
+                    || defense_pct > 100
+                    || cooling_multiplier > 100
+                {
+                    return Err(Error::Invalid);
+                }
+                let expires_ticks = now.checked_add(duration_ticks).ok_or(Error::Invalid)?;
+                let target = BuffTarget::Team(team);
+                self.state
+                    .buffs
+                    .retain(|b| (b.target, b.source) != (target, coverage::Mechanic::Rune));
+                self.state.buffs.push(Buff {
+                    target,
+                    source: coverage::Mechanic::Rune,
+                    attack_pct,
+                    defense_pct,
+                    vulnerability_pct: 0,
+                    cooling_multiplier,
+                    expires_ticks,
+                });
+                match stage {
+                    RuneStage::Small => {
+                        let t = &mut self.state.teams[team.index()];
+                        t.rune_bonus_tenths = SMALL_RUNE_BONUS_TENTHS;
+                        t.rune_bonus_until_ticks = expires_ticks;
+                    }
+                    RuneStage::Large => self.share_experience(
+                        |r| r.config.team == team && r.alive() && r.config.kind.levels(),
+                        u64::from(LARGE_RUNE_TENTHS),
+                    ),
+                }
+            }
+            Command::SkipTo { round_ticks } => {
+                if round_ticks < now || round_ticks > ROUND_TICKS {
+                    return Err(Error::Invalid);
+                }
+                while self.state.phase == Phase::Running
+                    && self.state.round_elapsed_ticks < round_ticks
+                {
+                    self.state.round_elapsed_ticks += 1;
+                    self.state.phase_elapsed_ticks += 1;
+                    if self.state.round_elapsed_ticks >= ROUND_TICKS {
+                        self.finish();
+                    } else {
+                        self.tick_round();
+                    }
+                }
+            }
             Command::ZoneDetection {
                 robot,
                 zone,
@@ -686,12 +1066,14 @@ impl Game {
             Command::Eject { robot } => {
                 let i = self.robot_index(robot)?;
                 let team = self.state.robots[i].config.team;
-                self.damage(
+                self.apply_damage(
                     Target::Robot(robot),
-                    u32::MAX,
+                    u64::from(u32::MAX) * 200,
                     DamageKind::Penalty,
                     Some(team.other()),
-                )?;
+                    None,
+                    None,
+                );
                 self.state.robots[i].ejected = true;
                 self.state.robots[i].respawn = None;
             }
@@ -707,7 +1089,9 @@ impl Game {
                     || !r.config.kind.shoots(caliber)
                     || r.config.kind == RobotKind::Drone
                     || (remote && !r.out_of_combat)
-                    || (!remote && !self.own_service_zone(i))
+                    || (!remote
+                        && self.state.policy.exchange_requires_zone
+                        && !self.own_service_zone(i))
                 {
                     return Err(Error::Ineligible);
                 }
@@ -772,14 +1156,17 @@ impl Game {
                 if r.alive() || !r.config.kind.ground() || r.ejected || r.irregularly_disconnected {
                     return Err(Error::Ineligible);
                 }
-                let cost = now.div_ceil(60 * SECOND_TICKS) as u32 * 80 + u32::from(r.level) * 20;
-                self.spend(r.config.team, cost)?;
+                self.spend(r.config.team, self.instant_respawn_cost(i))?;
                 self.state.robots[i].instant_respawns += 1;
                 self.respawn(i, true);
             }
             Command::Launch { robot, caliber } => {
                 let i = self.robot_index(robot)?;
-                if !self.state.robots[i].can_launch(now, caliber) {
+                if !self.state.robots[i].can_launch(
+                    now,
+                    caliber,
+                    self.state.policy.enforce_allowance,
+                ) {
                     return Err(Error::Ineligible);
                 }
                 self.record_launch(i, caliber);
@@ -833,7 +1220,9 @@ impl Game {
             }
             Command::AssemblyCompleted { team, level } => self.assembly(team, level)?,
             Command::ApplyBuff(buff) => {
-                self.target_team(buff.target)?;
+                if let BuffTarget::Robot(id) = buff.target {
+                    self.robot_index(id)?;
+                }
                 if buff.expires_ticks <= now
                     || buff.defense_pct > 100
                     || buff.attack_pct > 1000
@@ -883,23 +1272,54 @@ impl Game {
         }
         Ok(())
     }
+    /// Table 5-6: ceil(elapsed seconds / 60) x 80 + level x 20 gold.
+    ///
+    /// Rounds up on whole elapsed round ticks, so the first second costs one
+    /// minute's price.
+    pub fn instant_respawn_cost_for(&self, robot: u32) -> Option<u32> {
+        self.robot_index(robot)
+            .ok()
+            .map(|i| self.instant_respawn_cost(i))
+    }
+    fn instant_respawn_cost(&self, i: usize) -> u32 {
+        let now = self.state.round_elapsed_ticks;
+        now.div_ceil(60 * SECOND_TICKS) as u32 * 80 + u32::from(self.state.robots[i].level) * 20
+    }
     fn record_launch(&mut self, i: usize, caliber: Caliber) {
         // Sections 5.1.3, 5.3.2 and 5.4.1: sensor-detected launches count
         // even if a physical launcher fired while locked or without allowance.
+        let now = self.state.round_elapsed_ticks;
+        let enforce = self.state.policy.enforce_allowance;
+        let heat_limit = self.state.robots[i].stats().heat_limit;
         let r = &mut self.state.robots[i];
         let index = caliber.index();
-        if record_ammo_launch(&mut r.allowance[index], &mut r.shots_launched[index]) {
+        let over = record_ammo_launch(&mut r.allowance[index], &mut r.shots_launched[index]);
+        if over {
             r.shots_over_allowance[index] = r.shots_over_allowance[index].saturating_add(1);
+        }
+        r.last_launch_ticks[index] = Some(now);
+        if caliber == Caliber::Mm42 && r.config.kind == RobotKind::Hero {
+            // Section 5.3.2: over allowance, or a third launch after defeat,
+            // suspends the team's 42 mm damage.
+            if !r.alive() {
+                r.launches_since_defeat = r.launches_since_defeat.saturating_add(1);
+                if r.launches_since_defeat >= 3 {
+                    r.mm42_suspended = true;
+                }
+            }
+            if over && enforce {
+                r.mm42_suspended = true;
+            }
         }
         r.heat_tenths =
             r.heat_tenths
                 .saturating_add(if caliber == Caliber::Mm17 { 100 } else { 1000 });
         let extra = if caliber == Caliber::Mm17 { 100 } else { 200 };
         // Figure 5-1 uses >= Q2, unlike the neighboring prose's > Q2.
-        if r.heat_tenths >= (u64::from(r.config.heat_limit) + extra) * 10 {
+        if r.heat_tenths >= (u64::from(heat_limit) + extra) * 10 {
             r.heat_locked_for_round = true;
         }
-        if r.heat_tenths > u64::from(r.config.heat_limit) * 10 {
+        if r.heat_tenths > u64::from(heat_limit) * 10 {
             r.overheated = true;
         }
         let xp = if r.config.kind == RobotKind::Hero {
@@ -915,87 +1335,190 @@ impl Game {
             Target::Robot(id) => self.state.robots[self.robot_index(id)?].config.team,
         })
     }
-    fn damage(
+    /// Buffs that apply to `target`: its own, plus its team's.
+    fn buffs_on(&self, target: Target) -> impl Iterator<Item = &Buff> + '_ {
+        let (own, team) = match target {
+            Target::Robot(id) => (
+                BuffTarget::Robot(id),
+                self.robot_index(id)
+                    .ok()
+                    .map(|i| self.state.robots[i].config.team),
+            ),
+            Target::Base(t) => (BuffTarget::Base(t), Some(t)),
+            Target::Outpost(t) => (BuffTarget::Outpost(t), Some(t)),
+        };
+        self.state.buffs.iter().filter(move |b| {
+            b.target == own || team.is_some_and(|t| b.target == BuffTarget::Team(t))
+        })
+    }
+    /// The strongest attack multiplier, in percent, on a robot's projectiles
+    /// (section 5.5.3.1); 100 without an attack buff.
+    ///
+    /// ```
+    /// use rm_simulator_gameplay::{Command, Config, Game, RobotConfig, RobotKind, RuneStage, Stats, Team, COUNTDOWN_TICKS};
+    ///
+    /// # let fixed = Stats { max_hp: 400, chassis_power_w: 0, heat_limit: 100, cooling_per_s: 20 };
+    /// let mut game = Game::new(Config {
+    ///     robots: vec![RobotConfig::standard(1, Team::Red, RobotKind::Infantry, fixed)],
+    ///     ..Config::default()
+    /// })?;
+    /// game.command(Command::BeginCountdown)?;
+    /// game.step(COUNTDOWN_TICKS)?;
+    /// assert_eq!(game.attack_pct(1), 100);
+    /// game.command(Command::RuneActivated {
+    ///     team: Team::Red,
+    ///     stage: RuneStage::Large,
+    ///     attack_pct: 300,
+    ///     defense_pct: 50,
+    ///     cooling_multiplier: 5,
+    ///     duration_ticks: 60_000,
+    /// })?;
+    /// assert_eq!(game.attack_pct(1), 300);
+    /// # Ok::<(), rm_simulator_gameplay::Error>(())
+    /// ```
+    pub fn attack_pct(&self, robot: u32) -> u32 {
+        self.buffs_on(Target::Robot(robot))
+            .map(|b| b.attack_pct)
+            .fold(100, u32::max)
+    }
+    /// Defense and vulnerability percentages protecting `target` against
+    /// projectile or collision damage right now (section 5.5.3.1): the
+    /// strongest of each, independently.
+    pub fn defense_pct(&self, target: Target) -> (u32, u32) {
+        let Ok(team) = self.target_team(target) else {
+            return (0, 0);
+        };
+        let mut defense = self.state.teams[team.index()].assembly_defense_pct;
+        let mut vulnerability = 0;
+        for buff in self.buffs_on(target) {
+            defense = defense.max(buff.defense_pct);
+            vulnerability = vulnerability.max(buff.vulnerability_pct);
+        }
+        if let Target::Robot(id) = target
+            && let Ok(i) = self.robot_index(id)
+            && self.eligible(i)
+            && self.state.robots[i].config.kind.ground()
+            && self.state.robots[i].in_zone(ZoneKind::Base, team)
+        {
+            defense = defense.max(50);
+        }
+        (defense.min(100), vulnerability)
+    }
+    /// Whether 42 mm projectiles from `attacking` currently damage the other
+    /// team: a Hero of that team fired 42 mm within four seconds (section
+    /// 5.1.1) and has not been defeated for three seconds or launched in a
+    /// way that suspends it (section 5.3.2). Always true in Idle practice.
+    pub fn mm42_effective(&self, attacking: Team) -> bool {
+        if self.state.phase == Phase::Idle {
+            return true;
+        }
+        let now = self.state.round_elapsed_ticks;
+        self.state.robots.iter().any(|h| {
+            h.config.team == attacking
+                && h.config.kind == RobotKind::Hero
+                && h.last_launch_ticks[Caliber::Mm42.index()]
+                    .is_some_and(|t| now < t.saturating_add(MM42_IDLE_TICKS))
+                && !h.mm42_suspended
+                && h.defeated_at_ticks
+                    .is_none_or(|d| h.alive() || now < d.saturating_add(MM42_DEFEAT_TICKS))
+        })
+    }
+    fn hit(&mut self, hit: ProjectileHit) -> Result<Applied, Error> {
+        self.accepts_damage()?;
+        let team = self.target_team(hit.target)?;
+        if (hit.upper_front && !matches!(hit.target, Target::Base(_)))
+            || (hit.critical && matches!(hit.target, Target::Robot(_)))
+        {
+            return Err(Error::Invalid);
+        }
+        // All validation is above; nothing below can fail.
+        let shooter = hit.shooter.and_then(|id| self.robot_index(id).ok());
+        let attacking = shooter.map_or(team.other(), |i| self.state.robots[i].config.team);
+        if hit.caliber == Caliber::Mm42 && attacking != team && !self.mm42_effective(attacking) {
+            return Ok(Applied::default());
+        }
+        // Table 5-2.
+        let raw: u64 = match (hit.target, hit.caliber) {
+            (_, Caliber::Mm42) => 200,
+            (Target::Base(_), Caliber::Mm17) if hit.upper_front => 5,
+            (_, Caliber::Mm17) => 20,
+        };
+        let attack = match (shooter, self.state.phase) {
+            (Some(i), Phase::Running) => u64::from(self.attack_pct(self.state.robots[i].config.id)),
+            _ => 100,
+        };
+        // Damage in units of 1/200 HP: the attack percent and the section
+        // 5.5.1 150 % centre square scale it before rounding once.
+        let scaled = raw * attack * if hit.critical { 3 } else { 2 };
+        let credited = Some(attacking);
+        Ok(self.apply_damage(
+            hit.target,
+            scaled,
+            DamageKind::Projectile,
+            credited,
+            shooter,
+            Some(hit.caliber),
+        ))
+    }
+    /// `scaled` is the damage in units of 1/200 HP before target defenses.
+    fn apply_damage(
         &mut self,
         target: Target,
-        amount: u32,
+        scaled: u64,
         kind: DamageKind,
         attacker: Option<Team>,
-    ) -> Result<(), Error> {
-        let team = self.target_team(target)?;
+        shooter: Option<usize>,
+        caliber: Option<Caliber>,
+    ) -> Applied {
+        let practice = self.state.phase == Phase::Idle;
+        let Ok(team) = self.target_team(target) else {
+            return Applied::default();
+        };
+        let now = self.state.round_elapsed_ticks;
         if let Target::Robot(id) = target {
-            let r = &self.state.robots[self.robot_index(id)?];
+            let Ok(i) = self.robot_index(id) else {
+                return Applied::default();
+            };
+            let r = &self.state.robots[i];
             if !r.alive()
                 || (matches!(
                     kind,
                     DamageKind::Projectile | DamageKind::Dart | DamageKind::Collision
-                ) && r.invincible_until_ticks > self.state.round_elapsed_ticks)
+                ) && r.invincible_until_ticks > now)
             {
-                return Ok(());
+                return Applied::default();
             }
         }
-        if matches!(target, Target::Base(_))
+        if !practice
+            && matches!(target, Target::Base(_))
             && self.state.teams[team.index()].outpost_hp > 0
             && matches!(
                 kind,
                 DamageKind::Projectile | DamageKind::Dart | DamageKind::Collision
             )
         {
-            return Ok(());
+            return Applied::default();
         }
-        let mut defense = 0;
-        let mut vulnerability = 0;
-        if matches!(kind, DamageKind::Projectile | DamageKind::Collision) {
-            defense = self.state.teams[team.index()].assembly_defense_pct;
-            for buff in self.state.buffs.iter().filter(|b| b.target == target) {
-                defense = defense.max(buff.defense_pct);
-                vulnerability = vulnerability.max(buff.vulnerability_pct);
-            }
-            if let Target::Robot(id) = target {
-                let i = self.robot_index(id)?;
-                if self.eligible(i)
-                    && self.state.robots[i].config.kind.ground()
-                    && self.state.robots[i].in_zone(ZoneKind::Base, team)
-                {
-                    defense = defense.max(50);
-                }
-            }
-        }
-        // Attack buffs require a shooter-specific source. `amount` therefore
-        // already includes any attacker effect certified by the caller; only
-        // target defenses/vulnerability are applied here.
-        let scaled = (u64::from(amount) * u64::from(100 - defense + vulnerability) + 50) / 100;
-        let amount = scaled.min(u64::from(u32::MAX)) as u32;
+        let (defense, vulnerability) =
+            if matches!(kind, DamageKind::Projectile | DamageKind::Collision) {
+                self.defense_pct(target)
+            } else {
+                (0, 0)
+            };
+        let factor = 100 - u64::from(defense) + u64::from(vulnerability);
+        let amount = (scaled.saturating_mul(factor) + 10_000) / 20_000;
+        let amount = amount.min(u64::from(u32::MAX)) as u32;
+        let shooter_id = shooter.map(|i| self.state.robots[i].config.id);
         let mut shield = 0;
+        let mut defeated = None;
         let removed = match target {
             Target::Robot(id) => {
-                let i = self.robot_index(id)?;
+                let i = self.robot_index(id).expect("validated above");
                 let r = &mut self.state.robots[i];
                 let removed = amount.min(r.hp);
                 r.hp -= removed;
                 if r.hp == 0 {
-                    r.heat_tenths = 0;
-                    r.overheated = false;
-                    r.air_support_active = false;
-                    r.rebuild_progress_ticks = 0;
-                    if r.config.kind.ground() {
-                        // Section 5.2.2: round elapsed seconds, rounded to nearest
-                        // second; timer units accumulate at 1/s or 4/s.
-                        let elapsed_s =
-                            (self.state.round_elapsed_ticks + SECOND_TICKS / 2) / SECOND_TICKS;
-                        let required_ticks = 10 * SECOND_TICKS
-                            + elapsed_s * SECOND_TICKS / 10
-                            + 20 * u64::from(r.instant_respawns) * SECOND_TICKS;
-                        r.respawn = Some(Respawn {
-                            required_ticks,
-                            progress_ticks: 0,
-                        });
-                    }
-                    self.state
-                        .pending_deliveries
-                        .retain(|d| d.robot != id || !matches!(d.kind, DeliveryKind::Hp));
-                    self.state.buffs.retain(|b| b.target != target);
-                    self.emit(EventKind::RobotDefeated(id));
+                    defeated = Some(i);
                 }
                 removed
             }
@@ -1003,8 +1526,9 @@ impl Game {
                 let t = &mut self.state.teams[team.index()];
                 let removed = amount.min(t.outpost_hp);
                 t.outpost_hp -= removed;
-                if t.outpost_hp == 0 {
+                if t.outpost_hp == 0 && !practice {
                     t.outpost_ever_destroyed = true;
+                    t.outpost_first_destroyed_ticks.get_or_insert(now);
                 }
                 removed
             }
@@ -1014,16 +1538,20 @@ impl Game {
                 t.base_shield_hp -= shield;
                 let removed = (amount - shield).min(t.base_hp);
                 t.base_hp -= removed;
-                let previous = t.base_hp_lost / 1000;
-                t.base_hp_lost = t.base_hp_lost.saturating_add(removed);
-                t.outpost_rebuild_opportunities += t.base_hp_lost / 1000 - previous;
+                if !practice {
+                    let previous = t.base_hp_lost / 1000;
+                    t.base_hp_lost = t.base_hp_lost.saturating_add(removed);
+                    t.outpost_rebuild_opportunities += t.base_hp_lost / 1000 - previous;
+                }
                 removed
             }
         };
-        if matches!(
-            kind,
-            DamageKind::Projectile | DamageKind::Dart | DamageKind::Penalty
-        ) {
+        if !practice
+            && matches!(
+                kind,
+                DamageKind::Projectile | DamageKind::Dart | DamageKind::Penalty
+            )
+        {
             // Section 2 counts penalties as opponent attack damage; explicit
             // same-team attribution never credits the damaged side.
             let credited = attacker.filter(|a| *a != team).unwrap_or(team.other());
@@ -1032,35 +1560,212 @@ impl Game {
         }
         self.emit(EventKind::Damage {
             target,
+            shooter: shooter_id,
             hp: removed,
             shield,
             kind,
         });
-        if self.state.teams.iter().any(|t| t.base_hp == 0) {
+        if !practice {
+            self.damage_experience(target, team, removed + shield, kind, shooter, caliber);
+        }
+        if let Some(i) = defeated {
+            self.defeat(i, shooter, kind, caliber);
+        }
+        if !practice && self.state.teams.iter().any(|t| t.base_hp == 0) {
             self.finish();
         }
-        Ok(())
+        Applied {
+            hp: removed,
+            shield,
+        }
+    }
+    /// Whether robot `i` can take experience as the identified source of
+    /// damage to `team`'s targets (section 5.4.1).
+    fn credited_source(&self, i: usize, team: Team) -> bool {
+        let r = &self.state.robots[i];
+        r.config.team != team && r.alive() && r.config.kind.levels()
+    }
+    /// Robots of `team` that share experience for an unidentified source.
+    fn sharers(team: Team, caliber: Option<Caliber>) -> impl Fn(&RobotState) -> bool {
+        move |r: &RobotState| {
+            r.config.team == team
+                && r.alive()
+                && r.config.kind.levels()
+                && caliber.is_none_or(|c| {
+                    r.config.kind.shoots(c)
+                        && (r.config.kind != RobotKind::Drone || r.air_support_active)
+                })
+        }
+    }
+    fn damage_experience(
+        &mut self,
+        target: Target,
+        team: Team,
+        amount: u32,
+        kind: DamageKind,
+        shooter: Option<usize>,
+        caliber: Option<Caliber>,
+    ) {
+        // Section 5.4.1: 4 points per robot HP, 2 per outpost HP, 1 per 2 base
+        // HP rounded up. Collision is not attack damage; dart experience is
+        // section 5.6.5's and not generated here.
+        if amount == 0 || !matches!(kind, DamageKind::Projectile | DamageKind::Penalty) {
+            return;
+        }
+        let tenths = match target {
+            Target::Robot(_) => u64::from(amount) * 40,
+            Target::Outpost(_) => u64::from(amount) * 20,
+            Target::Base(_) => u64::from(amount.div_ceil(2)) * 10,
+        };
+        if kind == DamageKind::Projectile
+            && let Some(i) = shooter
+            && self.credited_source(i, team)
+        {
+            self.award_experience(i, u32::try_from(tenths).unwrap_or(u32::MAX));
+        } else {
+            let caliber = if kind == DamageKind::Projectile {
+                caliber
+            } else {
+                None
+            };
+            self.share_experience(Self::sharers(team.other(), caliber), tenths);
+        }
+    }
+    /// Split `tenths` over the robots `share` selects, each share rounded up
+    /// to a tenth (section 5.4.1).
+    fn share_experience(&mut self, share: impl Fn(&RobotState) -> bool, tenths: u64) {
+        let receivers: Vec<usize> = (0..self.state.robots.len())
+            .filter(|&i| share(&self.state.robots[i]))
+            .collect();
+        if receivers.is_empty() {
+            return;
+        }
+        let each = tenths.div_ceil(receivers.len() as u64);
+        for i in receivers {
+            self.award_experience(i, u32::try_from(each).unwrap_or(u32::MAX));
+        }
+    }
+    fn level_for(tenths: u64) -> u8 {
+        LEVEL_XP_TENTHS
+            .iter()
+            .rposition(|&need| tenths >= u64::from(need))
+            .map_or(1, |i| i as u8 + 1)
+    }
+    /// Robot `i` reached zero HP: reset heat, start the respawn timer, drop
+    /// its own buffs and remote HP and award section 5.4.1 kill experience.
+    fn defeat(
+        &mut self,
+        i: usize,
+        shooter: Option<usize>,
+        kind: DamageKind,
+        caliber: Option<Caliber>,
+    ) {
+        let practice = self.state.phase == Phase::Idle;
+        let now = self.state.round_elapsed_ticks;
+        let r = &mut self.state.robots[i];
+        let id = r.config.id;
+        let team = r.config.team;
+        // Section 5.4.1: Engineer and Sentry count as level 1.
+        let victim_level = u64::from(if r.config.kind.levels() { r.level } else { 1 });
+        r.heat_tenths = 0;
+        r.overheated = false;
+        r.air_support_active = false;
+        r.rebuild_progress_ticks = 0;
+        r.defeated_at_ticks = Some(now);
+        r.launches_since_defeat = 0;
+        if r.config.kind.ground() && !practice {
+            // Section 5.2.2: round elapsed seconds, rounded to nearest
+            // second; timer units accumulate at 1/s or 4/s.
+            let elapsed_s = (now + SECOND_TICKS / 2) / SECOND_TICKS;
+            let required_ticks = 10 * SECOND_TICKS
+                + elapsed_s * SECOND_TICKS / 10
+                + 20 * u64::from(r.instant_respawns) * SECOND_TICKS;
+            r.respawn = Some(Respawn {
+                required_ticks,
+                progress_ticks: 0,
+            });
+        }
+        self.state
+            .pending_deliveries
+            .retain(|d| d.robot != id || !matches!(d.kind, DeliveryKind::Hp));
+        self.state
+            .buffs
+            .retain(|b| b.target != BuffTarget::Robot(id));
+        self.emit(EventKind::RobotDefeated(id));
+        // Only combat defeats award kill experience; disconnection and operator
+        // defeats do not.
+        if practice
+            || !matches!(
+                kind,
+                DamageKind::Projectile | DamageKind::Collision | DamageKind::Penalty
+            )
+        {
+            return;
+        }
+        // 50 x victim level x (1 + 0.2 x level difference), in tenths.
+        let kill =
+            |victim: u64, destroyer: u64| 100 * victim * (5 + victim.saturating_sub(destroyer));
+        match shooter {
+            Some(s) if kind == DamageKind::Projectile && self.credited_source(s, team) => {
+                let destroyer = u64::from(self.state.robots[s].level);
+                let tenths = kill(victim_level, destroyer);
+                self.award_experience(s, u32::try_from(tenths).unwrap_or(u32::MAX));
+            }
+            _ if kind == DamageKind::Projectile && caliber.is_some() => {
+                let share = Self::sharers(team.other(), caliber);
+                let (count, total) = self
+                    .state
+                    .robots
+                    .iter()
+                    .filter(|r| share(r))
+                    .fold((0u64, 0u64), |(n, xp), r| {
+                        (n + 1, xp + u64::from(r.experience_tenths))
+                    });
+                if let Some(average) = total.checked_div(count) {
+                    let destroyer = u64::from(Self::level_for(average));
+                    self.share_experience(share, kill(victim_level, destroyer));
+                }
+            }
+            // Assumption: with no destroyer and no projectile the manual gives
+            // no destroyer level; the level difference counts as zero.
+            _ => self.share_experience(
+                Self::sharers(team.other(), None),
+                kill(victim_level, victim_level),
+            ),
+        }
     }
     fn award_experience(&mut self, i: usize, tenths: u32) {
         // Table 5-11; experience stops accumulating at the assembly level cap
-        // (section 5.3.3). Table 5-12..15 performance changes are external.
-        const LEVEL_XP: [u32; 10] = [
-            0, 5500, 11000, 16500, 22000, 27500, 33000, 38500, 44000, 50000,
-        ];
-        let cap = self.state.teams[self.state.robots[i].config.team.index()].level_cap;
-        let r = &mut self.state.robots[i];
+        // (section 5.3.3). Level-ups raise current HP by the maximum HP gained
+        // (section 5.4.2).
+        let now = self.state.round_elapsed_ticks;
+        let team = self.state.robots[i].config.team.index();
+        let cap = self.state.teams[team].level_cap;
+        let r = &self.state.robots[i];
         if !r.config.kind.levels() || !r.alive() || r.level >= cap {
             return;
         }
+        let t = &mut self.state.teams[team];
+        let bonus = if now < t.rune_bonus_until_ticks {
+            tenths.min(t.rune_bonus_tenths)
+        } else {
+            0
+        };
+        t.rune_bonus_tenths -= bonus;
+        let r = &mut self.state.robots[i];
         r.experience_tenths = r
             .experience_tenths
             .saturating_add(tenths)
-            .min(LEVEL_XP[usize::from(cap - 1)]);
+            .saturating_add(bonus)
+            .min(LEVEL_XP_TENTHS[usize::from(cap - 1)]);
         let before = r.level;
-        while r.level < cap && r.experience_tenths >= LEVEL_XP[usize::from(r.level)] {
+        let before_hp = r.stats().max_hp;
+        while r.level < cap && r.experience_tenths >= LEVEL_XP_TENTHS[usize::from(r.level)] {
             r.level += 1;
         }
         if r.level != before {
+            r.hp =
+                r.hp.saturating_add(r.stats().max_hp.saturating_sub(before_hp));
             let level = r.level;
             let robot = r.config.id;
             self.emit(EventKind::LevelChanged { robot, level });
@@ -1112,29 +1817,53 @@ impl Game {
         }
         Ok(())
     }
-    fn update_weakness(&mut self, i: usize) {
+    fn clear_weakness(&mut self, i: usize) {
         let now = self.state.round_elapsed_ticks;
+        let r = &mut self.state.robots[i];
+        r.weakened = false;
+        r.weakened_until_ticks = None;
+        let minimum = r.respawned_at_ticks.unwrap_or(now) + 10 * SECOND_TICKS;
+        r.invincible_until_ticks = r.invincible_until_ticks.min(minimum.max(now));
+        let id = r.config.id;
+        self.emit(EventKind::WeaknessCleared(id));
+    }
+    fn update_weakness(&mut self, i: usize) {
         if self.state.robots[i].weakened
             && self.state.robots[i].weakened_until_ticks.is_none()
             && self.state.robots[i].alive()
             && self.own_service_zone(i)
         {
-            let r = &mut self.state.robots[i];
-            r.weakened = false;
-            let minimum = r.respawned_at_ticks.unwrap_or(now) + 10 * SECOND_TICKS;
-            r.invincible_until_ticks = r.invincible_until_ticks.min(minimum.max(now));
+            self.clear_weakness(i);
+        }
+    }
+    fn revive(&mut self, i: usize, hp: u32) {
+        let r = &mut self.state.robots[i];
+        let was_alive = r.alive();
+        r.hp = hp.max(1);
+        r.ejected = false;
+        r.respawn = None;
+        r.weakened = false;
+        r.weakened_until_ticks = None;
+        r.defeated_at_ticks = None;
+        r.launches_since_defeat = 0;
+        if !was_alive {
+            let id = r.config.id;
+            self.emit(EventKind::RobotRevived(id));
         }
     }
     fn respawn(&mut self, i: usize, instant: bool) {
         let now = self.state.round_elapsed_ticks;
         let r = &mut self.state.robots[i];
+        let max_hp = r.stats().max_hp;
         r.hp = if instant {
-            r.config.max_hp
+            max_hp
         } else {
-            ((u64::from(r.config.max_hp) + 5) / 10).max(1) as u32
+            ((u64::from(max_hp) + 5) / 10).max(1) as u32
         };
         r.respawn = None;
         r.weakened = true;
+        r.defeated_at_ticks = None;
+        r.launches_since_defeat = 0;
         r.respawned_at_ticks = Some(now);
         r.weakened_until_ticks = instant.then_some(now + 3 * SECOND_TICKS);
         r.invincible_until_ticks = now + if instant { 3 } else { 30 } * SECOND_TICKS;
@@ -1201,6 +1930,7 @@ impl Game {
     }
     fn tick_round(&mut self) {
         let now = self.state.round_elapsed_ticks;
+        let enforce = self.state.policy.enforce_allowance;
         self.state.buffs.retain(|b| b.expires_ticks > now);
         // Table 5-5: 6:59 initial grant, then 5:59 through 0:59.
         if let Some(amount) = IncomeSchedule::DEFAULT.amount_at(now) {
@@ -1218,6 +1948,17 @@ impl Game {
             }
         }
         for i in 0..self.state.robots.len() {
+            let cooling_multiplier = if now.is_multiple_of(100) {
+                let id = self.state.robots[i].config.id;
+                self.buffs_on(Target::Robot(id))
+                    .map(|b| b.cooling_multiplier)
+                    .max()
+                    .unwrap_or(1)
+                    .max(1)
+            } else {
+                1
+            };
+            let stats = self.state.robots[i].stats();
             self.state.robots[i]
                 .zones
                 .retain(|c| c.expires_ticks.is_none_or(|expires| expires > now));
@@ -1226,19 +1967,25 @@ impl Game {
                 r.weakened = false;
                 r.weakened_until_ticks = None;
             }
+            // Section 5.3.2: three seconds after a Hero's defeat its team's
+            // 42 mm damage stops until it is alive with allowance again.
+            if r.config.kind == RobotKind::Hero {
+                if !r.alive()
+                    && r.defeated_at_ticks
+                        .is_some_and(|d| now >= d.saturating_add(MM42_DEFEAT_TICKS))
+                {
+                    r.mm42_suspended = true;
+                } else if r.mm42_suspended
+                    && r.alive()
+                    && (!enforce || r.allowance[Caliber::Mm42.index()] > 0)
+                {
+                    r.mm42_suspended = false;
+                }
+            }
             if now.is_multiple_of(100) {
-                let multiplier = self
-                    .state
-                    .buffs
-                    .iter()
-                    .filter(|b| b.target == Target::Robot(r.config.id))
-                    .map(|b| b.cooling_multiplier)
-                    .max()
-                    .unwrap_or(1)
-                    .max(1);
                 r.heat_tenths = r
                     .heat_tenths
-                    .saturating_sub(u64::from(r.config.cooling_per_s) * u64::from(multiplier));
+                    .saturating_sub(u64::from(stats.cooling_per_s) * u64::from(cooling_multiplier));
                 if r.heat_tenths == 0 {
                     r.overheated = false;
                 }
@@ -1290,8 +2037,8 @@ impl Game {
                     } else {
                         10
                     };
-                    let heal = ((u64::from(r.config.max_hp) * percent + 50) / 100) as u32;
-                    r.hp = r.hp.saturating_add(heal).min(r.config.max_hp);
+                    let heal = ((u64::from(stats.max_hp) * percent + 50) / 100) as u32;
+                    r.hp = r.hp.saturating_add(heal).min(stats.max_hp);
                     if r.config.kind == RobotKind::Sentry {
                         let allowance = (now / (60 * SECOND_TICKS)) as u32 * 100;
                         r.allowance[0] += allowance - r.sentry_resupply_claimed;
@@ -1345,6 +2092,7 @@ impl Game {
         let deliveries: Vec<_> = self.state.pending_deliveries.drain(..due).collect();
         for delivery in deliveries {
             if let Ok(i) = self.robot_index(delivery.robot) {
+                let max_hp = self.state.robots[i].stats().max_hp;
                 let r = &mut self.state.robots[i];
                 match delivery.kind {
                     DeliveryKind::Ammo(caliber, amount) => {
@@ -1354,7 +2102,7 @@ impl Game {
                     DeliveryKind::Hp if r.alive() && !r.irregularly_disconnected => {
                         r.hp = (u64::from(r.hp) * 160 + 50)
                             .div_euclid(100)
-                            .min(u64::from(r.config.max_hp)) as u32
+                            .min(u64::from(max_hp)) as u32
                     }
                     _ => {}
                 }
@@ -1365,6 +2113,9 @@ impl Game {
         self.state.result = Some(self.determine_result());
         self.state.pending_deliveries.clear();
         self.state.buffs.clear();
+        for t in &mut self.state.teams {
+            t.rune_bonus_tenths = 0;
+        }
         for r in &mut self.state.robots {
             r.air_support_active = false;
         }

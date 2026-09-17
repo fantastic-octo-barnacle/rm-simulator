@@ -450,8 +450,9 @@ does not acknowledge its execution by the host.
 | 41 | Lays checkpoints out by change rate with chassis configuration presets; deltas under 128 bytes skip compression. |
 | 42 | Dead-reckons delta baselines to the frame's tick, realigns changed sequences by id and rotates baselines after 12 frames. |
 | 43 | Removes client fire timing, `ShotScheduled`'s intended time, the explicit-rules checkpoint fallback and `RMI2` input batches; `RMO6` command and tyre speeds use the 1 cm/s velocity scale. |
+| 44 | Carries the gameplay engine's state as the referee's `game`, outpost rotor start and homing, the match rule commands and `SetPerformance`. |
 
-The current protocol version is 43, defined by `PROTOCOL_VERSION` in
+The current protocol version is 44, defined by `PROTOCOL_VERSION` in
 `crates/rm-simulator-server/src/protocol.rs`. GNS sends redundant controls
 and retried shot intents unreliably; scheduling receipts and terminal shot results
 remain reliable. There is no shooter-view fire path or input-acknowledgement
@@ -542,15 +543,16 @@ the rune into Activating for that team, which expires after 20 s. Until
 activation grants 25 % defense for 45 s (section 5.5.2); a big activation is
 scored from the average ring of the recorded hits (5 to 10 arms lit), using
 the lit-arm count to pick the buff (Tables 5-16 and 5-17).
-grants the defense, attack and cooling buff of Tables 5-16 and 5-17 (only the defense
-buff has an effect here, on the team's bases, outposts and robots; attack and cooling are
-reported). After one big activation the rune only detects rings 4 to 10,
+grants the defense, attack and cooling buff of Tables 5-16 and 5-17; all three
+apply. After one big activation the rune only detects rings 4 to 10,
 after two rings 7 to 10 (Figure 5-18; rings are 15 mm wide, ring 10 the
-centre). The referee keeps a robot per chassis (HP, defeat, revive; a
-defeated robot stands still and cannot fire until revived) and can
-be driven from the HTTP panel: start, finish or reset the match, skip to a
-time (buffs and activation windows age with the round clock), grant or
-activate rune opportunities, damage or revive robots. The
+centre). The referee runs the `rm-simulator-gameplay` match engine: robot
+HP, levels and performance types, heat, allowance, gold, respawn, outpost
+rebuild and the round result follow the manual (see
+[referee rules](docs/referee-rules.md)). It can be driven from the HTTP panel:
+start, finish or reset the match, skip to a time (buffs and activation
+windows age with the round clock), grant or activate rune opportunities,
+damage, revive or respawn robots, and decide a round the rules leave open. The
 rulebook does not say how an activated rune looks beyond its arms being lit;
 the three 2 Hz blinks are this simulator's choice (`--rune-flash-hz 0`
 disables them, `--rune-flashes` changes the count).
@@ -592,21 +594,23 @@ see [the reproducible asset build](docs/semantic-assets.md).
 
 Destroyed outposts stop rotating and use disabled armor: light bars are
 fully off while the printed pattern stays white, and further contacts cannot score or trigger flashes. The housing
-still collides. Restoring HP enables the armor again.
+still collides. Restoring HP enables the armor again. In a match the rotor
+rests until the round starts, spins up, and stops for good at its first
+destruction or at 3:00. A robot that stands 10 s within 1.5 m of its team's
+destroyed outpost rebuilds it at 750 HP when the team has a rebuild
+opportunity (one per 1000 base HP lost, before 5:00).
 
-The HTTP panel also edits live ammo allowances and shot counts by caliber,
-team gold, automatic income and referee resupply prices. Ammo enforcement is
-off by default; enable it in the panel to reject firing with no allowance.
-Starting allowances default to zero and apply when a match starts or resets,
-and to newly joined pilots. Shot tracking and income operate only while
-Running. Free-camera shots have separate counts and do not consume robot ammo.
-The competitor HUD shows ammunition allowance and team gold.
+The HTTP panel also sets the rule policy (allowance enforcement, off by
+default; zone-only exchanges, off), team gold, a robot's allowance and
+performance type, and buys exchanges, clears weakness or pays an instant
+respawn for a robot. Heat, allowance, income and experience count only while
+Running; Idle is free practice. The competitor HUD shows level, heat,
+weakened and invincible states, the respawn progress, ammunition allowance,
+team gold and the round result.
 
 Equipment overrides set outpost HP, rune opportunities and timed rune buffs.
-Zero HP destroys an outpost; restoring HP resumes its configured rotation.
-Start/reset restores all outposts to 1500 HP. Only rune defense affects damage;
-attack and cooling remain reported values. Base armor hits now update shared
-base HP and shield; the panel can edit both.
+Zero HP destroys an outpost. Start/reset restores all outposts to 1500 HP.
+Base armor hits update shared base HP and shield; the panel can edit both.
 All edits use referee commands, so network pilots and spectators cannot apply
 them. The HTTP panel retains the host's existing referee authority.
 
@@ -650,14 +654,14 @@ light bar about the carriage centre to recover the paired optical plane.
 
 ### Training shortcuts and ammunition
 
-Defeated pilots choose **Respawn here - restore HP** in the defeat menu.
-The button restores full HP in place. Position, identity,
-ammunition and team gold are retained. This is a training shortcut,
-without a respawn timer, cost or invulnerability. The F3 **Reset robot to spawn**
-button also restores the original upright spawn pose and stops the robot, while
-keeping its identity, ammunition and team gold. O buys one 17 mm round and I buys
-one 42 mm round during Running, using the existing resource policy and team gold.
-Prices default to 1 and 10 gold and remain editable in the referee panel.
+Outside a match, defeated pilots choose **Respawn here - restore HP** in the
+defeat menu. The button restores full HP in place, keeping position, identity,
+ammunition and team gold. During a match the host refuses it: a defeated
+robot respawns in place on the section 5.2.2 timer, weakened and briefly
+invincible, and the HUD shows its progress. The F3 **Reset robot to spawn**
+button also restores the original upright spawn pose outside a match. O buys
+ten 17 mm rounds and I buys one 42 mm round for 10 gold during Running, when
+the robot's class fires that caliber.
 
 ### Ground-truth aim assist
 
@@ -702,7 +706,9 @@ shots near cover. No Vision2027 dependency or copied implementation is required.
 ## Robot equipment
 
 `just run --robot hero --third-person` drives the mecanum Hero; omit `--robot`
-for the omni Infantry 3, or pick it on the robot page of the title screen. Both carry approximate AM02 armor, LI01 HP lights,
+for the omni Infantry 3, or pick it on the robot page of the title screen.
+`--performance melee` (Hero) or `--performance power-burst` (Infantry) picks a
+section 5.4.2 performance type; see [app options](docs/app-options.md). Both carry approximate AM02 armor, LI01 HP lights,
 FI02 underbody RFID hardware, VT03 camera and a muzzle speed monitor. Hero uses
 an SM11-sized housing; Infantry uses SM01. HP segments and defeat state follow
 the referee. FI02 detection and speed-monitor LED sequences are not simulated.
@@ -735,8 +741,8 @@ lower floor sections; the body and the turret collide with walls and roofs,
 so a covered passage lower than the turret top stops the chassis. The HUD
 shows its speed and follow/spin mode. The gun pivot is stabilised above the chassis, so aiming does not
 follow the body's pitch and roll. Projectiles that strike an armor module
-above the detection speed damage the robot (10 HP per 17 mm, 100 HP per
-42 mm) and light it grey for the flash; the module's light bars go dark when
+above the detection speed damage the robot (20 HP per 17 mm, 200 HP per
+42 mm, Table 5-2; a module driven into scenery or another robot loses 2 HP) and light it grey for the flash; the module's light bars go dark when
 the robot is defeated. Strikes elsewhere on the chassis bounce off without
 scoring. The visuals show the omni wheels with their rollers, a two-axis
 gimbal bolted to the body (a turntable and fork that turn about the body's

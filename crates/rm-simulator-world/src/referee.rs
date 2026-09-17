@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
 //! Match referee on the field clock: teams, the round timer, Power Rune
-//! availability and buffs, outpost ownership and robot HP.
+//! availability and buffs, outpost ownership, and the standalone gameplay
+//! engine that owns robot, base and outpost HP.
 //!
 //! Sources in the RMUC 2026 rule manual (V2.1.0): section 6.5 (five-second
 //! countdown), 6.6 (seven-minute round), 5.5.2 (rune opportunities at 0:00
@@ -11,17 +12,25 @@
 //! and the number of lit arms, and the detection rings that remain after
 //! each Big Rune activation), and 5.5.1 (outposts).
 //!
-//! Outside a match (`Idle`) the runes run their training policy so the
-//! field stays usable for practice. `StartMatch` switches them to referee
-//! control and seeds their target streams from the config's seed: dark
-//! until a team spends an opportunity, then Activating for at most 20 s,
-//! then Activated for the buff's duration, then unavailable. `ResetMatch`
-//! drops the seeds again. The referee never reads host time; it advances
-//! only through `tick`.
+//! Damage, experience, levels, heat, respawn, weakness, outpost protection
+//! and rebuilds, and the section 5.8 round result come from
+//! [`rm_simulator_gameplay::Game`], which the referee drives on the round clock
+//! at its own 1 ms resolution. The field mirrors the game's base and outpost HP
+//! onto its physical objects.
+//!
+//! Outside a match (`Idle`) the runes run their training policy and the game
+//! is free practice: strikes deal damage, but nothing protects a base,
+//! experience is not earned and a defeated robot waits for an operator.
+//! `StartMatch` switches the runes to referee control and seeds their target
+//! streams from the config's seed: dark until a team spends an opportunity,
+//! then Activating for at most 20 s, then Activated for the buff's duration,
+//! then unavailable. `ResetMatch` drops the seeds again. The referee never
+//! reads host time; it advances only through `tick`.
 use crate::{
     ArmorHit, ArmorTarget,
     rune::{HitOutcome, Rune, RuneError, RuneKind, RuneState},
 };
+use rm_simulator_gameplay as gp;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
@@ -41,46 +50,83 @@ pub const BIG_RUNE_OPPORTUNITY_NS: [u64; 3] = [180_000_000_000, 255_000_000_000,
 pub const SMALL_RUNE_DEFENSE_PCT: u32 = 25;
 /// Section 5.5.2: the Small Rune's 25 % defense buff lasts 45 s.
 pub const SMALL_RUNE_BUFF_NS: u64 = 45_000_000_000;
+/// Section 5.5.1: the outpost's middle armor stops rotating at 3:00.
+pub const OUTPOST_ROTOR_STOP_NS: u64 = 180_000_000_000;
+/// Table 5-2: HP a robot loses when one of its armor modules collides.
+pub const COLLISION_DAMAGE_HP: u32 = 2;
+/// Horizontal radius around an outpost's origin that counts as its outpost
+/// zone, in metres. The rule manual draws the zone on the field map without a
+/// printed size; this is an application setting, not a rule constant.
+pub const OUTPOST_ZONE_RADIUS_M: f64 = 1.5;
 /// Ten rings across the 150 mm effective radius, ring 10 innermost; the
 /// width was read off Figure 5-18, the text only gives 1 mm radial accuracy.
 pub const RING_WIDTH_M: f64 = 0.015;
 /// Recent events kept in the snapshot.
 const EVENT_MEMORY: usize = 48;
+/// Recent events the game keeps between two referee drains. The referee
+/// translates them after every call, so this only has to cover one call.
+const GAME_EVENT_MEMORY: usize = 64;
 
 pub use rm_simulator_physics::Team;
 
 /// The robot classes a chassis can be recorded as. Every chassis names its
-/// class in its [`crate::ChassisPlacement`]; the live referee models no
-/// difference between the classes beyond what the record says, and gives
-/// each the one configured HP.
+/// class in its [`crate::ChassisPlacement`]; the class fixes the gameplay
+/// robot's weapon, levelling and default performance (section 5.4.2).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RobotKind {
     /// Hero: 42 mm gun.
     Hero,
-    /// Engineer.
+    /// Engineer: no launcher.
     Engineer,
     /// Infantry: 17 mm gun. The default class of a placement that names none.
     #[default]
     Infantry,
-    /// Sentry.
+    /// Sentry: 17 mm gun.
     Sentry,
-    /// Aerial drone.
+    /// Aerial drone: 17 mm gun that needs air support to fire.
     Drone,
 }
+impl RobotKind {
+    /// The gameplay engine's robot type for this class.
+    pub fn gameplay(self) -> gp::RobotKind {
+        match self {
+            Self::Hero => gp::RobotKind::Hero,
+            Self::Engineer => gp::RobotKind::Engineer,
+            Self::Infantry => gp::RobotKind::Infantry,
+            Self::Sentry => gp::RobotKind::Sentry,
+            Self::Drone => gp::RobotKind::Drone,
+        }
+    }
+    fn from_gameplay(kind: gp::RobotKind) -> Self {
+        match kind {
+            gp::RobotKind::Hero => Self::Hero,
+            gp::RobotKind::Engineer => Self::Engineer,
+            gp::RobotKind::Sentry => Self::Sentry,
+            gp::RobotKind::Drone => Self::Drone,
+            _ => Self::Infantry,
+        }
+    }
+}
 
-/// The HP every robot that joins the field starts with: the referee opens a
-/// record of the placement's [`RobotKind`] with this HP when the field adds a
-/// chassis, under the chassis' id and team. One value serves every class; no
-/// per-class HP table is modelled.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// Performance for robots the section 5.4.2 tables do not cover. Hero,
+/// Infantry, Engineer and Sentry use their rulebook values unless the
+/// placement selects a performance; anything else uses `fallback`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RobotConfig {
-    /// Table 5-12/5-13 level-1 values are typical; no levelling is modelled.
-    pub max_hp: u32,
+    /// HP, power, heat limit and cooling for a robot without rulebook values.
+    pub fallback: gp::Stats,
 }
 impl Default for RobotConfig {
-    /// The HP-focused level-1 infantry value (Table 5-13: 200 HP).
+    /// A 200 HP robot with a 100 heat limit cooling at 20 per second.
     fn default() -> Self {
-        Self { max_hp: 200 }
+        Self {
+            fallback: gp::Stats {
+                max_hp: 200,
+                chassis_power_w: 0,
+                heat_limit: 100,
+                cooling_per_s: 20,
+            },
+        }
     }
 }
 
@@ -90,13 +136,12 @@ impl Default for RobotConfig {
 pub struct RefereeConfig {
     /// Owner of each field rune, by rune index.
     pub rune_teams: Vec<Team>,
-    /// Owner of each field outpost, by outpost index.
+    /// Owner of each field outpost, by outpost index; at most one per team.
     pub outpost_teams: Vec<Team>,
-    /// The HP every chassis' robot starts with; its class comes from the
-    /// placement.
+    /// Performance for robot classes without rulebook values.
     pub robot: RobotConfig,
-    /// Round length in ns. Section 6.6 gives 7 min; the constructor accepts at
-    /// most one day and refuses zero.
+    /// Round length in ns. Section 6.6 gives 7 min; the constructor refuses
+    /// zero and anything longer.
     pub round_ns: u64,
     /// Countdown before the round in ns. Section 6.5 gives 5 s.
     pub countdown_ns: u64,
@@ -141,7 +186,7 @@ impl RefereeConfig {
 /// Where the match is in the section 6.5 and 6.6 sequence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MatchPhase {
-    /// No match: runes run their training policy.
+    /// No match: runes run their training policy and damage is free practice.
     Idle,
     /// A started match waiting out its countdown.
     Countdown,
@@ -171,19 +216,19 @@ impl RuneStage {
     }
 }
 
-/// An active rune buff (section 5.5.2). Attack and cooling are reported for
-/// clients; only the defense share is applied here, to outpost and robot damage.
-/// Times are on the round clock (`RefereeSnapshot::match_time_ns`), so a
-/// `SkipTo` ages the buff with the round.
+/// An active rune buff (section 5.5.2). The gameplay engine applies the
+/// attack, defense and cooling effects to the whole team; this record drives
+/// the rune's presentation. Times are on the round clock
+/// (`RefereeSnapshot::match_time_ns`), so a `SkipTo` ages the buff with the round.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuffState {
     /// Which stage granted the buff.
     pub source: RuneStage,
     /// Share of incoming damage removed, in percent.
     pub defense_pct: u32,
-    /// Reported attack share; the live simulation does not apply it.
+    /// Projectile damage multiplier in percent; 100 is no attack buff.
     pub attack_pct: u32,
-    /// Reported cooling multiplier; the live simulation does not apply it.
+    /// Barrel cooling multiplier.
     pub cooling_multiplier: u32,
     /// Round clock time the buff was granted.
     pub started_ns: u64,
@@ -206,7 +251,7 @@ pub struct TeamSnapshot {
     pub buff: Option<BuffState>,
 }
 
-/// One chassis' robot record: identity, team, class and HP.
+/// One chassis' robot record, summarised from the gameplay engine's state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RobotSnapshot {
     /// Chassis id the robot was opened under.
@@ -217,8 +262,12 @@ pub struct RobotSnapshot {
     pub kind: RobotKind,
     /// Remaining HP; zero means defeated.
     pub hp: u32,
-    /// HP the robot started the match with.
+    /// Maximum HP at the robot's current level (section 5.4.2).
     pub max_hp: u32,
+    /// Current level (Table 5-11).
+    pub level: u8,
+    /// Whether the robot is weakened after a respawn (section 5.2.2).
+    pub weakened: bool,
 }
 impl RobotSnapshot {
     /// Whether the robot has any HP left.
@@ -232,17 +281,17 @@ impl RobotSnapshot {
 /// the snapshot's own fields.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RefereeEvent {
-    /// A base lost HP or shield to a detected strike.
+    /// A base lost HP or shield.
     BaseDamaged {
         /// Team whose base was hit.
         team: Team,
-        /// HP plus shield removed, after the team's defense buff.
+        /// HP plus shield removed, after the team's defenses.
         amount: u32,
         /// Base HP after the hit.
         hp: u32,
         /// Base shield after the hit.
         shield_hp: u32,
-        /// The chassis whose projectile did it; `None` for a referee command.
+        /// The chassis whose projectile did it; `None` otherwise.
         shooter: Option<u32>,
     },
     /// A base reached zero HP.
@@ -256,6 +305,8 @@ pub enum RefereeEvent {
     MatchStarted,
     /// The round ended.
     MatchFinished,
+    /// The section 5.8 result of the round, or a referee's decision.
+    RoundResult(gp::RoundResult),
     /// `ResetMatch` returned the field to Idle.
     MatchReset,
     /// The round reached 3:00 and the runes converted to Big.
@@ -301,11 +352,11 @@ pub enum RefereeEvent {
     RobotDamaged {
         /// Chassis id of the robot.
         robot: u32,
-        /// HP removed, after the team's defense buff.
+        /// HP removed, after defenses.
         amount: u32,
         /// Robot HP after the hit.
         hp: u32,
-        /// The chassis whose projectile did it; `None` for a referee command.
+        /// The chassis whose projectile did it; `None` otherwise.
         shooter: Option<u32>,
     },
     /// A chassis joined the field and got a robot record.
@@ -325,16 +376,39 @@ pub enum RefereeEvent {
         /// Chassis id of the robot.
         robot: u32,
     },
-    /// A defeated robot was restored above zero HP.
+    /// An operator restored a defeated robot.
     RobotRevived {
         /// Chassis id of the robot.
         robot: u32,
+    },
+    /// A defeated robot returned through its respawn timer or a paid
+    /// instant respawn (section 5.2.2).
+    RobotRespawned {
+        /// Chassis id of the robot.
+        robot: u32,
+    },
+    /// A robot's weakened state ended.
+    WeaknessCleared {
+        /// Chassis id of the robot.
+        robot: u32,
+    },
+    /// A robot reached a new level (Table 5-11).
+    LevelUp {
+        /// Chassis id of the robot.
+        robot: u32,
+        /// New level.
+        level: u8,
     },
     /// An outpost reached zero HP.
     OutpostDestroyed {
         /// Outpost index in the field's outpost list.
         outpost: u32,
         /// Team that owned it.
+        team: Team,
+    },
+    /// A destroyed outpost was rebuilt with 750 HP (section 5.5.1).
+    OutpostRebuilt {
+        /// Team whose outpost was rebuilt.
         team: Team,
     },
 }
@@ -351,15 +425,16 @@ pub struct TimedEvent {
 }
 
 /// The referee's public state at one tick: the round clock, both teams, the
-/// robot records, ownership and the recent events.
+/// robot records, ownership, the gameplay state and the recent events.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RefereeSnapshot {
     /// Operator mechanism overrides, indexed red then blue.
     pub base_open: [bool; 2],
     /// Dart door overrides, indexed red then blue; open by default.
     pub dart_door_open: [bool; 2],
-    /// Gold, counters, allowances and income policy for both teams.
-    pub gameplay: rm_simulator_gameplay::live::Resources,
+    /// The gameplay engine's whole state: gold, HP, experience, heat,
+    /// respawn timers, buffs and the round result.
+    pub game: gp::Snapshot,
     /// Where the match is.
     pub phase: MatchPhase,
     /// Elapsed round time; frozen at the end of a finished match.
@@ -401,12 +476,11 @@ pub fn mechanism_view(referee: Option<&RefereeSnapshot>, time_ns: u64) -> Mechan
     }
 }
 
-/// Operator and organiser inputs. `Field::referee_command` applies base and
-/// outpost HP to the physical objects before forwarding; `Referee::command`
-/// refuses those two variants on its own.
+/// Operator and organiser inputs. `Field::referee_command` mirrors base and
+/// outpost HP onto the physical objects after the referee applies them.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RefereeCommand {
-    /// Set a live base's HP and shield directly.
+    /// Set a base's HP and shield directly; zero HP in a round ends it.
     SetBaseHp {
         /// Team whose base to edit.
         team: Team,
@@ -429,14 +503,48 @@ pub enum RefereeCommand {
         /// Whether the door stands open.
         open: bool,
     },
-    /// Gold, allowance or counter edits for the resource tracker.
-    Gameplay(rm_simulator_gameplay::live::Edit),
-    /// Set an outpost's HP directly; restoration resumes its rotor.
+    /// Set an outpost's HP directly. In training a restored tower spins
+    /// again; in a match a stopped rotor stays stopped.
     SetOutpostHp {
         /// Outpost index in the field's outpost list.
         outpost: u32,
         /// New HP, at most `outpost::INITIAL_HP`.
         hp: u32,
+    },
+    /// Set a team's gold.
+    SetGold {
+        /// Team to edit.
+        team: Team,
+        /// New balance.
+        gold: u32,
+    },
+    /// Set a robot's projectile allowance, 17 mm then 42 mm.
+    SetAllowance {
+        /// Chassis id of the robot.
+        robot: u32,
+        /// New allowance in caliber order.
+        allowance: [u32; 2],
+    },
+    /// Replace the rule switches; the live default leaves allowance
+    /// unenforced and lets pilots buy ammunition anywhere.
+    SetPolicy(gp::Policy),
+    /// Select a robot's performance type (section 5.4.2); refused while a
+    /// round is running.
+    SetPerformance {
+        /// Chassis id of the robot.
+        robot: u32,
+        /// New performance; it must fit the robot's class.
+        performance: gp::Performance,
+    },
+    /// Buy rounds for a robot's allowance with team gold at its own
+    /// service zone (section 5.3.2, Tables 5-7 to 5-9).
+    BuyAmmo {
+        /// Chassis id of the robot.
+        robot: u32,
+        /// Caliber bought.
+        caliber: crate::Caliber,
+        /// Rounds to buy; a multiple of 10 for 17 mm.
+        amount: u32,
     },
     /// Set a team's unspent rune opportunities.
     SetRuneOpportunities {
@@ -451,9 +559,9 @@ pub enum RefereeCommand {
         team: Team,
         /// Defense share in percent, at most 100.
         defense_pct: u32,
-        /// Reported attack share in percent, at most 1000.
+        /// Attack multiplier in percent, at most 1000.
         attack_pct: u32,
-        /// Reported cooling multiplier, at most 100.
+        /// Cooling multiplier, at most 100.
         cooling_multiplier: u32,
         /// Buff duration in ns, at most the round length.
         duration_ns: u64,
@@ -461,15 +569,20 @@ pub enum RefereeCommand {
     /// Idle -> Countdown -> Running.
     StartMatch,
     /// Skip the round clock forward (testing), at most to the end of the
-    /// round. Missed opportunities are granted, and buffs and activation
-    /// windows, which run on the round clock, age with it; the runes' own
-    /// hit windows keep world time.
+    /// round. Missed opportunities are granted, and buffs, activation
+    /// windows and every gameplay timer age with it; the runes' own hit
+    /// windows keep world time.
     SkipTo {
         /// Round time to jump to, at most `round_ns`.
         match_time_ns: u64,
     },
     /// End a counting-down or running match now.
     FinishMatch,
+    /// Decide a finished round the section 5.8 comparison could not.
+    Adjudicate {
+        /// Winning team, or `None` for a draw.
+        winner: Option<Team>,
+    },
     /// Back to Idle: runes return to their training policy.
     ResetMatch,
     /// Spend one opportunity to put the team's rune into Activating.
@@ -482,15 +595,26 @@ pub enum RefereeCommand {
         /// Team to grant it to.
         team: Team,
     },
-    /// Apply damage to a robot (through its team's defense buff).
+    /// Referee penalty damage to a robot: no defense or invincibility applies.
     DamageRobot {
         /// Chassis id of the robot.
         robot: u32,
-        /// HP to remove before the buff; refused for an already defeated robot.
+        /// HP to remove; refused for an already defeated robot.
         amount: u32,
     },
-    /// Restore a robot to full HP, keeping its position.
+    /// Restore a robot to full HP in place, clearing its respawn timer and
+    /// weakness.
     ReviveRobot {
+        /// Chassis id of the robot.
+        robot: u32,
+    },
+    /// Revive a defeated robot at once for gold (section 5.2.2).
+    InstantRespawn {
+        /// Chassis id of the robot.
+        robot: u32,
+    },
+    /// End a robot's weakened state as an own service zone would.
+    ClearWeakened {
         /// Chassis id of the robot.
         robot: u32,
     },
@@ -628,10 +752,43 @@ pub fn big_rune_buff(average_ring: f64, arms: u32, match_time_ns: u64) -> BuffSt
     }
 }
 
+/// World team to gameplay team.
+pub fn game_team(team: Team) -> gp::Team {
+    match team {
+        Team::Red => gp::Team::Red,
+        Team::Blue => gp::Team::Blue,
+    }
+}
+fn world_team(team: gp::Team) -> Team {
+    match team {
+        gp::Team::Red => Team::Red,
+        gp::Team::Blue => Team::Blue,
+    }
+}
+/// World caliber to gameplay caliber.
+pub fn game_caliber(caliber: crate::Caliber) -> gp::Caliber {
+    match caliber {
+        crate::Caliber::Mm17 => gp::Caliber::Mm17,
+        crate::Caliber::Mm42 => gp::Caliber::Mm42,
+    }
+}
+fn game_error(error: gp::Error) -> &'static str {
+    match error {
+        gp::Error::Phase => "the command is not valid in this match phase",
+        gp::Error::Robot => "unknown robot id",
+        gp::Error::Invalid => "invalid value",
+        gp::Error::Ineligible => "the robot is not eligible for that",
+        gp::Error::Insufficient => "not enough gold or allowance",
+        gp::Error::Limit => "exchange limit reached",
+        gp::Error::ClockOverflow => "gameplay clock overflow",
+    }
+}
+
 /// The match authority: teams, the countdown and round clock, rune
-/// opportunities and buffs, outpost protection, robot HP and the live resource
-/// tracker. It advances only through [`Referee::tick`] and [`Referee::command`],
-/// which take explicit timestamps; it never reads host time.
+/// opportunities and buffs, and the gameplay engine that owns robot, base and
+/// outpost HP. It advances only through [`Referee::tick`] and
+/// [`Referee::command`], which take explicit timestamps; it never reads host
+/// time.
 ///
 /// ```rust
 /// use rm_simulator_world::referee::Referee;
@@ -659,12 +816,16 @@ pub fn big_rune_buff(average_ring: f64, arms: u32, match_time_ns: u64) -> BuffSt
 ///     .unwrap();
 /// referee.tick(5_000_000_001, &mut runes).unwrap();
 /// assert_eq!(referee.snapshot().teams[0].rune_opportunities, 2);
+/// // The gameplay clock skipped with it.
+/// assert_eq!(referee.game().snapshot().round_elapsed_ticks, 90_000);
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Referee {
     base_open: [bool; 2],
     dart_door_open: [bool; 2],
-    gameplay: rm_simulator_gameplay::live::Resources,
+    game: gp::Game,
+    /// Id of the first game event not yet translated into a referee event.
+    game_events_seen: u64,
     config: RefereeConfig,
     /// Kind each rune had before the match, restored on reset.
     training_kinds: Vec<RuneKind>,
@@ -677,20 +838,13 @@ pub struct Referee {
     schedule_index: usize,
     stage: RuneStage,
     teams: [TeamState; 2],
-    robots: Vec<RobotSnapshot>,
-    /// Outposts whose destruction has already been announced, in outpost
-    /// index order. This is announcement memory for the
-    /// [`RefereeEvent::OutpostDestroyed`] event only: cover reads the outpost
-    /// states the field reports, so a destruction that was never announced can
-    /// cost an event but can never wrongly leave a base immune.
-    outposts_announced: Vec<bool>,
     events: VecDeque<TimedEvent>,
     now_ns: u64,
 }
 
 impl Referee {
     /// `runes` and `outposts` are the field's counts; the config must own
-    /// each of them.
+    /// each of them, and no team may own more than one outpost.
     pub fn new(
         config: RefereeConfig,
         rune_kinds: Vec<RuneKind>,
@@ -702,16 +856,38 @@ impl Referee {
         if config.outpost_teams.len() != outposts {
             return Err("referee outpost_teams must name an owner for every outpost");
         }
-        if config.round_ns == 0 || config.round_ns > 24 * 3_600_000_000_000 {
-            return Err("referee round length must be within a day");
+        if Team::BOTH.iter().any(|team| {
+            config
+                .outpost_teams
+                .iter()
+                .filter(|owner| *owner == team)
+                .count()
+                > 1
+        }) {
+            return Err("a team can own at most one outpost");
         }
-        if config.robot.max_hp == 0 {
+        if config.round_ns == 0 || config.round_ns > ROUND_NS {
+            return Err("referee round length must be positive and at most seven minutes");
+        }
+        if config.robot.fallback.max_hp == 0 {
             return Err("referee robots need some HP");
         }
+        let mut game = gp::Game::new(gp::Config {
+            format: gp::MatchFormat::Bo2,
+            robots: Vec::new(),
+            event_memory: GAME_EVENT_MEMORY,
+        })
+        .map_err(game_error)?;
+        game.command(gp::Command::SetPolicy(gp::Policy {
+            enforce_allowance: false,
+            exchange_requires_zone: false,
+        }))
+        .map_err(game_error)?;
         Ok(Self {
             base_open: [false; 2],
             dart_door_open: [true; 2],
-            gameplay: Default::default(),
+            game,
+            game_events_seen: 0,
             training_kinds: rune_kinds,
             phase: MatchPhase::Idle,
             phase_started_ns: 0,
@@ -721,30 +897,70 @@ impl Referee {
             schedule_index: 0,
             stage: RuneStage::Small,
             teams: [TeamState::fresh(), TeamState::fresh()],
-            robots: Vec::new(),
-            outposts_announced: vec![false; outposts],
             events: VecDeque::new(),
             now_ns: 0,
             config,
         })
     }
-    /// Refuse a launch the live resource policy blocks. Outside a running
-    /// round, and while enforcement is off, every launch is allowed.
+    /// The gameplay engine: HP, gold, experience, heat, respawn and results.
+    pub fn game(&self) -> &gp::Game {
+        &self.game
+    }
+    fn robot_state(&self, robot: u32) -> Option<&gp::RobotState> {
+        self.game
+            .snapshot()
+            .robots
+            .iter()
+            .find(|r| r.config.id == robot)
+    }
+    /// Refuse a launch the rules block: a defeated, weakened, overheated or
+    /// locked robot, a caliber the robot has no launcher for, a launch outside
+    /// Idle practice or a running round, and a zero allowance when the policy
+    /// enforces it. Shots without a known shooter are always allowed.
     pub fn check_launch(
         &self,
         shooter: Option<u32>,
         caliber: crate::Caliber,
     ) -> Result<(), &'static str> {
-        if self.phase == MatchPhase::Running {
-            self.gameplay.check_launch(shooter, live_caliber(caliber))
-        } else {
-            Ok(())
+        let Some(robot) = shooter.and_then(|id| self.robot_state(id)) else {
+            return Ok(());
+        };
+        let caliber = game_caliber(caliber);
+        if self.game.can_launch(robot.config.id, caliber) {
+            return Ok(());
         }
+        let snapshot = self.game.snapshot();
+        let now = snapshot.round_elapsed_ticks;
+        Err(if !robot.alive() {
+            "the robot is defeated"
+        } else if !robot.config.kind.shoots(caliber) {
+            "the robot has no launcher for that caliber"
+        } else if !matches!(snapshot.phase, gp::Phase::Idle | gp::Phase::Running) {
+            "the round is not running"
+        } else if robot.weakened {
+            "the robot is weakened"
+        } else if robot.overheated || robot.heat_locked_for_round {
+            "the barrel is overheated"
+        } else if robot.speed_locked_for_round || robot.speed_locked_until_ticks > now {
+            "launching is locked"
+        } else if robot.irregularly_disconnected {
+            "the robot is disconnected"
+        } else if robot.config.kind == gp::RobotKind::Drone && !robot.air_support_active {
+            "the drone has no air support"
+        } else {
+            "no projectile allowance"
+        })
     }
-    /// Charge a successful launch to the shooter's team during a running round.
+    /// Account a launch the field made: allowance, heat and launch experience.
     pub fn record_launch(&mut self, shooter: Option<u32>, caliber: crate::Caliber) {
-        if self.phase == MatchPhase::Running {
-            self.gameplay.launch(shooter, live_caliber(caliber));
+        if let Some(robot) = shooter
+            && self.robot_state(robot).is_some()
+        {
+            let _ = self.game.command(gp::Command::Launch {
+                robot,
+                caliber: game_caliber(caliber),
+            });
+            self.drain_game_events();
         }
     }
     /// The rules this referee was built with.
@@ -771,13 +987,22 @@ impl Referee {
     fn team_of_rune(&self, rune: u32) -> Option<Team> {
         self.config.rune_teams.get(rune as usize).copied()
     }
-    /// Defense buff share protecting outpost `index` right now.
-    pub fn outpost_defense_pct(&self, index: usize) -> u32 {
+    /// Outpost index `team` owns, when it has one.
+    pub fn outpost_of(&self, team: Team) -> Option<usize> {
         self.config
             .outpost_teams
-            .get(index)
-            .and_then(|team| self.teams[team.index()].buff)
-            .map_or(0, |buff| buff.defense_pct)
+            .iter()
+            .position(|owner| *owner == team)
+    }
+    /// A base's HP and shield in the gameplay engine.
+    pub fn base_hp(&self, team: Team) -> (u32, u32) {
+        let state = &self.game.snapshot().teams[team.index()];
+        (state.base_hp, state.base_shield_hp)
+    }
+    /// An outpost's HP in the gameplay engine; `None` for an index out of range.
+    pub fn outpost_hp(&self, outpost: usize) -> Option<u32> {
+        let team = *self.config.outpost_teams.get(outpost)?;
+        Some(self.game.snapshot().teams[team.index()].outpost_hp)
     }
     /// Innermost ring that still detects on rune `index` (section 5.5.2:
     /// rings 4..10 after one Big Rune activation, 7..10 after two).
@@ -805,13 +1030,13 @@ impl Referee {
     /// and back.
     ///
     /// On [`StampClock::Field`]: the referee's current time, the phase start,
-    /// the round start, then each event's time. On [`StampClock::Round`]: the
-    /// economy's round time, then per team the activation start and the
-    /// buff's start and end, then each event's round time. The skipped round
-    /// time and a finished round's frozen time are durations, not stamps, and
-    /// are not visited, so [`Referee::match_time_ns`] only needs the field
-    /// clock stamps to be mapped back. A referee whose stamps were rewritten
-    /// is meaningless until they are mapped back.
+    /// the round start, then each event's time. On [`StampClock::Round`]: per
+    /// team the activation start and the buff's start and end, then each
+    /// event's round time. The skipped round time, a finished round's frozen
+    /// time and the gameplay engine's millisecond round ticks are not
+    /// nanosecond stamps and are not visited, so [`Referee::match_time_ns`]
+    /// only needs the field clock stamps to be mapped back. A referee whose
+    /// stamps were rewritten is meaningless until they are mapped back.
     pub fn for_each_stamp_mut(&mut self, clock: StampClock, visit: &mut dyn FnMut(&mut u64)) {
         match clock {
             StampClock::Field => {
@@ -823,7 +1048,6 @@ impl Referee {
                 }
             }
             StampClock::Round => {
-                visit(&mut self.gameplay.match_time_ns);
                 for team in &mut self.teams {
                     if let Some(since) = &mut team.activating_since_ns {
                         visit(since);
@@ -862,8 +1086,108 @@ impl Referee {
             self.events.pop_front();
         }
     }
+    /// Translate the game events recorded since the last drain.
+    fn drain_game_events(&mut self) {
+        let seen = self.game_events_seen;
+        let snapshot = self.game.snapshot();
+        let fresh: Vec<gp::Event> = snapshot
+            .recent_events
+            .iter()
+            .filter(|event| event.id >= seen)
+            .cloned()
+            .collect();
+        self.game_events_seen = snapshot.next_event_id;
+        for event in fresh {
+            match event.kind {
+                gp::EventKind::Damage {
+                    target,
+                    shooter,
+                    hp,
+                    shield,
+                    ..
+                } if hp + shield > 0 => match target {
+                    gp::Target::Robot(robot) => {
+                        let now_hp = self.robot_state(robot).map_or(0, |r| r.hp);
+                        self.push_event(RefereeEvent::RobotDamaged {
+                            robot,
+                            amount: hp,
+                            hp: now_hp,
+                            shooter,
+                        });
+                    }
+                    gp::Target::Base(team) => {
+                        let team = world_team(team);
+                        let (base_hp, shield_hp) = self.base_hp(team);
+                        self.push_event(RefereeEvent::BaseDamaged {
+                            team,
+                            amount: hp + shield,
+                            hp: base_hp,
+                            shield_hp,
+                            shooter,
+                        });
+                        if base_hp == 0 {
+                            self.push_event(RefereeEvent::BaseDestroyed { team });
+                        }
+                    }
+                    gp::Target::Outpost(team) => {
+                        let team = world_team(team);
+                        if self.game.snapshot().teams[team.index()].outpost_hp == 0 {
+                            self.outpost_destroyed(team);
+                        }
+                    }
+                },
+                gp::EventKind::RobotDefeated(robot) => {
+                    self.push_event(RefereeEvent::RobotDefeated { robot })
+                }
+                gp::EventKind::RobotRespawned(robot) => {
+                    self.push_event(RefereeEvent::RobotRespawned { robot })
+                }
+                gp::EventKind::RobotRevived(robot) => {
+                    self.push_event(RefereeEvent::RobotRevived { robot })
+                }
+                gp::EventKind::WeaknessCleared(robot) => {
+                    self.push_event(RefereeEvent::WeaknessCleared { robot })
+                }
+                gp::EventKind::OutpostRebuilt(team) => {
+                    self.push_event(RefereeEvent::OutpostRebuilt {
+                        team: world_team(team),
+                    })
+                }
+                gp::EventKind::LevelChanged { robot, level } => {
+                    self.push_event(RefereeEvent::LevelUp { robot, level })
+                }
+                _ => {}
+            }
+        }
+    }
+    /// Announce an outpost's destruction and open its team's base cover.
+    fn outpost_destroyed(&mut self, team: Team) {
+        self.base_open[team.index()] = true;
+        if let Some(outpost) = self.outpost_of(team) {
+            self.push_event(RefereeEvent::OutpostDestroyed {
+                outpost: outpost as u32,
+                team,
+            });
+        }
+    }
+    /// Bring a running game's round clock up to `match_time_ns`.
+    fn advance_game(&mut self, match_time_ns: u64) {
+        let snapshot = self.game.snapshot();
+        if snapshot.phase != gp::Phase::Running {
+            return;
+        }
+        let target = match_time_ns.min(self.config.round_ns) / gp::TICK_NS;
+        let behind = target.saturating_sub(snapshot.round_elapsed_ticks);
+        if behind > 0 {
+            // Stepping a running game only fails on clock overflow, which the
+            // round length bounds.
+            let _ = self.game.step(behind);
+            self.drain_game_events();
+        }
+    }
 
-    /// Advance to `now_ns` (never backwards), driving the runes it owns.
+    /// Advance to `now_ns` (never backwards), driving the runes it owns and
+    /// the gameplay engine's round clock.
     pub fn tick(&mut self, now_ns: u64, runes: &mut [Rune]) -> Result<(), RuneError> {
         if now_ns < self.now_ns {
             return Err(RuneError::TimeReversal);
@@ -872,6 +1196,10 @@ impl Referee {
         if self.phase == MatchPhase::Countdown
             && now_ns - self.phase_started_ns >= self.config.countdown_ns
         {
+            let remaining =
+                gp::COUNTDOWN_TICKS.saturating_sub(self.game.snapshot().phase_elapsed_ticks);
+            let _ = self.game.step(remaining);
+            self.drain_game_events();
             self.phase = MatchPhase::Running;
             self.phase_started_ns = now_ns;
             self.match_started_ns = now_ns;
@@ -882,8 +1210,7 @@ impl Referee {
             return Ok(());
         }
         let match_time_ns = self.match_time(now_ns);
-        self.gameplay
-            .advance_to(match_time_ns.min(self.config.round_ns));
+        self.advance_game(match_time_ns);
         while let Some((at_ns, item)) = SCHEDULE.get(self.schedule_index).copied()
             && at_ns <= match_time_ns
         {
@@ -909,7 +1236,8 @@ impl Referee {
         for team in Team::BOTH {
             self.tick_team(team, now_ns, match_time_ns, runes)?;
         }
-        if match_time_ns >= self.config.round_ns {
+        if match_time_ns >= self.config.round_ns || self.game.snapshot().phase != gp::Phase::Running
+        {
             self.finish(now_ns, runes)?;
         }
         Ok(())
@@ -965,6 +1293,19 @@ impl Referee {
                         slot.big_rune_activations += 1;
                     }
                     let stage = self.stage;
+                    let _ = self.game.command(gp::Command::RuneActivated {
+                        team: game_team(team),
+                        stage: match stage {
+                            RuneStage::Small => gp::RuneStage::Small,
+                            RuneStage::Big => gp::RuneStage::Large,
+                        },
+                        attack_pct: buff.attack_pct,
+                        defense_pct: buff.defense_pct,
+                        cooling_multiplier: buff.cooling_multiplier,
+                        duration_ticks: (buff.expires_ns - buff.started_ns)
+                            .div_ceil(gp::TICK_NS)
+                            .max(1),
+                    });
                     self.push_event(RefereeEvent::RuneActivated {
                         team,
                         stage,
@@ -972,6 +1313,7 @@ impl Referee {
                         average_ring,
                         buff,
                     });
+                    self.drain_game_events();
                 }
                 RuneState::Activating if match_time_ns - since >= RUNE_ACTIVATING_WINDOW_NS => {
                     rune.deactivate(now_ns)?;
@@ -998,13 +1340,20 @@ impl Referee {
             && match_time_ns >= buff.expires_ns
         {
             self.teams[team.index()].buff = None;
-            rune.deactivate(now_ns)?;
+            runes[index].deactivate(now_ns)?;
+            self.clear_game_rune_buff(team);
             self.push_event(RefereeEvent::BuffExpired { team });
         }
         Ok(())
     }
+    fn clear_game_rune_buff(&mut self, team: Team) {
+        let _ = self.game.command(gp::Command::ClearBuff {
+            target: gp::BuffTarget::Team(game_team(team)),
+            source: gp::coverage::Mechanic::Rune,
+        });
+    }
 
-    /// Record a scored contact (called by the field after scoring).
+    /// Record a scored rune contact (called by the field after scoring).
     pub fn observe_hit(&mut self, hit: &ArmorHit) {
         let ArmorTarget::Rune { rune, .. } = hit.target else {
             return;
@@ -1032,82 +1381,54 @@ impl Referee {
         }
     }
 
-    /// Defense share protecting `team`'s base right now, in percent; zero
-    /// without a buff.
-    pub fn base_defense_pct(&self, team: Team) -> u32 {
-        self.teams[team.index()]
-            .buff
-            .map_or(0, |buff| buff.defense_pct)
+    /// Apply a detected projectile strike through the gameplay engine and
+    /// report what it removed. Idle is free practice; outside Idle and a
+    /// running round a strike removes nothing.
+    pub fn projectile_hit(&mut self, hit: gp::ProjectileHit) -> gp::Applied {
+        let applied = self.game.projectile_hit(hit).unwrap_or_default();
+        self.drain_game_events();
+        applied
     }
-    /// Section 5.5.1 outpost protection, disabled in Idle training.
-    ///
-    /// `outposts_destroyed` is the field's per-outpost destruction state in
-    /// outpost index order. The field owns the outposts, so this reads them
-    /// rather than a copy kept here: a base is immune exactly while a tower of
-    /// its team still stands, whatever the event log has been told.
-    pub fn base_protected(&self, team: Team, outposts_destroyed: &[bool]) -> bool {
-        self.phase != MatchPhase::Idle
-            && self
-                .config
-                .outpost_teams
-                .iter()
-                .zip(outposts_destroyed)
-                .any(|(owner, destroyed)| *owner == team && !destroyed)
+    /// Apply damage of `kind` that already includes attacker effects, as
+    /// [`gp::Command::Damage`] does, crediting the target's opponent.
+    pub fn damage(&mut self, target: gp::Target, amount: u32, kind: gp::DamageKind) -> gp::Applied {
+        let applied = self
+            .game
+            .damage(target, amount, kind, None)
+            .unwrap_or_default();
+        self.drain_game_events();
+        applied
     }
-    /// Record a base strike the field already applied to the physical base.
-    /// Reaching zero HP finishes a running match.
-    pub fn observe_base_hit(
-        &mut self,
-        team: Team,
-        amount: u32,
-        hp: u32,
-        shield_hp: u32,
-        shooter: Option<u32>,
-    ) {
-        if amount == 0 {
+    /// Report whether a robot stands in its own outpost zone. Only a running
+    /// round records zone contacts, and only a change is forwarded.
+    pub fn observe_outpost_zone(&mut self, robot: u32, detected: bool) {
+        if self.phase != MatchPhase::Running {
             return;
         }
-        self.push_event(RefereeEvent::BaseDamaged {
-            team,
-            amount,
-            hp,
-            shield_hp,
-            shooter,
-        });
-        if hp == 0 {
-            self.push_event(RefereeEvent::BaseDestroyed { team });
-            if self.phase == MatchPhase::Running {
-                self.finished_match_time_ns = self.match_time(self.now_ns);
-                self.phase = MatchPhase::Finished;
-                self.push_event(RefereeEvent::MatchFinished);
-            }
-        }
-    }
-    /// Note every outpost's destruction state, in outpost index order, and
-    /// announce each newly destroyed one: it opens its team's base cover and
-    /// records an [`RefereeEvent::OutpostDestroyed`]. Calling this repeatedly
-    /// with the same states announces nothing further.
-    pub fn observe_outposts(&mut self, destroyed: impl IntoIterator<Item = bool>) {
-        for (index, destroyed) in destroyed.into_iter().enumerate() {
-            if index >= self.outposts_announced.len() {
-                break;
-            }
-            if destroyed && !self.outposts_announced[index] {
-                let team = self.config.outpost_teams[index];
-                self.base_open[team.index()] = true;
-                self.push_event(RefereeEvent::OutpostDestroyed {
-                    outpost: index as u32,
-                    team,
-                });
-            }
-            self.outposts_announced[index] = destroyed;
+        let Some(state) = self.robot_state(robot) else {
+            return;
+        };
+        let zone = gp::Zone {
+            kind: gp::ZoneKind::Outpost,
+            owner: state.config.team,
+        };
+        let recorded = state
+            .zones
+            .iter()
+            .any(|contact| contact.zone == zone && contact.detected);
+        if recorded != detected {
+            let _ = self.game.command(gp::Command::ZoneDetection {
+                robot,
+                zone,
+                detected,
+            });
+            self.drain_game_events();
         }
     }
 
     /// Apply an operator command at `now_ns`, driving the runes it owns. A
     /// timestamp before the referee's current one, and any command the current
     /// phase does not allow, is refused with a message and no other change.
-    /// `SetBaseHp` and `SetOutpostHp` must go through `Field::referee_command`.
     pub fn command(
         &mut self,
         command: RefereeCommand,
@@ -1119,16 +1440,16 @@ impl Referee {
         }
         self.now_ns = now_ns;
         let rune_error = |_: RuneError| "rune rejected the referee's request";
-        match command {
-            RefereeCommand::Gameplay(edit) => {
-                if matches!(edit, rm_simulator_gameplay::live::Edit::BuyAmmo { .. })
-                    && self.phase != MatchPhase::Running
-                {
-                    return Err("the round is not running");
-                }
-                self.gameplay.edit(edit)
-            }
-            RefereeCommand::SetBaseHp { .. } => Err("base HP must be applied through Field"),
+        let result = match command {
+            RefereeCommand::SetBaseHp {
+                team,
+                hp,
+                shield_hp,
+            } => self.game.command(gp::Command::SetBase {
+                team: game_team(team),
+                hp,
+                shield_hp,
+            }),
             RefereeCommand::SetBaseOpen { team, open } => {
                 self.base_open[team.index()] = open;
                 Ok(())
@@ -1137,7 +1458,45 @@ impl Referee {
                 self.dart_door_open[team.index()] = open;
                 Ok(())
             }
-            RefereeCommand::SetOutpostHp { .. } => Err("edit outpost HP through the field"),
+            RefereeCommand::SetOutpostHp { outpost, hp } => {
+                let team = *self
+                    .config
+                    .outpost_teams
+                    .get(outpost as usize)
+                    .ok_or("unknown outpost")?;
+                let before = self.game.snapshot().teams[team.index()].outpost_hp;
+                self.game
+                    .command(gp::Command::SetOutpostHp {
+                        team: game_team(team),
+                        hp,
+                    })
+                    .map_err(|_| "outpost HP must be at most 1500")?;
+                if before > 0 && hp == 0 {
+                    self.outpost_destroyed(team);
+                }
+                Ok(())
+            }
+            RefereeCommand::SetGold { team, gold } => self.game.command(gp::Command::SetGold {
+                team: game_team(team),
+                gold,
+            }),
+            RefereeCommand::SetAllowance { robot, allowance } => self
+                .game
+                .command(gp::Command::SetAllowance { robot, allowance }),
+            RefereeCommand::SetPolicy(policy) => self.game.command(gp::Command::SetPolicy(policy)),
+            RefereeCommand::SetPerformance { robot, performance } => self
+                .game
+                .command(gp::Command::SetPerformance { robot, performance }),
+            RefereeCommand::BuyAmmo {
+                robot,
+                caliber,
+                amount,
+            } => self.game.command(gp::Command::ExchangeAmmo {
+                robot,
+                caliber: game_caliber(caliber),
+                amount,
+                remote: false,
+            }),
             RefereeCommand::SetRuneOpportunities {
                 team,
                 opportunities,
@@ -1176,7 +1535,21 @@ impl Referee {
                     started_ns,
                     expires_ns: started_ns + duration_ns,
                 });
-                Ok(())
+                if duration_ns > 0 {
+                    let now_ticks = self.game.snapshot().round_elapsed_ticks;
+                    self.game.command(gp::Command::ApplyBuff(gp::Buff {
+                        target: gp::BuffTarget::Team(game_team(team)),
+                        source: gp::coverage::Mechanic::Rune,
+                        attack_pct,
+                        defense_pct,
+                        vulnerability_pct: 0,
+                        cooling_multiplier,
+                        expires_ticks: now_ticks + duration_ns.div_ceil(gp::TICK_NS).max(1),
+                    }))
+                } else {
+                    self.clear_game_rune_buff(team);
+                    Ok(())
+                }
             }
             RefereeCommand::StartMatch => {
                 if self.phase != MatchPhase::Idle {
@@ -1185,21 +1558,27 @@ impl Referee {
                 for team in &mut self.teams {
                     *team = TeamState::fresh();
                 }
-                for robot in &mut self.robots {
-                    robot.hp = robot.max_hp;
-                }
                 self.base_open = [false; 2];
                 self.dart_door_open = [true; 2];
-                self.gameplay.reset();
                 self.stage = RuneStage::Small;
                 self.schedule_index = 0;
-                self.outposts_announced.fill(false);
                 for (index, rune) in runes.iter_mut().enumerate() {
                     if index < self.config.rune_teams.len() {
                         rune.set_auto_restart(false);
                         rune.set_seed(self.rune_seed(index));
                         rune.convert(RuneKind::Small, now_ns).map_err(rune_error)?;
                         rune.deactivate(now_ns).map_err(rune_error)?;
+                    }
+                }
+                self.reset_game();
+                let _ = self.game.command(gp::Command::BeginCountdown);
+                // A team the field gives no outpost has none to protect its base.
+                for team in Team::BOTH {
+                    if self.outpost_of(team).is_none() {
+                        let _ = self.game.command(gp::Command::SetOutpostHp {
+                            team: game_team(team),
+                            hp: 0,
+                        });
                     }
                 }
                 self.phase = MatchPhase::Countdown;
@@ -1215,14 +1594,36 @@ impl Referee {
                 if match_time_ns < current {
                     return Err("the round clock cannot move backwards");
                 }
-                self.skipped_ns += match_time_ns.min(self.config.round_ns) - current;
+                self.advance_game(current);
+                let target = match_time_ns.min(self.config.round_ns);
+                self.skipped_ns += target - current;
+                if self.game.snapshot().phase == gp::Phase::Running {
+                    let _ = self.game.command(gp::Command::SkipTo {
+                        round_ticks: target / gp::TICK_NS,
+                    });
+                }
                 Ok(())
             }
             RefereeCommand::FinishMatch => {
                 if !matches!(self.phase, MatchPhase::Countdown | MatchPhase::Running) {
                     return Err("no match to finish");
                 }
-                self.finish(now_ns, runes).map_err(rune_error)
+                self.finish(now_ns, runes).map_err(rune_error)?;
+                Ok(())
+            }
+            RefereeCommand::Adjudicate { winner } => {
+                if self.phase != MatchPhase::Finished {
+                    return Err("no finished round to decide");
+                }
+                self.game
+                    .command(gp::Command::Adjudicate {
+                        winner: winner.map(game_team),
+                    })
+                    .map_err(game_error)?;
+                if let Some(result) = self.game.snapshot().result {
+                    self.push_event(RefereeEvent::RoundResult(result));
+                }
+                Ok(())
             }
             RefereeCommand::ResetMatch => {
                 if self.phase == MatchPhase::Idle {
@@ -1231,12 +1632,8 @@ impl Referee {
                 for team in &mut self.teams {
                     *team = TeamState::fresh();
                 }
-                for robot in &mut self.robots {
-                    robot.hp = robot.max_hp;
-                }
                 self.base_open = [false; 2];
                 self.dart_door_open = [true; 2];
-                self.gameplay.reset();
                 self.stage = RuneStage::Small;
                 self.schedule_index = 0;
                 for (index, rune) in runes.iter_mut().enumerate() {
@@ -1248,6 +1645,7 @@ impl Referee {
                         rune.activate(now_ns).map_err(rune_error)?;
                     }
                 }
+                self.reset_game();
                 self.phase = MatchPhase::Idle;
                 self.phase_started_ns = now_ns;
                 self.push_event(RefereeEvent::MatchReset);
@@ -1287,113 +1685,95 @@ impl Referee {
                 Ok(())
             }
             RefereeCommand::DamageRobot { robot, amount } => {
-                self.robot_index(robot)?;
-                if self.robot_defeated(robot) == Some(true) {
+                let state = self.robot_state(robot).ok_or("unknown robot id")?;
+                if !state.alive() {
                     return Err("the robot is already defeated");
                 }
-                self.hit_robot(robot, amount, None);
-                Ok(())
+                self.game
+                    .damage(
+                        gp::Target::Robot(robot),
+                        amount,
+                        gp::DamageKind::Penalty,
+                        None,
+                    )
+                    .map(|_| ())
             }
             RefereeCommand::ReviveRobot { robot } => {
-                let index = self.robot_index(robot)?;
-                self.robots[index].hp = self.robots[index].max_hp;
-                self.push_event(RefereeEvent::RobotRevived { robot });
-                Ok(())
+                self.game.command(gp::Command::Revive { robot })
+            }
+            RefereeCommand::InstantRespawn { robot } => {
+                self.game.command(gp::Command::InstantRespawn { robot })
+            }
+            RefereeCommand::ClearWeakened { robot } => {
+                self.game.command(gp::Command::ClearWeakened { robot })
             }
             RefereeCommand::SetRobotHp { robot, hp } => {
-                let index = self.robot_index(robot)?;
-                let was_defeated = self.robots[index].hp == 0;
-                self.robots[index].hp = hp.min(self.robots[index].max_hp);
-                if was_defeated && hp > 0 {
-                    self.push_event(RefereeEvent::RobotRevived { robot });
-                } else if !was_defeated && hp == 0 {
-                    self.push_event(RefereeEvent::RobotDefeated { robot });
-                }
-                Ok(())
+                self.game.command(gp::Command::SetRobotHp { robot, hp })
             }
-        }
+        };
+        self.drain_game_events();
+        result.map_err(game_error)
+    }
+    /// The game back to Idle practice with its roster at full health.
+    fn reset_game(&mut self) {
+        self.drain_game_events();
+        let _ = self.game.command(gp::Command::ResetMatch);
+        self.game_events_seen = self.game.snapshot().next_event_id;
     }
 
-    fn robot_index(&self, robot: u32) -> Result<usize, &'static str> {
-        self.robots
-            .iter()
-            .position(|r| r.id == robot)
-            .ok_or("unknown robot id")
-    }
-    /// Give a chassis its robot record of class `kind` at full HP. An id
-    /// already present is an error; the field never reuses one.
+    /// Give a chassis its robot record of class `kind` at full HP, with the
+    /// selected performance or the class default. An id already present is an
+    /// error; the field never reuses one.
     pub fn add_robot(
         &mut self,
         robot: u32,
         team: Team,
         kind: RobotKind,
+        performance: Option<gp::Performance>,
     ) -> Result<(), &'static str> {
-        if self.robot_index(robot).is_ok() {
+        if self.robot_state(robot).is_some() {
             return Err("a robot with that id already exists");
         }
-        let RobotConfig { max_hp } = self.config.robot;
-        self.gameplay.add_robot(
-            robot,
-            match team {
-                Team::Red => rm_simulator_gameplay::Team::Red,
-                Team::Blue => rm_simulator_gameplay::Team::Blue,
-            },
-        );
-        self.robots.push(RobotSnapshot {
-            id: robot,
-            team,
-            kind,
-            hp: max_hp,
-            max_hp,
-        });
+        let kind = kind.gameplay();
+        let performance = performance
+            .or_else(|| gp::Performance::default_for(kind))
+            .unwrap_or(gp::Performance::Fixed(self.config.robot.fallback));
+        self.game
+            .command(gp::Command::AddRobot(gp::RobotConfig {
+                id: robot,
+                team: game_team(team),
+                kind,
+                performance,
+            }))
+            .map_err(|_| "the performance does not fit the robot class")?;
+        self.drain_game_events();
         self.push_event(RefereeEvent::RobotJoined { robot, team });
         Ok(())
     }
-    /// Drop a chassis' robot record when the field removes the chassis. The
-    /// resource tracker forgets the same id.
+    /// Drop a chassis' robot record when the field removes the chassis.
     pub fn remove_robot(&mut self, robot: u32) -> Result<(), &'static str> {
-        let index = self.robot_index(robot)?;
-        self.robots.remove(index);
-        self.gameplay.remove_robot(robot);
+        self.game
+            .command(gp::Command::RemoveRobot { robot })
+            .map_err(game_error)?;
+        self.drain_game_events();
         self.push_event(RefereeEvent::RobotLeft { robot });
         Ok(())
     }
-    /// Borrow the current robot records without copying resources or event history.
-    pub fn robots(&self) -> &[RobotSnapshot] {
-        &self.robots
+    /// Every robot record, summarised, in join order.
+    pub fn robots(&self) -> impl Iterator<Item = RobotSnapshot> + '_ {
+        self.game.snapshot().robots.iter().map(|r| RobotSnapshot {
+            id: r.config.id,
+            team: world_team(r.config.team),
+            kind: RobotKind::from_gameplay(r.config.kind),
+            hp: if r.ejected { 0 } else { r.hp },
+            max_hp: r.stats().max_hp,
+            level: r.level,
+            weakened: r.weakened,
+        })
     }
-    /// Whether the robot is at zero HP; `None` for an unknown id.
+    /// Whether the robot is off the field; `None` for an unknown id.
     pub fn robot_defeated(&self, robot: u32) -> Option<bool> {
-        self.robots
-            .iter()
-            .find(|r| r.id == robot)
-            .map(|r| r.hp == 0)
-    }
-    /// Deal `amount` to a robot through its team's defense buff and report
-    /// it; returns the HP actually removed (zero for an unknown or
-    /// defeated robot, which absorbs nothing).
-    pub fn hit_robot(&mut self, robot: u32, amount: u32, shooter: Option<u32>) -> u32 {
-        let Ok(index) = self.robot_index(robot) else {
-            return 0;
-        };
-        if self.robots[index].hp == 0 {
-            return 0;
-        }
-        let team = self.robots[index].team;
-        let defense = self.teams[team.index()].buff.map_or(0, |b| b.defense_pct);
-        let amount = defended(amount, defense).min(self.robots[index].hp);
-        self.robots[index].hp -= amount;
-        let hp = self.robots[index].hp;
-        self.push_event(RefereeEvent::RobotDamaged {
-            robot,
-            amount,
-            hp,
-            shooter,
-        });
-        if hp == 0 {
-            self.push_event(RefereeEvent::RobotDefeated { robot });
-        }
-        amount
+        self.robot_state(robot).map(|r| !r.alive())
     }
 
     fn finish(&mut self, now_ns: u64, runes: &mut [Rune]) -> Result<(), RuneError> {
@@ -1408,9 +1788,21 @@ impl Referee {
             team.buff = None;
             team.attempt_rings.clear();
         }
+        if self.game.snapshot().phase == gp::Phase::Countdown {
+            let remaining =
+                gp::COUNTDOWN_TICKS.saturating_sub(self.game.snapshot().phase_elapsed_ticks);
+            let _ = self.game.step(remaining);
+        }
+        if self.game.snapshot().phase == gp::Phase::Running {
+            let _ = self.game.command(gp::Command::EndRound);
+        }
         self.phase = MatchPhase::Finished;
         self.phase_started_ns = now_ns;
+        self.drain_game_events();
         self.push_event(RefereeEvent::MatchFinished);
+        if let Some(result) = self.game.snapshot().result {
+            self.push_event(RefereeEvent::RoundResult(result));
+        }
         Ok(())
     }
 
@@ -1421,7 +1813,7 @@ impl Referee {
         RefereeSnapshot {
             base_open: self.base_open,
             dart_door_open: self.dart_door_open,
-            gameplay: self.gameplay.clone(),
+            game: self.game.snapshot().clone(),
             phase: self.phase,
             match_time_ns,
             remaining_ns: self.config.round_ns.saturating_sub(match_time_ns),
@@ -1437,7 +1829,7 @@ impl Referee {
                     buff: state.buff,
                 }
             }),
-            robots: self.robots.clone(),
+            robots: self.robots().collect(),
             rune_teams: self.config.rune_teams.clone(),
             outpost_teams: self.config.outpost_teams.clone(),
             events: self.events.iter().cloned().collect(),
@@ -1445,17 +1837,11 @@ impl Referee {
     }
 }
 
-fn live_caliber(caliber: crate::Caliber) -> rm_simulator_gameplay::Caliber {
-    match caliber {
-        crate::Caliber::Mm17 => rm_simulator_gameplay::Caliber::Mm17,
-        crate::Caliber::Mm42 => rm_simulator_gameplay::Caliber::Mm42,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{Pose, rune::SmallRune};
+    use rm_simulator_gameplay as gp;
 
     fn runes() -> Vec<Rune> {
         vec![
@@ -1473,15 +1859,18 @@ mod tests {
         )
         .unwrap();
         referee
-            .add_robot(0, Team::Red, RobotKind::Infantry)
+            .add_robot(0, Team::Red, RobotKind::Infantry, None)
             .unwrap();
-        referee.add_robot(1, Team::Blue, RobotKind::Hero).unwrap();
+        referee
+            .add_robot(1, Team::Blue, RobotKind::Hero, None)
+            .unwrap();
         referee.events.clear();
-        // Each record carries the class its placement named, at the one
-        // configured HP.
-        assert_eq!(referee.robots()[0].kind, RobotKind::Infantry);
-        assert_eq!(referee.robots()[1].kind, RobotKind::Hero);
-        assert_eq!(referee.robots()[1].max_hp, referee.robots()[0].max_hp);
+        // Each record carries the class its placement named, with its
+        // section 5.4.2 default performance: both start at 200 HP.
+        let robots: Vec<_> = referee.robots().collect();
+        assert_eq!(robots[0].kind, RobotKind::Infantry);
+        assert_eq!(robots[1].kind, RobotKind::Hero);
+        assert_eq!((robots[0].max_hp, robots[1].max_hp), (200, 200));
         referee
     }
     /// Hit every lit blade of `rune` once per 100 ms from `t`, at `offset`
@@ -1572,10 +1961,31 @@ mod tests {
             .is_err()
         );
         let mut lifeless = RefereeConfig::alternating(2, 2);
-        lifeless.robot.max_hp = 0;
+        lifeless.robot.fallback.max_hp = 0;
         assert!(Referee::new(lifeless, vec![RuneKind::Small; 2], 2).is_err());
+        // One outpost per team: the gameplay engine keeps one per team.
+        let shared = RefereeConfig::owned(vec![], vec![Team::Red, Team::Red]);
+        assert!(Referee::new(shared, vec![], 2).is_err());
+        let mut longer = RefereeConfig::alternating(2, 2);
+        longer.round_ns = ROUND_NS + 1;
+        assert!(Referee::new(longer, vec![RuneKind::Small; 2], 2).is_err());
         let mut twice = referee();
-        assert!(twice.add_robot(0, Team::Red, RobotKind::Infantry).is_err());
+        assert!(
+            twice
+                .add_robot(0, Team::Red, RobotKind::Infantry, None)
+                .is_err()
+        );
+        // Hero tables cannot describe an Infantry.
+        assert!(
+            twice
+                .add_robot(
+                    5,
+                    Team::Red,
+                    RobotKind::Infantry,
+                    Some(gp::Performance::Hero(gp::HeroType::MeleeFocused))
+                )
+                .is_err()
+        );
         assert!(twice.remove_robot(0).is_ok() && twice.remove_robot(0).is_err());
         let mut long = RefereeConfig::alternating(2, 2);
         long.round_ns = 0;
@@ -1661,8 +2071,14 @@ mod tests {
         assert_eq!(buff.defense_pct, 25);
         assert_eq!(buff.source, RuneStage::Small);
         assert_eq!(buff.expires_ns - buff.started_ns, SMALL_RUNE_BUFF_NS);
-        assert_eq!(referee.outpost_defense_pct(0), 25);
-        assert_eq!(referee.outpost_defense_pct(1), 0);
+        let defense = |referee: &Referee, team| {
+            referee
+                .game()
+                .defense_pct(gp::Target::Outpost(game_team(team)))
+                .0
+        };
+        assert_eq!(defense(&referee, Team::Red), 25);
+        assert_eq!(defense(&referee, Team::Blue), 0);
         assert!(red.rune_activating_since_ns.is_none());
         // Buff times are on the round clock, which started at 7 s world time.
         referee
@@ -1674,7 +2090,7 @@ mod tests {
             .unwrap();
         assert_eq!(runes[0].state(), RuneState::Inactive);
         assert!(referee.snapshot().teams[0].buff.is_none());
-        assert_eq!(referee.outpost_defense_pct(0), 0);
+        assert_eq!(defense(&referee, Team::Red), 0);
         // The 1:30 opportunity arrives on the round clock.
         referee
             .tick(7_000_000_000 + 89_999_999_999, &mut runes)
@@ -1935,8 +2351,15 @@ mod tests {
             )
         });
         assert!(referee.teams[0].attempt_rings.is_empty());
-        referee.observe_outposts([false, true]);
-        referee.observe_outposts([false, true]);
+        for _ in 0..2 {
+            referee
+                .command(
+                    RefereeCommand::SetOutpostHp { outpost: 1, hp: 0 },
+                    7_800_000_002,
+                    &mut runes,
+                )
+                .unwrap();
+        }
         let snapshot = referee.snapshot();
         let destroyed: Vec<_> = snapshot
             .events
@@ -1953,10 +2376,9 @@ mod tests {
             }
         ));
         assert_eq!(destroyed[0].match_time_ns, Some(2_800_000_002));
-        // Cover is read from the states the caller reports, not the announcement
-        // memory: red's tower still stands, blue's does not.
-        assert!(referee.base_protected(Team::Red, &[false, true]));
-        assert!(!referee.base_protected(Team::Blue, &[false, true]));
+        // Red's tower still stands and covers its base; blue's does not.
+        assert_eq!(base_strike(&mut referee, Team::Red), 0);
+        assert_eq!(base_strike(&mut referee, Team::Blue), 20);
         // Finish early and the clock freezes.
         referee
             .command(RefereeCommand::FinishMatch, 8_000_000_000, &mut runes)
@@ -1965,24 +2387,45 @@ mod tests {
         assert_eq!(referee.tick(1, &mut runes), Err(RuneError::TimeReversal));
     }
 
+    /// One unattributed 17 mm strike on a lower plate of `team`'s base;
+    /// returns the HP plus shield it removed.
+    fn base_strike(referee: &mut Referee, team: Team) -> u32 {
+        let applied = referee.projectile_hit(gp::ProjectileHit {
+            target: gp::Target::Base(game_team(team)),
+            caliber: gp::Caliber::Mm17,
+            shooter: None,
+            upper_front: false,
+            critical: false,
+        });
+        applied.hp + applied.shield
+    }
+
     #[test]
-    fn base_cover_follows_the_outposts_the_caller_reports() {
+    fn base_cover_follows_the_outposts() {
         let mut referee = referee();
         let mut runes = runes();
         // Idle is training: no tower protects a base there.
-        assert!(!referee.base_protected(Team::Red, &[false, false]));
+        assert_eq!(base_strike(&mut referee, Team::Red), 20);
         referee
             .command(RefereeCommand::StartMatch, 0, &mut runes)
             .unwrap();
-        assert_ne!(referee.snapshot().phase, MatchPhase::Idle);
+        // The countdown takes no damage at all.
+        assert_eq!(base_strike(&mut referee, Team::Blue), 0);
+        referee.tick(5_000_000_000, &mut runes).unwrap();
         // Both towers stand, so both bases are covered.
-        assert!(referee.base_protected(Team::Red, &[false, false]));
-        assert!(referee.base_protected(Team::Blue, &[false, false]));
-        // Losing red's tower drops only red's cover. Cover follows the flags, so
-        // an unannounced destruction cannot leave the base wrongly immune.
-        assert!(!referee.base_protected(Team::Red, &[true, false]));
-        assert!(referee.base_protected(Team::Blue, &[true, false]));
-        assert!(!referee.base_protected(Team::Red, &[true, true]));
+        assert_eq!(base_strike(&mut referee, Team::Red), 0);
+        assert_eq!(base_strike(&mut referee, Team::Blue), 0);
+        // Losing red's tower drops only red's cover.
+        referee
+            .command(
+                RefereeCommand::SetOutpostHp { outpost: 0, hp: 0 },
+                5_000_000_000,
+                &mut runes,
+            )
+            .unwrap();
+        assert_eq!(base_strike(&mut referee, Team::Red), 20);
+        assert_eq!(base_strike(&mut referee, Team::Blue), 0);
+        assert_eq!(referee.snapshot().base_open, [true, false]);
     }
 
     #[test]
@@ -2152,7 +2595,7 @@ mod tests {
                 )
                 .is_err()
         );
-        // Damage to a buffed team's robot is reduced by the defense share.
+        // Penalty damage ignores the defense buff a team holds.
         referee
             .command(
                 RefereeCommand::ActivateRune { team: Team::Red },
@@ -2174,13 +2617,13 @@ mod tests {
                 &mut runes,
             )
             .unwrap();
-        assert_eq!(referee.snapshot().robots[0].hp, 125);
+        assert_eq!(referee.snapshot().robots[0].hp, 100);
         assert_eq!(
             referee.snapshot().events.last().unwrap().event,
             RefereeEvent::RobotDamaged {
                 robot: 0,
-                amount: 75,
-                hp: 125,
+                amount: 100,
+                hp: 100,
                 shooter: None,
             }
         );

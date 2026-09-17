@@ -19,6 +19,7 @@ joined with `--connect` takes those from the server.
 | `--console [ADDR]` | App automation console on localhost, default `127.0.0.1:7790`; see [console commands](console.md) |
 | `--window-mode normal\|unfocused\|headless` | Normal visible window, visible without requesting focus, or GPU rendering without an OS window |
 | `--robot hero\|infantry-3\|infantry-4` | Robot you drive, on any host: the mecanum Hero fires 42 mm, the omni Infantry 3 (default; `infantry` is accepted) and Infantry 4 fire 17 mm. The two infantries differ only in the painted number |
+| `--performance TYPE` | Section 5.4.2 performance type requested after joining: `long-range` or `melee` for the Hero, `hp-cooling`, `hp-burst`, `power-cooling` or `power-burst` for an infantry. Unset keeps the rulebook default; a host refuses a type for the other class or during a running round |
 | `--cad-assets DIR` | Extracted RMUC CAD directory; relative paths start at the working directory for both manifests and meshes |
 | `--big-rune` / `--no-rune` | Big Rune motion and two-target groups for training (a match always starts with the Small Rune and converts at 3:00), or no rune rules |
 | `--outpost-speed-rad-s R` | Armor ring rotation rate |
@@ -114,8 +115,9 @@ reticle, and a top-down teammate map below right. Green marks your robot;
 defeated robots fade. Referees see both teams on the map. The map uses optional
 CAD-derived artwork and live positions, without radar
 detection. The local status readout includes base HP and shield; ammunition and team gold
-come from the live resource tracker. Heat, hardware-module status and a full
-competition purchase interface are not modeled by the HUD. The overlay uses native Bevy UI with a responsive
+come from the match engine, with the robot's level, heat, weakened and
+invincible states, respawn progress and the round result. Hardware-module
+status and a full competition purchase interface are not modeled by the HUD. The overlay uses native Bevy UI with a responsive
 Flair stylesheet; Feathers supplies mouse-driven settings and toolbar buttons.
 Controls and graphics preferences are saved in `settings.json` beside the
 remembered `title.json`. Open Settings from the title screen or toolbar to rebind

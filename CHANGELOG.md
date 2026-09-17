@@ -4,6 +4,26 @@
 
 ## Unreleased
 
+- Run the remaining RMUC 2026 V2.1.0 match rules live (protocol 44). The world
+  referee now runs the `rm-simulator-gameplay` engine as its rules authority in
+  place of the resource tracker: robot damage follows Table 5-2 (20 HP per
+  17 mm, 200 per 42 mm) with attack, defense and cooling buffs all applied;
+  robots gain experience and levels with Hero and Infantry performance types
+  (`--performance`); heat and allowance count in every match, with allowance
+  enforcement a panel toggle; defeated robots respawn in place on the section
+  5.2.2 timer, weakened and invincible, with paid instant respawn; armor
+  collisions cost 2 HP; the outpost rotor spins up at the round start and
+  stops at its first destruction or 3:00; a robot standing in its team's
+  destroyed outpost zone rebuilds it; and a round ends with a result the
+  referee can adjudicate when the rules leave it open. Idle stays free
+  practice, and pilots can no longer revive themselves during a match. O
+  now buys ten 17 mm rounds. The referee panel replaces its economy settings
+  with the rule policy, per-robot performance, instant respawn, weakness and
+  result controls; `Gameplay` referee commands are replaced by `SetGold`,
+  `SetAllowance`, `SetPolicy`, `SetPerformance`, `BuyAmmo`, `Adjudicate`,
+  `InstantRespawn` and `ClearWeakened`. The HUD shows level, heat, weakness,
+  invincibility, respawn progress and the round result.
+
 - Remove legacy protocol surface (protocol 43). `ShotScheduled` no longer
   carries an intended time; `Fire` and `FireAimed` no longer carry client
   timing diagnostics, so `GET /api/fire-records` drops its client timing and

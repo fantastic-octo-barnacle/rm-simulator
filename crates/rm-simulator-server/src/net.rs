@@ -2105,8 +2105,9 @@ mod tests {
             Client::connect_udp(server.local_addr(), "pilot", None, Role::Pilot).unwrap();
         let mut referee =
             Client::connect_udp(server.local_addr(), "referee", None, Role::Referee).unwrap();
+        let initial_gold = simulation.snapshot().unwrap().referee.unwrap().game.teams[0].gold;
         for json in [
-            r#"{"Referee":{"Gameplay":{"Gold":{"team":"Red","gold":777}}}}"#,
+            r#"{"Referee":{"SetGold":{"team":"Red","gold":777}}}"#,
             r#"{"Referee":{"SetOutpostHp":{"outpost":0,"hp":1}}}"#,
         ] {
             let command: Command = serde_json::from_str(json).unwrap();
@@ -2123,22 +2124,14 @@ mod tests {
                     .any(|n| n.contains("only the referee"))
             );
             assert_eq!(
-                simulation
-                    .snapshot()
-                    .unwrap()
-                    .referee
-                    .unwrap()
-                    .gameplay
-                    .gold[0],
-                0
+                simulation.snapshot().unwrap().referee.unwrap().game.teams[0].gold,
+                initial_gold
             );
         }
         referee
             .send_confirmed(
-                serde_json::from_str(
-                    r#"{"Referee":{"Gameplay":{"Gold":{"team":"Red","gold":777}}}}"#,
-                )
-                .unwrap(),
+                serde_json::from_str(r#"{"Referee":{"SetGold":{"team":"Red","gold":777}}}"#)
+                    .unwrap(),
             )
             .unwrap();
         wait_until("referee edit missing", || {
@@ -2146,13 +2139,7 @@ mod tests {
             referee.commands_confirmed()
         });
         assert_eq!(
-            simulation
-                .snapshot()
-                .unwrap()
-                .referee
-                .unwrap()
-                .gameplay
-                .gold[0],
+            simulation.snapshot().unwrap().referee.unwrap().game.teams[0].gold,
             777
         );
         assert_eq!(simulation.snapshot().unwrap().outposts[0].hp, 1500);

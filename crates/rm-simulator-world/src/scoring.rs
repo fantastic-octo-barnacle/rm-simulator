@@ -62,55 +62,74 @@ impl Field {
         self.hits_detected += 1;
         match contact.target {
             ArmorTarget::Base { base, plate } => {
-                let state = &mut self.bases[base as usize];
-                // Outpost immunity applies during a match; Idle is training. The
-                // outposts' own state is the authority, so cover cannot disagree
-                // with the tower it reflects.
-                let outposts_destroyed: Vec<bool> = self
-                    .outposts
-                    .iter()
-                    .map(|outpost| outpost.hp() == 0)
-                    .collect();
-                let protected = self.referee.as_ref().is_some_and(|referee| {
-                    referee.base_protected(state.config.team, &outposts_destroyed)
-                });
-                if !protected {
-                    let damage = base::damage(contact.caliber, plate, offset);
-                    let defense = self
-                        .referee
-                        .as_ref()
-                        .map_or(0, |r| r.base_defense_pct(state.config.team));
-                    hit.damage = state.damage(referee::defended(damage, defense));
-                    if let Some(referee) = &mut self.referee {
-                        referee.observe_base_hit(
-                            state.config.team,
-                            hit.damage,
-                            state.hp,
-                            state.shield_hp,
-                            contact.shooter,
-                        );
+                let team = self.bases[base as usize].config.team;
+                hit.damage = match &mut self.referee {
+                    // The gameplay engine applies outpost protection, buffs,
+                    // the Table 5-2 values and the section 5.5.1 centre square.
+                    // The seventh (dart) plate accepting projectiles is a
+                    // training override without the centre bonus.
+                    Some(referee) => {
+                        let applied =
+                            referee.projectile_hit(rm_simulator_gameplay::ProjectileHit {
+                                target: rm_simulator_gameplay::Target::Base(referee::game_team(
+                                    team,
+                                )),
+                                caliber: referee::game_caliber(contact.caliber),
+                                shooter: contact.shooter,
+                                upper_front: plate == 3,
+                                critical: plate != 6 && projectile::in_centre_square(offset),
+                            });
+                        applied.hp + applied.shield
                     }
-                }
+                    None => self.bases[base as usize].damage(base::damage(
+                        contact.caliber,
+                        plate,
+                        offset,
+                    )),
+                };
+                self.sync_structures(time_ns);
             }
             ArmorTarget::Outpost { outpost, .. } => {
-                let mut damage = projectile::outpost_damage(contact.caliber, offset);
-                if let Some(referee) = &self.referee {
-                    damage =
-                        referee::defended(damage, referee.outpost_defense_pct(outpost as usize));
-                }
-                hit.damage = self.outposts[outpost as usize].damage(time_ns, damage);
+                hit.damage = match &mut self.referee {
+                    Some(referee) => {
+                        let team = referee.config().outpost_teams[outpost as usize];
+                        referee
+                            .projectile_hit(rm_simulator_gameplay::ProjectileHit {
+                                target: rm_simulator_gameplay::Target::Outpost(referee::game_team(
+                                    team,
+                                )),
+                                caliber: referee::game_caliber(contact.caliber),
+                                shooter: contact.shooter,
+                                upper_front: false,
+                                critical: projectile::in_centre_square(offset),
+                            })
+                            .hp
+                    }
+                    None => self.outposts[outpost as usize]
+                        .damage(time_ns, projectile::outpost_damage(contact.caliber, offset)),
+                };
+                self.sync_structures(time_ns);
             }
             ArmorTarget::Rune { rune, blade } => {
                 let outcome: HitOutcome = self.runes[rune as usize].hit(time_ns, blade)?;
                 hit.rune_outcome = Some(outcome);
             }
             ArmorTarget::Chassis { chassis, .. } => {
-                // Table 5-2 robot damage; the referee keeps the HP, so
-                // without one the strike is only reported.
-                let damage = contact.caliber.robot_damage();
+                // Table 5-2 robot damage; the gameplay engine keeps the HP, so
+                // without a referee the strike is only reported.
                 hit.damage = match &mut self.referee {
-                    Some(referee) => referee.hit_robot(chassis, damage, contact.shooter),
-                    None => damage,
+                    Some(referee) => {
+                        referee
+                            .projectile_hit(rm_simulator_gameplay::ProjectileHit {
+                                target: rm_simulator_gameplay::Target::Robot(chassis),
+                                caliber: referee::game_caliber(contact.caliber),
+                                shooter: contact.shooter,
+                                upper_front: false,
+                                critical: false,
+                            })
+                            .hp
+                    }
+                    None => contact.caliber.robot_damage(),
                 };
             }
         }

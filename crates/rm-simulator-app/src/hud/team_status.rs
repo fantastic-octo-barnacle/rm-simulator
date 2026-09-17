@@ -236,6 +236,8 @@ mod tests {
                 kind,
                 hp,
                 max_hp: 200,
+                level: 1,
+                weakened: false,
             });
         }
         session.snapshot.referee = field.referee;

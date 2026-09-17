@@ -94,8 +94,8 @@ impl Caliber {
     }
 }
 
-/// Physical performance is caller-supplied. Tables 5-12..5-15 are not yet
-/// automatically selected on level-up; the coverage register says so.
+/// One roster entry. HP, heat limit and cooling come from `performance` at the
+/// robot's current level (section 5.4.2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RobotConfig {
     /// Caller-assigned id, unique within the roster.
@@ -104,14 +104,51 @@ pub struct RobotConfig {
     pub team: Team,
     /// Robot type, which fixes its weapon and level behaviour.
     pub kind: RobotKind,
-    /// Full health; must be positive, and it bounds healing and respawn.
-    pub max_hp: u32,
-    /// Heat limit in heat units. A 17 mm shot adds 10 and a 42 mm shot adds
-    /// 100 (section 5.1.3).
-    pub heat_limit: u32,
-    /// Cooling in heat units per second, applied on round-aligned 100 ms
-    /// boundaries (section 5.1.3).
-    pub cooling_per_s: u32,
+    /// Performance tables or fixed values; must fit `kind`
+    /// ([`crate::Performance::fits`]).
+    pub performance: crate::Performance,
+}
+impl RobotConfig {
+    /// A Hero or Infantry with its section 5.4.2 default performance, or any
+    /// other kind with `fallback`.
+    ///
+    /// ```
+    /// use rm_simulator_gameplay::{RobotConfig, RobotKind, Stats, Team};
+    ///
+    /// let fallback = Stats { max_hp: 400, chassis_power_w: 0, heat_limit: 100, cooling_per_s: 20 };
+    /// let infantry = RobotConfig::standard(1, Team::Red, RobotKind::Infantry, fallback);
+    /// assert_eq!(infantry.performance.stats(1).max_hp, 200);
+    /// let sentry = RobotConfig::standard(2, Team::Red, RobotKind::Sentry, fallback);
+    /// assert_eq!(sentry.performance.stats(1).max_hp, 400);
+    /// ```
+    pub fn standard(id: u32, team: Team, kind: RobotKind, fallback: crate::Stats) -> Self {
+        Self {
+            id,
+            team,
+            kind,
+            performance: crate::Performance::default_for(kind)
+                .unwrap_or(crate::Performance::Fixed(fallback)),
+        }
+    }
+}
+/// Rule switches a host may relax for practice. Defaults follow the manual.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Policy {
+    /// Whether a zero projectile allowance refuses a launch (section 5.3.2).
+    /// When off, allowance is still counted and may saturate at zero, and the
+    /// section 5.3.2 over-allowance 42 mm immunity is not triggered.
+    pub enforce_allowance: bool,
+    /// Whether a local ammo exchange requires an own base, resupply or outpost
+    /// zone contact. Hosts without zone detection may turn it off.
+    pub exchange_requires_zone: bool,
+}
+impl Default for Policy {
+    fn default() -> Self {
+        Self {
+            enforce_allowance: true,
+            exchange_requires_zone: true,
+        }
+    }
 }
 /// Match length and its win threshold.
 ///
@@ -148,14 +185,20 @@ pub enum MatchFormat {
 pub struct Config {
     /// Match length and win threshold.
     pub format: MatchFormat,
-    /// Fixed roster. Ids must be unique and every `max_hp` positive.
+    /// Initial roster. Ids must be unique and every performance must fit its
+    /// kind. [`crate::Command::AddRobot`] and [`crate::Command::RemoveRobot`]
+    /// change the roster later.
     pub robots: Vec<RobotConfig>,
+    /// How many recent events the snapshot keeps. Application policy, not a
+    /// rulebook constant; hosts that serialize snapshots often keep few.
+    pub event_memory: usize,
 }
 impl Default for Config {
     fn default() -> Self {
         Self {
             format: MatchFormat::Bo3,
             robots: Vec::new(),
+            event_memory: 512,
         }
     }
 }
@@ -291,9 +334,7 @@ pub struct RoundRecord {
 /// #         id: 1,
 /// #         team: Team::Red,
 /// #         kind: RobotKind::Infantry,
-/// #         max_hp: 200,
-/// #         heat_limit: 100,
-/// #         cooling_per_s: 20,
+/// #         performance: rm_simulator_gameplay::Performance::default_for(RobotKind::Infantry).unwrap(),
 /// #     }],
 /// #     ..Config::default()
 /// # })?;
@@ -449,6 +490,17 @@ pub struct RobotState {
     /// Whether the drone's air support is switched on. A drone without active
     /// support cannot launch.
     pub air_support_active: bool,
+    /// Round tick of the latest detected launch per caliber, for the section
+    /// 5.1.1 four-second 42 mm rule.
+    pub last_launch_ticks: [Option<u64>; 2],
+    /// Round tick the robot was last defeated, cleared when it returns.
+    pub defeated_at_ticks: Option<u64>,
+    /// 42 mm launches detected since the robot was last defeated.
+    pub launches_since_defeat: u32,
+    /// Section 5.3.2 Hero immunity trigger: set by a 42 mm launch over
+    /// allowance or the third launch after defeat, cleared once the robot is
+    /// alive with positive 42 mm allowance.
+    pub mm42_suspended: bool,
 }
 impl RobotState {
     /// Whether the robot is on the field: positive HP and not ejected.
@@ -459,12 +511,16 @@ impl RobotState {
     pub fn in_zone(&self, kind: ZoneKind, owner: Team) -> bool {
         self.zones.iter().any(|c| c.zone == Zone { kind, owner })
     }
+    /// Current performance values at the robot's level.
+    pub fn stats(&self) -> crate::Stats {
+        self.config.performance.stats(self.level)
+    }
     /// Robot-local launch permission at round tick `now_ticks`. It requires the
     /// robot to be alive, connected, not weakened, overheated or locked, armed
-    /// with the caliber, holding allowance and, for a drone, flying with
-    /// active air support. Match phase is checked by
+    /// with the caliber, holding allowance when `enforce_allowance` and, for a
+    /// drone, flying with active air support. Match phase is checked by
     /// [`crate::Game::can_launch`].
-    pub fn can_launch(&self, now_ticks: u64, caliber: Caliber) -> bool {
+    pub fn can_launch(&self, now_ticks: u64, caliber: Caliber, enforce_allowance: bool) -> bool {
         self.alive()
             && !self.irregularly_disconnected
             && !self.weakened
@@ -473,7 +529,7 @@ impl RobotState {
             && !self.speed_locked_for_round
             && self.speed_locked_until_ticks <= now_ticks
             && self.config.kind.shoots(caliber)
-            && self.allowance[caliber.index()] > 0
+            && (!enforce_allowance || self.allowance[caliber.index()] > 0)
             && (self.config.kind != RobotKind::Drone || self.air_support_active)
     }
 }
@@ -502,6 +558,9 @@ pub struct TeamState {
     /// Whether the outpost was destroyed at least once this round. Section 5.8
     /// compares this before current outpost HP.
     pub outpost_ever_destroyed: bool,
+    /// Round tick of the outpost's first destruction this round, which stops
+    /// its middle armor for good (section 5.5.1).
+    pub outpost_first_destroyed_ticks: Option<u64>,
     /// Unspent rebuild opportunities, one per 1000 cumulative base HP lost
     /// (section 5.5.1).
     pub outpost_rebuild_opportunities: u32,
@@ -520,6 +579,11 @@ pub struct TeamState {
     /// Damage reduction in percent from certified assemblies, applied to
     /// projectile and collision damage.
     pub assembly_defense_pct: u32,
+    /// Extra experience, in tenths, the current Small Rune buff can still
+    /// double; zero without one (section 5.5.2: at most 1,200 points).
+    pub rune_bonus_tenths: u32,
+    /// Round tick the Small Rune experience bonus ends.
+    pub rune_bonus_until_ticks: u64,
 }
 /// A damage target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -530,6 +594,46 @@ pub enum Target {
     Base(Team),
     /// A team's outpost.
     Outpost(Team),
+}
+/// What a [`Buff`] applies to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BuffTarget {
+    /// One robot, by id; dropped when the robot is defeated or removed.
+    Robot(u32),
+    /// A team's base.
+    Base(Team),
+    /// A team's outpost.
+    Outpost(Team),
+    /// Every robot of the team, its base and its outpost (section 5.5.2 rune
+    /// buffs), including robots that join while it lasts.
+    Team(Team),
+}
+/// One detected projectile strike on armor. The engine applies Table 5-2,
+/// the shooter's attack buff, the section 5.5.1 centre square, the Hero 42 mm
+/// immunity of sections 5.1.1 and 5.3.2, target defenses and experience.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectileHit {
+    /// Robot, base or outpost whose armor detected the strike.
+    pub target: Target,
+    /// Caliber detected.
+    pub caliber: Caliber,
+    /// Robot that launched the projectile, when known. An id no longer in the
+    /// roster counts as an unidentified source.
+    pub shooter: Option<u32>,
+    /// The base's upper front armor module, where 17 mm deals 5 HP (Table
+    /// 5-2). Only valid for a base target.
+    pub upper_front: bool,
+    /// Inside the 10 mm x 10 mm centre square of a base or outpost armor
+    /// module, a 150 % attack (section 5.5.1). Only valid for those targets.
+    pub critical: bool,
+}
+/// What a damage command removed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Applied {
+    /// HP removed from the target.
+    pub hp: u32,
+    /// Base virtual shield removed; zero for other targets.
+    pub shield: u32,
 }
 /// Source of a damage command. The kind selects which defenses apply and
 /// whether the damage counts as attack damage.
@@ -556,7 +660,7 @@ pub enum DamageKind {
 ///
 /// ```
 /// use rm_simulator_gameplay::{
-///     coverage::Mechanic, Buff, Command, Config, Game, RobotConfig, RobotKind, Target, Team,
+///     coverage::Mechanic, Buff, BuffTarget, Command, Config, Game, RobotConfig, RobotKind, Team,
 ///     COUNTDOWN_TICKS,
 /// };
 ///
@@ -565,16 +669,14 @@ pub enum DamageKind {
 /// #         id: 1,
 /// #         team: Team::Red,
 /// #         kind: RobotKind::Infantry,
-/// #         max_hp: 200,
-/// #         heat_limit: 100,
-/// #         cooling_per_s: 20,
+/// #         performance: rm_simulator_gameplay::Performance::default_for(RobotKind::Infantry).unwrap(),
 /// #     }],
 /// #     ..Config::default()
 /// # })?;
 /// # game.command(Command::BeginCountdown)?;
 /// # game.step(COUNTDOWN_TICKS)?;
 /// let buff = |defense_pct| Buff {
-///     target: Target::Robot(1),
+///     target: BuffTarget::Robot(1),
 ///     source: Mechanic::Rune,
 ///     attack_pct: 0,
 ///     defense_pct,
@@ -591,12 +693,12 @@ pub enum DamageKind {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Buff {
-    /// Robot, base or outpost the buff applies to.
-    pub target: Target,
+    /// Robot, base, outpost or whole team the buff applies to.
+    pub target: BuffTarget,
     /// Mechanic that granted the buff. One buff per target and source is kept.
     pub source: Mechanic,
-    /// Attacker-side bonus in percent. The engine tracks it but does not add it
-    /// to damage.
+    /// Projectile damage multiplier in percent when the target shoots (section
+    /// 5.5.3.1); values below 100 mean no attack buff. The strongest applies.
     pub attack_pct: u32,
     /// Damage reduction in percent, at most 100. The strongest defense applies.
     pub defense_pct: u32,
@@ -663,9 +765,11 @@ pub struct Snapshot {
     pub round: u32,
     /// Ticks elapsed in the running round; frozen outside Running.
     pub round_elapsed_ticks: u64,
+    /// Rule switches in force.
+    pub policy: Policy,
     /// Per-team state in [`Team::BOTH`] order.
     pub teams: [TeamState; 2],
-    /// Per-robot state in configuration order.
+    /// Per-robot state in join order.
     pub robots: Vec<RobotState>,
     /// Active buffs, one per target and source.
     pub buffs: Vec<Buff>,
@@ -678,8 +782,8 @@ pub struct Snapshot {
     pub rounds: Vec<RoundRecord>,
     /// Winner once the match is decided, or `None` for a drawn match.
     pub match_winner: Option<Team>,
-    /// Most recent events, capped at the latest 512. Event retention is an
-    /// application policy.
+    /// Most recent events, capped at `Config::event_memory`. Event retention is
+    /// an application policy.
     pub recent_events: Vec<Event>,
     /// Id the next event will receive. Ids restart at zero on a match reset.
     pub next_event_id: u64,
@@ -714,6 +818,8 @@ pub enum EventKind {
     Damage {
         /// Target the damage was applied to.
         target: Target,
+        /// Robot credited as the source, when one was identified.
+        shooter: Option<u32>,
         /// HP actually removed, after defenses and clamping to remaining HP.
         hp: u32,
         /// Base shield actually removed; always zero for non-base targets.
@@ -723,8 +829,16 @@ pub enum EventKind {
     },
     /// A robot reached zero HP.
     RobotDefeated(u32),
-    /// A robot returned to the field.
+    /// A robot returned to the field through its timer or a paid respawn.
     RobotRespawned(u32),
+    /// An operator restored a robot outside the respawn rules.
+    RobotRevived(u32),
+    /// A robot's weakened state ended.
+    WeaknessCleared(u32),
+    /// A robot joined the roster.
+    RobotAdded(u32),
+    /// A robot left the roster.
+    RobotRemoved(u32),
     /// A team's outpost was rebuilt with 750 HP (section 5.5.1).
     OutpostRebuilt(Team),
     /// A robot reached a new level.
@@ -734,8 +848,6 @@ pub enum EventKind {
         /// New level.
         level: u8,
     },
-    /// A command was accepted and committed.
-    CommandAccepted,
 }
 
 /// What a pending remote delivery carries.

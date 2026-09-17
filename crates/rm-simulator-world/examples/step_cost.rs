@@ -49,6 +49,7 @@ fn main() {
                 config,
                 team: Team::Red,
                 kind: rm_simulator_world::RobotKind::Infantry,
+                performance: None,
             }],
             ..FieldConfig::default()
         })

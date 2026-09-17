@@ -571,7 +571,8 @@ impl Simulation {
         }
         Ok(())
     }
-    /// Pilot recovery is requested explicitly; respawning changes health only.
+    /// Pilot recovery is requested explicitly outside a match; respawning
+    /// changes health only.
     fn recover_pilot(&mut self, id: u32, reset: bool) -> Result<(), String> {
         let spawn = *self
             .pilot_spawns
@@ -579,6 +580,16 @@ impl Simulation {
             .ok_or("no pilot with that chassis")?;
         if !reset && self.field.chassis_defeated(id) != Some(true) {
             return Err("robot is not defeated".into());
+        }
+        // Section 5.2.2: a match respawns defeated robots on its own timer, so
+        // pilots recover themselves only in practice.
+        if self.field.referee().is_some_and(|referee| {
+            matches!(
+                referee.phase(),
+                rm_simulator_world::MatchPhase::Countdown | rm_simulator_world::MatchPhase::Running
+            )
+        }) {
+            return Err("robots recover on the match's respawn timer".into());
         }
         // A no-referee practice robot can still be repositioned through debug.
         if self.field.referee().is_some() {
@@ -945,6 +956,20 @@ impl Simulation {
                 .field
                 .buy_ammo(*chassis, *caliber)
                 .map_err(|e| e.to_string()),
+            Command::SetPerformance {
+                performance: rm_simulator_world::gameplay::Performance::Fixed(_),
+                ..
+            } => Err("pilots choose a Hero or Infantry performance type".into()),
+            Command::SetPerformance {
+                chassis,
+                performance,
+            } => self
+                .field
+                .referee_command(rm_simulator_world::RefereeCommand::SetPerformance {
+                    robot: *chassis,
+                    performance: *performance,
+                })
+                .map_err(|e| e.to_string()),
             Command::Fire { shooter } => {
                 let now = self.field.time_ns();
                 self.fire_now(*shooter, now).map(|_| ())
@@ -1258,7 +1283,7 @@ mod tests {
         assert!(placed.mecanum);
         assert!(!sim.field().chassis_config(infantry).unwrap().mecanum);
         let referee = sim.field().referee().unwrap();
-        let kind = |id| referee.robots().iter().find(|r| r.id == id).unwrap().kind;
+        let kind = |id| referee.robots().find(|r| r.id == id).unwrap().kind;
         assert_eq!(kind(hero), RobotKind::Hero);
         assert_eq!(kind(infantry), RobotKind::Infantry);
 
@@ -1388,23 +1413,30 @@ mod tests {
             .unwrap();
         sim.step(6_001_000_000 / rm_simulator_world::tick_ns())
             .unwrap();
-        let before = sim.snapshot().referee.unwrap().gameplay;
+        let game = |sim: &Simulation| sim.snapshot().referee.unwrap().game;
+        let before = game(&sim);
+        // Table 5-6: ten 17 mm rounds for 10 gold.
         sim.apply(&buy(Caliber::Mm17)).unwrap();
-        sim.apply(&buy(Caliber::Mm42)).unwrap();
-        let after = sim.snapshot().referee.unwrap().gameplay;
-        assert_eq!(after.gold[0], before.gold[0] - 11);
+        let after = game(&sim);
+        assert_eq!(after.teams[0].gold, before.teams[0].gold - 10);
         assert_eq!(
             after.robots[0].allowance,
             [
-                before.robots[0].allowance[0] + 1,
-                before.robots[0].allowance[1] + 1
+                before.robots[0].allowance[0] + 10,
+                before.robots[0].allowance[1]
             ]
         );
-        for _ in 0..after.gold[0] {
-            sim.apply(&buy(Caliber::Mm17)).unwrap();
-        }
-        let empty = sim.snapshot();
+        // An Infantry has no 42 mm launcher.
+        let bought = sim.snapshot();
         assert!(sim.apply(&buy(Caliber::Mm42)).is_err());
+        assert_eq!(sim.snapshot(), bought);
+        sim.apply(&Command::Referee(RefereeCommand::SetGold {
+            team: Team::Red,
+            gold: 9,
+        }))
+        .unwrap();
+        let empty = sim.snapshot();
+        assert!(sim.apply(&buy(Caliber::Mm17)).is_err());
         assert_eq!(sim.snapshot(), empty);
         assert!(
             sim.apply(&Command::BuyAmmo {
@@ -1414,6 +1446,47 @@ mod tests {
             .is_err()
         );
         assert_eq!(sim.snapshot(), empty);
+    }
+
+    #[test]
+    fn pilots_pick_a_performance_type_before_the_round_runs() {
+        use rm_simulator_world::gameplay::{InfantryChassis, InfantryLauncher, Performance, Stats};
+        let (mut sim, id) = pilot_simulation();
+        let power = Performance::Infantry {
+            chassis: InfantryChassis::PowerFocused,
+            launcher: InfantryLauncher::BurstFocused,
+        };
+        let pick = |performance| Command::SetPerformance {
+            chassis: id,
+            performance,
+        };
+        sim.apply(&pick(power)).unwrap();
+        // Table 5-13: a level 1 power-focused chassis has 150 HP.
+        assert_eq!(sim.snapshot().referee.unwrap().robots[0].max_hp, 150);
+        let fixed = Performance::Fixed(Stats {
+            max_hp: 10_000,
+            chassis_power_w: 1,
+            heat_limit: 1,
+            cooling_per_s: 1,
+        });
+        assert!(sim.apply(&pick(fixed)).is_err());
+        assert!(
+            sim.apply(&pick(Performance::Hero(Default::default())))
+                .is_err()
+        );
+        sim.apply(&Command::Referee(RefereeCommand::StartMatch))
+            .unwrap();
+        sim.step(6_001_000_000 / rm_simulator_world::tick_ns())
+            .unwrap();
+        let running = sim.snapshot();
+        assert!(
+            sim.apply(&pick(
+                Performance::default_for(rm_simulator_world::gameplay::RobotKind::Infantry)
+                    .unwrap()
+            ))
+            .is_err()
+        );
+        assert_eq!(sim.snapshot(), running);
     }
 
     #[test]
@@ -1427,25 +1500,14 @@ mod tests {
         let after = sim.snapshot();
         assert_eq!(after.chassis[0].pose, before.chassis[0].pose);
         assert_eq!(after.chassis[0].placement_revision, 2);
-        assert_eq!(
-            after.referee.unwrap().gameplay,
-            before.referee.unwrap().gameplay
-        );
+        assert_eq!(after.referee.unwrap().game, before.referee.unwrap().game);
         assert!(sim.apply(&Command::ResetRobot { chassis: id + 1 }).is_err());
     }
 
     #[test]
     fn pilot_respawn_restores_only_hp_in_place() {
+        // Practice only: a match respawns robots on its own timer.
         let (mut sim, id) = pilot_simulation();
-        sim.apply(&Command::Referee(RefereeCommand::StartMatch))
-            .unwrap();
-        sim.step(6_001_000_000 / rm_simulator_world::tick_ns())
-            .unwrap();
-        sim.apply(&Command::BuyAmmo {
-            chassis: id,
-            caliber: rm_simulator_world::Caliber::Mm17,
-        })
-        .unwrap();
         sim.apply(&Command::PlaceChassis {
             chassis: id,
             position_m: [3.0, 4.0, 1.0],
@@ -1485,7 +1547,21 @@ mod tests {
         assert!(!respawn.chassis[0].defeated);
         let referee = respawn.referee.unwrap();
         assert_eq!(referee.robots[0].hp, referee.robots[0].max_hp);
-        assert_eq!(referee.gameplay, before_damage.referee.unwrap().gameplay);
+        let before_game = before_damage.referee.unwrap().game;
+        assert_eq!(referee.game.teams, before_game.teams);
+        assert_eq!(
+            referee.game.robots[0].allowance,
+            before_game.robots[0].allowance
+        );
+        sim.apply(&Command::Referee(RefereeCommand::StartMatch))
+            .unwrap();
+        sim.apply(&Command::Referee(RefereeCommand::SetRobotHp {
+            robot: id,
+            hp: 0,
+        }))
+        .unwrap();
+        assert!(sim.apply(&Command::Respawn { chassis: id }).is_err());
+        assert!(sim.apply(&Command::ResetRobot { chassis: id }).is_err());
         sim.remove_chassis(id).unwrap();
         assert!(sim.pilot_spawns.is_empty());
     }
@@ -1643,7 +1719,7 @@ mod tests {
     fn pilot_fire_uses_the_authoritative_muzzle_and_cadence() {
         let weapon = WeaponConfig {
             shot: rm_simulator_world::Shot {
-                caliber: rm_simulator_world::Caliber::Mm42,
+                caliber: rm_simulator_world::Caliber::Mm17,
                 speed_m_s: 30.0,
             },
             interval_ns: 10_000_000,
@@ -1873,11 +1949,11 @@ mod tests {
             shot_id: 1,
             input: frame,
         };
-        let allowance = sim.snapshot().referee.unwrap().gameplay.robots[0].allowance;
+        let allowance = sim.snapshot().referee.unwrap().game.robots[0].allowance;
         sim.apply(&fire).unwrap();
         sim.apply(&fire).unwrap();
         assert_eq!(
-            sim.snapshot().referee.unwrap().gameplay.robots[0].allowance,
+            sim.snapshot().referee.unwrap().game.robots[0].allowance,
             allowance
         );
         assert_eq!(sim.pending_shots.len(), 1);
@@ -1935,7 +2011,7 @@ mod tests {
         sim.apply(&fire).unwrap();
         assert_eq!(sim.snapshot().shots_fired, 1);
         assert_eq!(sim.take_completed_shots().len(), 1);
-        let after = sim.snapshot().referee.unwrap().gameplay.robots[0].allowance;
+        let after = sim.snapshot().referee.unwrap().game.robots[0].allowance;
         assert_eq!(after, [allowance[0] - 1, allowance[1]]);
     }
     #[test]
