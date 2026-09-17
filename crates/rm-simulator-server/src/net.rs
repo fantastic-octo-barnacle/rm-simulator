@@ -22,7 +22,10 @@ use crate::protocol::PROTOCOL_VERSION;
 pub use crate::protocol::describe_seat;
 use crate::protocol::{ClientMessage, Command, PlayerInfo, Robot, Role, ServerMessage, Welcome};
 use crate::simulation::{Simulation, SimulationState};
-use crate::udp_codec::{ClientCodec, ClientEvent, HostPeer, io_error};
+use crate::udp_codec::{ClientCodec, HostPeer, io_error};
+#[path = "client_driver.rs"]
+mod client_driver;
+use client_driver::{ClientDriver, PumpBudget};
 use rm_simulator_world::Team;
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -170,16 +173,17 @@ impl Server {
             .name("rm-local-client".into())
             .spawn(move || {
                 let result = (|| -> io::Result<()> {
-                    let mut codec = ClientCodec::new(
+                    let mut driver = ClientDriver::new(
                         epoch,
                         crate::pacing::configured_rate(
                             "RM_NET_UP_KIB_S",
                             crate::pacing::upstream_default(),
                         ),
-                        crate::udp_codec::MAX_INPUT_FRAMES,
                         true,
+                        incoming.clone(),
+                        commands,
+                        PumpBudget::default(),
                     );
-                    let mut seat = None;
                     to_host
                         .send(ClientCodec::hello_with_password(
                             &name,
@@ -196,22 +200,8 @@ impl Server {
                                 while let Some(bytes) = next {
                                     #[cfg(test)]
                                     record_loopback_frame(&incoming, &bytes);
-                                    match codec.receive(&bytes, Instant::now())? {
-                                        Some(ClientEvent::Welcome(welcome)) => {
-                                            seat = Some(welcome.client_id);
-                                            welcome_tx.try_send(Ok(*welcome)).map_err(io_error)?;
-                                        }
-                                        Some(ClientEvent::Anchor(anchor)) => {
-                                            incoming
-                                                .data
-                                                .lock()
-                                                .unwrap_or_else(|p| p.into_inner())
-                                                .owner_anchor = Some(*anchor)
-                                        }
-                                        Some(ClientEvent::Message(message)) => {
-                                            incoming.publish(message)?
-                                        }
-                                        None => {}
+                                    if let Some(welcome) = driver.receive(&bytes, Instant::now())? {
+                                        welcome_tx.try_send(Ok(welcome)).map_err(io_error)?;
                                     }
                                     next = from_host.try_recv().ok();
                                 }
@@ -222,29 +212,14 @@ impl Server {
                             }
                         }
                         let now = Instant::now();
-                        codec.acknowledge(now)?;
-                        loop {
-                            match commands.try_recv() {
-                                Ok(Some(queued)) => {
-                                    if let Some(command) = queued.command {
-                                        incoming.observer.client(
-                                            "dequeue",
-                                            seat,
-                                            &ClientMessage::Command(command),
-                                            None,
-                                        );
-                                    }
-                                    codec.submit(queued, now)?;
-                                }
-                                Ok(None) | Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
-                                Err(mpsc::TryRecvError::Empty) => break,
-                            }
+                        if !driver.submit_pending(|| now, || Ok(()))? {
+                            return Ok(());
                         }
-                        while let Some(packet) = codec.next(Instant::now())? {
-                            if to_host.send(packet.bytes).is_err() {
-                                return Err(io_error("host closed the local connection"));
-                            }
-                        }
+                        driver.send_pending(Instant::now, |packet| {
+                            to_host
+                                .send(packet.bytes)
+                                .map_err(|_| io_error("host closed the local connection"))
+                        })?;
                     }
                     Ok(())
                 })();
@@ -270,22 +245,7 @@ impl Server {
                 anyhow::bail!("local hello failed: {error}");
             }
         };
-        let client = Client {
-            stream: stop,
-            timing,
-            transport_stats: None,
-            host_telemetry: None,
-            delivery_stats: None,
-            owner_anchor: None,
-            outbox,
-            inbox,
-            welcome,
-            latest: None,
-            roster: Vec::new(),
-            disconnected: None,
-            sent_confirmation: 0,
-            acknowledged: 0,
-        };
+        let client = Client::new(stop, timing, outbox, inbox, welcome);
         *owner = Some(connection);
         Ok(client)
     }
@@ -634,6 +594,31 @@ pub struct Client {
 }
 
 impl Client {
+    fn new(
+        stream: Stop,
+        timing: ClientTiming,
+        outbox: SyncSender<Option<QueuedCommand>>,
+        inbox: Arc<ClientInbox>,
+        welcome: Welcome,
+    ) -> Self {
+        Self {
+            stream,
+            timing,
+            transport_stats: None,
+            host_telemetry: None,
+            delivery_stats: None,
+            owner_anchor: None,
+            outbox,
+            inbox,
+            welcome,
+            latest: None,
+            roster: Vec::new(),
+            disconnected: None,
+            sent_confirmation: 0,
+            acknowledged: 0,
+        }
+    }
+
     /// The seat the host granted in answer to this client's hello.
     pub fn welcome(&self) -> &Welcome {
         &self.welcome
@@ -1024,10 +1009,9 @@ impl Drop for Client {
 /// comes from `time`, so a scripted link and a held clock reproduce a session
 /// exactly.
 pub struct ClientLeg {
-    codec: crate::udp_codec::ClientCodec,
+    driver: ClientDriver,
     inbox: Arc<ClientInbox>,
     sender: Option<SyncSender<Option<QueuedCommand>>>,
-    commands: Receiver<Option<QueuedCommand>>,
     welcome: Option<Welcome>,
     incoming: std::collections::VecDeque<Vec<u8>>,
     outgoing: Vec<crate::pacing::Datagram>,
@@ -1044,16 +1028,18 @@ impl ClientLeg {
         rate_bytes_per_s: u32,
     ) -> io::Result<Self> {
         let (sender, commands) = mpsc::sync_channel(CLIENT_COMMAND_CAPACITY);
+        let inbox = Arc::new(ClientInbox::for_transport("gns", time.clone()));
         Ok(Self {
-            codec: crate::udp_codec::ClientCodec::new(
+            driver: ClientDriver::new(
                 time.now(),
                 rate_bytes_per_s,
-                crate::udp_codec::MAX_INPUT_FRAMES,
                 false,
+                inbox.clone(),
+                commands,
+                PumpBudget::default(),
             ),
-            inbox: Arc::new(ClientInbox::for_transport("gns", time.clone())),
+            inbox,
             sender: Some(sender),
-            commands,
             welcome: None,
             incoming: std::collections::VecDeque::new(),
             outgoing: vec![crate::pacing::Datagram {
@@ -1074,34 +1060,18 @@ impl ClientLeg {
         let now = self.time.now();
         let result = (|| -> io::Result<()> {
             while let Some(payload) = self.incoming.pop_front() {
-                match self.codec.receive(&payload, now)? {
-                    Some(crate::udp_codec::ClientEvent::Welcome(welcome)) => {
-                        self.welcome = Some(*welcome)
-                    }
-                    Some(crate::udp_codec::ClientEvent::Anchor(anchor)) => {
-                        self.inbox
-                            .data
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .owner_anchor = Some(*anchor)
-                    }
-                    Some(crate::udp_codec::ClientEvent::Message(message)) => {
-                        self.inbox.publish(message)?
-                    }
-                    None => {}
+                if let Some(welcome) = self.driver.receive(&payload, now)? {
+                    self.welcome = Some(welcome);
                 }
             }
-            self.codec.acknowledge(now)?;
-            loop {
-                match self.commands.try_recv() {
-                    Ok(Some(queued)) => self.codec.submit(queued, now)?,
-                    Ok(None) | Err(mpsc::TryRecvError::Disconnected) => break,
-                    Err(mpsc::TryRecvError::Empty) => break,
-                }
-            }
-            while let Some(packet) = self.codec.next(now)? {
-                self.outgoing.push(packet);
-            }
+            self.driver.submit_pending(|| now, || Ok(()))?;
+            self.driver.send_pending(
+                || now,
+                |packet| {
+                    self.outgoing.push(packet);
+                    Ok(())
+                },
+            )?;
             Ok(())
         })();
         if let Err(error) = &result {
@@ -1129,12 +1099,12 @@ impl ClientLeg {
     /// Delivery counters, including the pinned-baseline count a delta decoder
     /// must never grow past two.
     pub fn transport_stats(&self) -> crate::network_stats::TransportStats {
-        self.codec.stats()
+        self.driver.stats()
     }
     /// How many acknowledged delta baselines the decoder retains. It must never
     /// grow past two.
     pub fn pinned_baselines(&self) -> usize {
-        self.codec.pinned_baselines()
+        self.driver.pinned_baselines()
     }
 }
 
@@ -1151,22 +1121,13 @@ impl Client {
             .sender
             .take()
             .ok_or_else(|| io::Error::other("this leg already has a client"))?;
-        Ok(Client {
-            stream: Stop::default(),
-            timing: ClientTiming::new(time),
-            transport_stats: None,
-            host_telemetry: None,
-            delivery_stats: None,
-            owner_anchor: None,
+        Ok(Client::new(
+            Stop::default(),
+            ClientTiming::new(time),
             outbox,
-            inbox: leg.inbox.clone(),
+            leg.inbox.clone(),
             welcome,
-            latest: None,
-            roster: Vec::new(),
-            disconnected: None,
-            sent_confirmation: 0,
-            acknowledged: 0,
-        })
+        ))
     }
 }
 
