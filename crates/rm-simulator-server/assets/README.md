@@ -20,7 +20,8 @@ experiment recorded in Git history.
 | Compression frame | RMBZ + ZSTD level 6 |
 | Trainer | `train_binary_dictionaries`, separate training/evaluation scenarios |
 
-Protocol 42 kept these bytes. Its independent frames are unchanged; only
+Protocol 42 and protocol 43 kept these bytes; protocol 43 only drops the
+checkpoint rules record's one-bit variant tag. Its independent frames are unchanged; only
 deltas changed (dead-reckoned baselines, realigned sequences, 12-frame
 rotation), and the trainer now samples those deltas, but a dictionary retrained
 that way measured 0.4–1.3% larger sent bytes with two or more chassis in

@@ -105,10 +105,8 @@ impl Default for ChassisDynamics {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChassisConfig {
     /// Actuator and suspension tuning.
-    #[serde(default)]
     pub dynamics: ChassisDynamics,
-    /// Drive layout; omitted in older snapshots means the original omni infantry.
-    #[serde(default)]
+    /// Drive layout: `true` is mecanum rollers, `false` ideal omni wheels.
     pub mecanum: bool,
     /// Total chassis mass in kilograms, armour modules excluded.
     pub mass_kg: f64,
@@ -409,7 +407,6 @@ pub struct ChassisSnapshot {
     /// Actual stabilized gimbal heading/elevation, preserved while defeated.
     pub held_aim_rad: [f64; 2],
     /// Actual motor rates, needed to continue acceleration-limited replay.
-    #[serde(default)]
     pub gimbal_velocity_rad_s: [f64; 2],
     /// Wheel states in `ChassisConfig::wheel_hubs_m` order.
     pub wheels: Vec<WheelSnapshot>,

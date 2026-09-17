@@ -3,8 +3,8 @@
 //! The per-peer UDP codec, with no socket in it.
 //!
 //! One peer's whole wire behaviour lives here: the RMG1 fragment framing, the
-//! RMI3 input batches, the RMC1 compressed commands, the RMO5 owner anchor, the
-//! RMA1 baseline feedback, snapshot delta encoding and the byte pacer. The GNS
+//! RMI3 input batches, the RMC1 compressed commands, the RMO6 owner anchor, the
+//! RMA2 baseline feedback, snapshot delta encoding and the byte pacer. The GNS
 //! reactor in `gns_transport` is a thin wrapper that moves datagrams between a
 //! socket and these structs; a test drives the same structs over a scripted
 //! link. Every deadline is an explicit `now: Instant`, so neither side reads
@@ -42,17 +42,14 @@ const FRAME_LIFETIME: Duration = Duration::from_millis(250);
 /// First four bytes of every RMG1 fragment.
 const MAGIC: &[u8; 4] = b"RMG1";
 /// First four bytes of a compressed command payload, which marks the unreliable
-/// shot-retry lane. The body is whatever `compression` writes; a DEFLATE body
-/// carries no further prefix.
+/// shot-retry lane. The body is whatever `compression` writes: a ZSTD
+/// (`RMZ1`) or raw (`RMRW`) framing.
 const COMMAND_MAGIC: &[u8; 4] = b"RMC1";
 /// First four bytes of a compressed compact pilot input batch. One shared batch
 /// header carries the chassis, input epoch and placement revision, and every
 /// frame carries relative sequence and sampled-time fields plus an exact
 /// changed-value mask over the five command values.
 const INPUT_BATCH_MAGIC: &[u8; 4] = b"RMI3";
-/// First four bytes of the older fixed pilot input batch, which put all 80 bytes
-/// of every frame on the wire. The decoder still accepts it.
-const INPUT_BATCH_MAGIC_V2: &[u8; 4] = b"RMI2";
 /// Bytes of one fixed input frame: chassis, input epoch, sequence, sampled time,
 /// placement revision, duration and five f64 command values.
 const INPUT_FRAME_BYTES: usize = 80;
@@ -62,7 +59,7 @@ pub(crate) const MAX_INPUT_FRAMES: usize = 12;
 /// revision, which every compact frame in the batch inherits.
 const INPUT_HEADER_BYTES: usize = 20;
 /// Per-frame tag for a frame that keeps the fixed 80-byte encoding.
-const INPUT_FRAME_LEGACY: u8 = 0x00;
+const INPUT_FRAME_FIXED: u8 = 0x00;
 /// Per-frame tag for a frame that takes its identity from the shared header.
 const INPUT_FRAME_COMPACT: u8 = 0x01;
 /// Compact-frame flag: the sequence is an absolute u64, not a relative delta.
@@ -245,8 +242,7 @@ fn command_bits(command: &rm_simulator_world::ChassisCommand) -> [u64; 5] {
 /// The fixed 80-byte frame encoding this codec used before the compact batch:
 /// chassis, input epoch, sequence, sampled time, placement revision, duration
 /// and five f64 command values. A compact batch keeps it as the exact fallback
-/// for a frame whose identity is not the shared header's, and the decoder still
-/// reads the older `RMI2` batch that used it for every frame.
+/// for a frame whose identity is not the shared header's.
 fn fixed_frame(chassis: u32, frame: &crate::input_stream::InputFrame) -> [u8; INPUT_FRAME_BYTES] {
     let mut bytes = [0; INPUT_FRAME_BYTES];
     bytes[..4].copy_from_slice(&chassis.to_le_bytes());
@@ -261,10 +257,9 @@ fn fixed_frame(chassis: u32, frame: &crate::input_stream::InputFrame) -> [u8; IN
     }
     bytes
 }
-/// Whether `payload` is a pilot input batch this codec can decode, in either the
-/// compact `RMI3` or the older fixed `RMI2` framing.
+/// Whether `payload` is a compact `RMI3` pilot input batch.
 fn is_input_batch(payload: &[u8]) -> bool {
-    payload.starts_with(INPUT_BATCH_MAGIC) || payload.starts_with(INPUT_BATCH_MAGIC_V2)
+    payload.starts_with(INPUT_BATCH_MAGIC)
 }
 /// Writes `value` as an unsigned LEB128 varint, which is exact for every u64.
 fn write_varint(bytes: &mut Vec<u8>, mut value: u64) {
@@ -326,7 +321,7 @@ fn decode_fixed_frame(frame: &[u8]) -> io::Result<Command> {
         },
     })
 }
-/// Encodes an input batch as `RMI3` followed by a deflate stream: one count byte,
+/// Encodes an input batch as `RMI3` followed by a ZSTD or raw `compression` framing: one count byte,
 /// one header holding the values the newest frame shares (chassis, input epoch
 /// and placement revision), then one entry per frame.
 ///
@@ -408,7 +403,7 @@ fn input_batch(inputs: &VecDeque<Command>, raw: bool) -> io::Result<Vec<u8>> {
         } else {
             // Another life or epoch: keep the fixed encoding for this frame
             // rather than lose the values the shared header cannot carry.
-            bytes.push(INPUT_FRAME_LEGACY);
+            bytes.push(INPUT_FRAME_FIXED);
             bytes.extend_from_slice(&fixed_frame(*chassis, frame));
         }
         previous_sequence = Some(frame.sequence);
@@ -422,8 +417,7 @@ fn input_batch(inputs: &VecDeque<Command>, raw: bool) -> io::Result<Vec<u8>> {
     }
     Ok(packet)
 }
-/// Decodes a pilot input batch in encoded order, oldest first, in either the
-/// compact `RMI3` or the older fixed `RMI2` framing. Refuses a missing magic, a
+/// Decodes a compact `RMI3` pilot input batch in encoded order, oldest first. Refuses a missing magic, a
 /// packet over the single-datagram budget, an inflated body over
 /// [`INPUT_BATCH_BODY_LIMIT`], a count outside 1..=12, a reserved mask or flag
 /// bit, a delta or command value with no in-batch base, a truncated frame, a
@@ -432,25 +426,10 @@ fn decode_inputs(packet: &[u8]) -> io::Result<Vec<Command>> {
     if packet.len() > CHUNK {
         return Err(io_error("input batch exceeds one datagram"));
     }
-    if let Some(compressed) = packet.strip_prefix(INPUT_BATCH_MAGIC) {
-        return decode_compact_inputs(compressed);
-    }
     let compressed = packet
-        .strip_prefix(INPUT_BATCH_MAGIC_V2)
+        .strip_prefix(INPUT_BATCH_MAGIC)
         .ok_or_else(|| io_error("invalid input batch"))?;
-    let bytes =
-        crate::compression::decompress(compressed, 1 + MAX_INPUT_FRAMES * INPUT_FRAME_BYTES)
-            .map_err(io_error)?;
-    let count = bytes.first().copied().unwrap_or(0) as usize;
-    if !(1..=MAX_INPUT_FRAMES).contains(&count) || bytes.len() != 1 + count * INPUT_FRAME_BYTES {
-        return Err(io_error("invalid input batch length"));
-    }
-    bytes[1..]
-        .as_chunks::<INPUT_FRAME_BYTES>()
-        .0
-        .iter()
-        .map(|frame| decode_fixed_frame(frame))
-        .collect()
+    decode_compact_inputs(compressed)
 }
 /// Decodes the `RMI3` body: one count byte, the shared identity header, then one
 /// entry per count. A compact frame inherits the header's identity and reuses the
@@ -481,7 +460,7 @@ fn decode_compact_inputs(compressed: &[u8]) -> io::Result<Vec<Command>> {
             .ok_or_else(|| io_error("truncated input batch"))?;
         cursor += 1;
         let (chassis, frame) = match tag {
-            INPUT_FRAME_LEGACY => {
+            INPUT_FRAME_FIXED => {
                 let frame = bytes
                     .get(cursor..cursor + INPUT_FRAME_BYTES)
                     .ok_or_else(|| io_error("truncated input frame"))?;
@@ -1824,7 +1803,6 @@ mod tests {
                 placement_revision: 4,
                 command: rm_simulator_world::ChassisCommand::default(),
             },
-            timing: None,
         };
         let mut client = ClientCodec::new(now, 1 << 20, 12, false);
         client
@@ -2167,10 +2145,7 @@ mod tests {
         for sequence in 1..=120 {
             // Fire rides its own reliable-command lane; a stray Fire in the
             // input history must never enter the batch.
-            history.push_back(Command::Fire {
-                shooter: 1,
-                timing: None,
-            });
+            history.push_back(Command::Fire { shooter: 1 });
             history.push_back(pilot(
                 sequence,
                 ChassisCommand {
@@ -2345,35 +2320,6 @@ mod tests {
     }
 
     #[test]
-    fn older_fixed_rmi2_batches_still_decode() {
-        let inputs: VecDeque<_> = (1..=3)
-            .map(|sequence| {
-                pilot(
-                    sequence,
-                    ChassisCommand {
-                        forward_m_s: 1.5,
-                        aim_yaw_rad: 0.7,
-                        ..Default::default()
-                    },
-                )
-            })
-            .collect();
-        let mut body = vec![inputs.len() as u8];
-        for input in &inputs {
-            let Command::PilotInput { chassis, frame } = input else {
-                unreachable!()
-            };
-            body.extend_from_slice(&fixed_frame(*chassis, frame));
-        }
-        let mut packet = INPUT_BATCH_MAGIC_V2.to_vec();
-        packet.extend(crate::compression::compress(&body));
-        assert_eq!(
-            fixed_batch(&decode_inputs(&packet).unwrap()),
-            fixed_batch(&inputs.iter().copied().collect::<Vec<_>>())
-        );
-    }
-
-    #[test]
     fn compact_input_batch_refuses_malformed_headers_masks_counts_and_oversized_batches() {
         // A malformed header: a count byte with no shared identity behind it.
         let mut short = INPUT_BATCH_MAGIC.to_vec();
@@ -2520,7 +2466,7 @@ mod tests {
         assert_eq!(decoded.expect("inputs decoded"), vec![command]);
 
         // The first periodic publication offers the owner configuration on the
-        // reliable lane and writes an independent `RMB0` checkpoint.
+        // reliable lane and writes an independent `RMB1` checkpoint.
         host.send(&periodic(&state), epoch, 0).unwrap();
         let first = host_packets(&mut host, epoch + Duration::from_millis(32));
         for packet in &first {
@@ -2529,7 +2475,7 @@ mod tests {
         assert!(
             first.iter().any(|packet| application_body(packet)
                 .starts_with(crate::binary_snapshot::bitpack::MAGIC)),
-            "a raw periodic snapshot is packed `RMB0`, not compressed"
+            "a raw periodic snapshot is packed `RMB1`, not compressed"
         );
         assert!(
             first

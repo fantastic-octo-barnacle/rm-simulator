@@ -425,15 +425,6 @@ pub fn fire_gun(
         && !ui.blocks_input();
     if (gun.trigger_held || auto_fire) && !session.paused && now_ns >= gun.next_shot_ns {
         gun.next_shot_ns = now_ns + gun.interval_ns;
-        let mut timing = session.fire_timing();
-        timing.observed_muzzle_pose = session.presented_chassis().map(|chassis| {
-            let turret = driving_cradle(chassis, &player, session.local_aim);
-            let mut transform = Transform::default();
-            apply_pose(&mut transform, turret);
-            to_pose(pose_from_transform(
-                &transform.mul_transform(Transform::from_xyz(0., 0., -MUZZLE_FORWARD_M)),
-            ))
-        });
         let command = session.chassis_id.map_or_else(
             || Command::SpawnProjectile {
                 muzzle: session.weapon.spread.apply(muzzle_pose(&player), 0, now_ns),
@@ -441,10 +432,7 @@ pub fn fire_gun(
                     .weapon
                     .sample_shot(0, now_ns, session.weapon_limits.max_speed_m_s),
             },
-            |shooter| Command::Fire {
-                shooter,
-                timing: Some(timing),
-            },
+            |shooter| Command::Fire { shooter },
         );
         if auto_fire && let Some(assist) = assist.as_mut() {
             assist.shot_requested(session.fire_time_ns());

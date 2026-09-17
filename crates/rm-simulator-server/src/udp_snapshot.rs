@@ -18,7 +18,7 @@ pub const ACK_MAGIC: &[u8; 4] = b"RMA2";
 pub const RETIRE_MAGIC: &[u8; 4] = b"RMR1";
 const BASE_LIMIT: usize = 1024 * 1024;
 /// One application frame on the delta lane, always tagged by the state epoch.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub enum Wire {
     /// Packed full or delta checkpoint. Header fields are inspected before
     /// looking up a baseline; the entire body is validated before delivery.
@@ -126,14 +126,9 @@ pub fn envelope_bytes(wire: &Wire) -> Vec<u8> {
         }
     }
 }
-/// Frames a [`Wire`] and compresses it with the
-/// process-wide codec. Only the reliable [`Wire::Retire`] request travels this
-/// way; checkpoints carry their own packed framing.
-pub fn encode(wire: Wire) -> Vec<u8> {
-    encode_with(false, wire)
-}
-/// The [`encode`] framing with an explicit compression flag: `raw = true` writes
-/// the envelope behind [`crate::compression::RAW_MAGIC`] instead of ZSTD, which
+/// Frames a [`Wire`] and compresses it. Only the reliable [`Wire::Retire`]
+/// request travels this way; checkpoints carry their own packed framing.
+/// `raw = true` writes the envelope behind [`crate::compression::RAW_MAGIC`] instead of ZSTD, which
 /// is what the loopback transport uses so a local session runs the same frames
 /// without paying for compression.
 pub fn encode_with(raw: bool, wire: Wire) -> Vec<u8> {
@@ -206,9 +201,11 @@ pub struct Encoder {
     /// Uncompressed size of the latest independent packed checkpoint.
     pub last_packed_bytes: usize,
 }
+/// The packed fine fixed-point encoder with its trained dictionary, which is the
+/// network default.
 impl Default for Encoder {
     fn default() -> Self {
-        Self::new()
+        Self::with_raw(false)
     }
 }
 /// Resend an unanswered `Retire` after this many frames; at the 32 ms broadcast
@@ -221,11 +218,6 @@ const RETIRE_RESEND_FRAMES: u64 = 16;
 /// lossy links put 8, 12 and 16 within 0.1% of each other.
 const ROTATION_FRAMES: u64 = 12;
 impl Encoder {
-    /// The packed fine fixed-point encoder with its trained dictionary, which is
-    /// the network default.
-    pub fn new() -> Self {
-        Self::with_raw(false)
-    }
     /// The packed fine fixed-point encoder that emits its `RMB1` frames
     /// unchanged, for the loopback transport.
     pub fn new_raw() -> Self {
@@ -293,7 +285,7 @@ impl Encoder {
     /// let inflate = |bytes: &[u8]| {
     ///     parse(&decompress(bytes, 4 << 20).unwrap()).unwrap().unwrap()
     /// };
-    /// let mut encoder = Encoder::new();
+    /// let mut encoder = Encoder::default();
     /// let mut decoder = Decoder::default();
     /// // The first frame proposes a baseline, since none is pinned yet.
     /// let first = inflate(&encoder.snapshot(4, &state).unwrap());
@@ -551,17 +543,14 @@ mod tests {
                 },
             })
             .unwrap();
-        let mut encoder = Encoder::new();
+        let mut encoder = Encoder::default();
         let mut decoder = Decoder::default();
         let mut old = None;
         for frame in 0..160 {
             simulation.step(32).unwrap();
             if frame % 8 == 0 {
                 simulation
-                    .apply(&Command::Fire {
-                        shooter: chassis,
-                        timing: None,
-                    })
+                    .apply(&Command::Fire { shooter: chassis })
                     .unwrap();
             }
             let mut state = simulation.state();
@@ -645,7 +634,7 @@ mod tests {
                 command: drive,
             })
             .unwrap();
-        let mut encoder = Encoder::new();
+        let mut encoder = Encoder::default();
         let mut decoder = Decoder::default();
         let mut guest = None;
         for frame in 0..240_u64 {
@@ -656,12 +645,7 @@ mod tests {
                 _ => {}
             }
             if frame % 8 == 0 {
-                simulation
-                    .apply(&Command::Fire {
-                        shooter,
-                        timing: None,
-                    })
-                    .unwrap();
+                simulation.apply(&Command::Fire { shooter }).unwrap();
             }
             let mut state = simulation.state();
             let epoch = frame / 100;
@@ -692,7 +676,7 @@ mod tests {
 
     #[test]
     fn binary_snapshot_propagates_traversal_errors() {
-        let mut encoder = Encoder::new();
+        let mut encoder = Encoder::default();
         let valid = source(0, 0);
         let mut state = valid.clone();
         state.bots = vec![0; 100_000];

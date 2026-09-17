@@ -3,8 +3,9 @@
 //! Packed periodic checkpoints with fine projectile fixed point and an embedded
 //! dictionary trained on those exact bytes. The UDP baseline state machine owns
 //! acknowledgement, retention, recovery and ordering; this module only encodes.
-//! Confirmations, owner anchors and commands use their own framings; a full
-//! confirmation stays exact JSON.
+//! Confirmations, owner anchors and commands use their own framings; a
+//! confirmation travels as a positional `RMM1` message (see
+//! [`crate::snapshot_codec`]).
 
 pub mod bitpack;
 pub mod fixed_point;
@@ -12,10 +13,11 @@ pub mod fixed_point;
 /// Binary dictionary frame marker, distinct from plain ZSTD's [`crate::compression::MAGIC`].
 pub const MAGIC: &[u8; 4] = b"RMBZ";
 
-/// The fine fixed-point dictionary trained for protocol 41 and kept for 42:
-/// protocol 42 leaves independent frames unchanged, and a dictionary retrained
-/// on its predicted deltas measured 0.4–1.3% larger sent bytes with two or
-/// more chassis in `network_bandwidth`. Replacing these bytes requires a
+/// The fine fixed-point dictionary trained for protocol 41 and kept for 42 and
+/// 43. Protocol 42 left independent frames unchanged, and a dictionary
+/// retrained on its predicted deltas measured 0.4–1.3% larger sent bytes with
+/// two or more chassis in `network_bandwidth`. Protocol 43 only drops the rules
+/// record's one-bit variant tag. Replacing these bytes requires a
 /// protocol version bump and held-out bandwidth evaluation.
 pub fn dictionary() -> &'static [u8] {
     include_bytes!("../../assets/binary-fixed-fine.zstd")
@@ -27,7 +29,7 @@ pub fn dictionary() -> &'static [u8] {
 /// level-independent, so this costs clients nothing. The level is not part of
 /// the wire format — ZSTD decodes any level against the same dictionary — so
 /// there is no selector for it and no protocol bump when it changes.
-const CHECKPOINT_LEVEL: i32 = 6;
+pub const CHECKPOINT_LEVEL: i32 = 6;
 
 /// Smallest packed delta worth a compression attempt. Application choice,
 /// measured on the protocol 41 `network_bandwidth` workloads: no delta under
@@ -47,7 +49,7 @@ pub(crate) struct Compressor {
     skipped_deltas: u64,
 }
 impl Compressor {
-    /// The dictionary compressor for packed `RMB0` checkpoints.
+    /// The dictionary compressor for packed `RMB1` checkpoints.
     pub(crate) fn new() -> Self {
         Self {
             inner: zstd::bulk::Compressor::with_dictionary(CHECKPOINT_LEVEL, dictionary())
@@ -57,7 +59,7 @@ impl Compressor {
         }
     }
 
-    /// Compresses one packed `RMB0` checkpoint with the embedded dictionary,
+    /// Compresses one packed `RMB1` checkpoint with the embedded dictionary,
     /// or returns it unchanged when the compressed frame would be no smaller.
     /// Both framings decode through [`crate::compression::decompress`]: `RMBZ`
     /// dictionary frames inflate, while a bare `RMB1` frame passes through as

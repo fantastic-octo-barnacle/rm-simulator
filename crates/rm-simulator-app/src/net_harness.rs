@@ -343,10 +343,7 @@ fn pilot_frame(session: &mut Session, chassis: u32, step: u64, firing: bool) {
     };
     session.drive(chassis, command, step.is_multiple_of(200));
     if firing && step.is_multiple_of(100) {
-        session.apply(Command::Fire {
-            shooter: chassis,
-            timing: None,
-        });
+        session.apply(Command::Fire { shooter: chassis });
     }
     session.advance_local_shots();
 }

@@ -4,6 +4,18 @@
 
 ## Unreleased
 
+- Remove legacy protocol surface (protocol 43). `ShotScheduled` no longer
+  carries an intended time; `Fire` and `FireAimed` no longer carry client
+  timing diagnostics, so `GET /api/fire-records` drops its client timing and
+  observed poses. A checkpoint's rule state always travels as the restore: a
+  state without a restore matching its views is refused instead of sent
+  explicitly. Hosts no longer accept the older `RMI2` input batch, and JSON
+  decoding no longer fills in fields that predate protocol 38. Network traces
+  now classify the current `RMO6` owner anchors and `RMA2` baseline feedback,
+  which were counted as control. The protocol 41 dictionary is kept; in
+  `network_bandwidth` sent bytes change by under 0.2% with players (+44 bytes
+  over four seconds with two) and +1.2% idle.
+
 - Predict checkpoint baselines before differencing them (protocol 42). A
   delta is now coded against its pinned baseline dead-reckoned to the frame's
   tick: chassis and turret positions advance by the body velocity, rotations

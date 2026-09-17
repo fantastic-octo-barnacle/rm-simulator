@@ -124,7 +124,7 @@ CPU and disk bandwidth even though it cannot block gameplay on disk I/O.
 ## Embedded play
 
 `Server::connect_owner` runs the same framed per-peer codec a UDP client runs —
-the RMG1 fragment framing, the RMB0/RMI3/RMO5 messages and the byte pacer — over
+the RMG1 fragment framing, the RMB1/RMI3/RMO6 messages and the byte pacer — over
 two in-process datagram channels, with compression skipped (`RMRW` frames). It
 retains the same `Client` API, host authorization and confirmation snapshot/Pong
 order as network play. Only unsent periodic snapshots may be replaced. Reliable
@@ -136,8 +136,8 @@ time.
 
 ## Packet classification
 
-Packet classification recognizes RMO3/RMO5 owner anchors and RMI2/RMI3
-input batches. Before `e678491`, the protocol 29 tags were counted as `control`;
+Packet classification recognizes RMO6 owner anchors, RMI3 input batches,
+RMC1 shot commands and RMA2 baseline feedback. Before `e678491`, the protocol 29 tags were counted as `control`;
 that affects historical per-class attribution, not total byte counts.
 
 ## Deterministic bandwidth probe
@@ -146,7 +146,7 @@ Run `cargo test -p rm-simulator-server --locked bandwidth_attribution_baseline
 -- --nocapture` on one line to measure the production peer/client codecs on a
 manual clock. The probe reports owner/world/control bytes, input batches and
 complete checkpoints for idle, driving, firing and twelve-chassis workloads.
-It accounts for the current RMO5/RMI3 wire formats. Use a separate target directory
+It accounts for the current RMO6/RMI3 wire formats. Use a separate target directory
 per concurrent worktree to avoid executing another checkout's test artifact.
 
 These application-byte measurements exclude GNS and network overhead. The probe
