@@ -326,4 +326,58 @@ mod tests {
             "expect at least 25% less compressed traffic"
         );
     }
+
+    #[test]
+    fn coarsened_projectile_checkpoints_replay_within_centimetres() {
+        use crate::protocol::Command;
+        // Balls in flight, cut through the compact checkpoint, then replayed
+        // from the restore against the exact state: the 1 mm / 1 mm/s
+        // projectile quantization must not move any ball by armor scale.
+        let (mut simulation, chassis) = crate::workload::simulation(1);
+        let shooter = chassis[0];
+        for frame in 0..40 {
+            if frame % 4 == 0 {
+                let _ = simulation.apply(&Command::Fire {
+                    shooter,
+                    timing: None,
+                });
+            }
+            simulation.step(4).unwrap();
+        }
+        let state = simulation.state();
+        assert!(
+            !state.field.projectiles.is_empty(),
+            "the workload must hold balls in flight"
+        );
+        let message = ServerMessage::Snapshot(Box::new(state.clone()));
+        let ServerMessage::Snapshot(decoded) =
+            decode_player_message(&encode_player_message(&message)).unwrap()
+        else {
+            panic!("a snapshot must decode to a snapshot");
+        };
+        let geometry = simulation.field().static_geometry_snapshot();
+        let mut exact = Field::restore(&state.field, &geometry, 0.).unwrap();
+        let mut replay = Field::restore(&decoded.field, &geometry, 0.).unwrap();
+        exact.step(512).unwrap();
+        replay.step(512).unwrap();
+        let replayed = replay.snapshot().projectiles;
+        for ball in exact.snapshot().projectiles {
+            let other = replayed
+                .iter()
+                .find(|other| other.id == ball.id)
+                .unwrap_or_else(|| panic!("ball {} must survive the replay", ball.id));
+            let drift_m = ball
+                .position_m
+                .into_iter()
+                .zip(other.position_m)
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            assert!(
+                drift_m < 0.05,
+                "ball {} drifted {drift_m:.4} m over four seconds",
+                ball.id
+            );
+        }
+    }
 }

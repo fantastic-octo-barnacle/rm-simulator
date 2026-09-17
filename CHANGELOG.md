@@ -22,6 +22,12 @@
   across levels, decompression, bitpack decode and the full
   acknowledged-baseline round trip.
 
+- Round projectile checkpoints to 1 mm and 1 mm/s instead of 0.01 mm and
+  0.0001 m/s. Both fit the bitpack 18-bit grids, cutting the projectile
+  share about 10% and the live firing stream about 6%; a new replay test
+  restores balls from a compact checkpoint and holds four seconds of
+  flight within 5 cm. No wire change: values stay f64, only coarser.
+
 - Log per-peer network health on the server. The GNS host prints one `net
   peer=ID world=N skipped_congested=N replaced_unsent=N ...` line per admitted
   peer every 10 s, and appends snapshot totals to the disconnect line, so a
