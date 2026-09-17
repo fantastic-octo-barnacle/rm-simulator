@@ -694,6 +694,9 @@ class RunnerProcessTests(unittest.TestCase):
         self.assert_cleaned()
 
     def test_baseline_regression_fails_and_improvement_passes(self):
+        # rtt_ms needs two active samples per client (the first only sets the
+        # event cursor); the default .6 s window can yield fewer on a slow runner.
+        self.rewrite(duration_s=2)
         baseline = self.root / 'baseline.json'
         stats = {'p50':1, 'p95':None, 'p99':None, 'max':1}
         baseline.write_text(json.dumps({'event_metric_schema':1,
