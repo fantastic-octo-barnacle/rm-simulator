@@ -79,7 +79,7 @@ mod tests {
         assert_eq!(dictionary().len(), 32768);
         assert_eq!(
             format!("{:x}", Sha256::digest(dictionary())),
-            "9996f46a6bdb5718d08e53cdbf2cedee17645513c5966966000c978e1b7b9686"
+            "3d6ffcaf5e78d99f8b0b71a7f5f5804764ed9433e170ebab9609b2365c3031b5"
         );
         assert_eq!(
             dictionary(),

@@ -32,7 +32,7 @@ struct PlayerSnapshot {
 #[derive(Serialize, Deserialize)]
 struct ProjectileWire(
     u64,
-    rm_simulator_world::Caliber,
+    CaliberBit,
     u64,
     [f32; 3],
     [f32; 3],
@@ -40,6 +40,171 @@ struct ProjectileWire(
     Option<u64>,
     Option<u64>,
 );
+/// Projectile caliber as one bit on the compact checkpoint: `false` is
+/// 17 mm, `true` is 42 mm (rulebook section 1.4 projectile sizes). A third
+/// caliber would need a protocol bump; the bit order is fixed on the wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CaliberBit(bool);
+impl Serialize for CaliberBit {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bool(self.0)
+    }
+}
+impl<'de> Deserialize<'de> for CaliberBit {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self(bool::deserialize(deserializer)?))
+    }
+}
+impl From<rm_simulator_world::Caliber> for CaliberBit {
+    fn from(caliber: rm_simulator_world::Caliber) -> Self {
+        Self(matches!(caliber, rm_simulator_world::Caliber::Mm42))
+    }
+}
+impl From<CaliberBit> for rm_simulator_world::Caliber {
+    fn from(bit: CaliberBit) -> Self {
+        if bit.0 { Self::Mm42 } else { Self::Mm17 }
+    }
+}
+/// Two-variant rule enums ride the compact checkpoint as single bits and the
+/// rune/chassis kinds as two-bit indexes, scoped by field name so display
+/// text (refusal reasons) and unrelated booleans pass through untouched.
+/// Unknown strings stay strings, so a new variant costs bytes but still
+/// decodes. Control and confirmation JSON keeps the string forms.
+///
+/// Namespaces share the `kind`/`stage` keys between robot and rune enums,
+/// whose serialized names are disjoint; rune states and match phases take
+/// their own indexes under `state` and `phase`.
+fn compact_name(key: &str, name: &str) -> Option<u64> {
+    match (key, name) {
+        ("team", "Red") | ("caliber", "Mm17") | ("kind", "Infantry") => Some(0),
+        ("team", "Blue") | ("caliber", "Mm42") | ("kind", "Hero") => Some(1),
+        ("kind" | "stage", "Small") => Some(2),
+        ("kind" | "stage", "Big") => Some(3),
+        ("state", "Inactive") => Some(4),
+        ("state", "Activating") => Some(5),
+        ("state", "Activated") => Some(6),
+        ("phase", "Idle") => Some(7),
+        ("phase", "Countdown") => Some(8),
+        ("phase", "Running") => Some(9),
+        ("phase", "Finished") => Some(10),
+        _ => None,
+    }
+}
+/// Inverse of [`compact_name`]: only the indexes the encoder writes map back,
+/// everything else passes through to the typed deserializer.
+fn expand_name(key: &str, index: u64) -> Option<&'static str> {
+    match (key, index) {
+        ("team", 0) => Some("Red"),
+        ("team", 1) => Some("Blue"),
+        ("caliber", 0) => Some("Mm17"),
+        ("caliber", 1) => Some("Mm42"),
+        ("kind", 0) => Some("Infantry"),
+        ("kind", 1) => Some("Hero"),
+        ("kind" | "stage", 2) => Some("Small"),
+        ("kind" | "stage", 3) => Some("Big"),
+        ("state", 4) => Some("Inactive"),
+        ("state", 5) => Some("Activating"),
+        ("state", 6) => Some("Activated"),
+        ("phase", 7) => Some("Idle"),
+        ("phase", 8) => Some("Countdown"),
+        ("phase", 9) => Some("Running"),
+        ("phase", 10) => Some("Finished"),
+        _ => None,
+    }
+}
+/// Team and rune-kind arrays (referee config) carry the enums as bare array
+/// elements, so the parent key scopes them the same way.
+fn compact_element(key: &str, name: &str) -> Option<u64> {
+    match (key, name) {
+        ("outpost_teams" | "rune_teams", "Red") => Some(0),
+        ("outpost_teams" | "rune_teams", "Blue") => Some(1),
+        ("training_kinds", "Small") => Some(2),
+        ("training_kinds", "Big") => Some(3),
+        _ => None,
+    }
+}
+/// Inverse of [`compact_element`].
+fn expand_element(key: &str, index: u64) -> Option<&'static str> {
+    match (key, index) {
+        ("outpost_teams" | "rune_teams", 0) => Some("Red"),
+        ("outpost_teams" | "rune_teams", 1) => Some("Blue"),
+        ("training_kinds", 2) => Some("Small"),
+        ("training_kinds", 3) => Some("Big"),
+        _ => None,
+    }
+}
+fn compact_child(array_key: Option<&str>, value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, field) in map.iter_mut() {
+                if let Value::String(name) = &*field
+                    && let Some(index) = compact_name(key, name)
+                {
+                    *field = Value::from(index);
+                } else {
+                    compact_child(Some(key), field);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                if let Value::String(name) = &*item
+                    && let Some(key) = array_key
+                    && let Some(index) = compact_element(key, name)
+                {
+                    *item = Value::from(index);
+                } else {
+                    compact_child(None, item);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+/// Map the compact checkpoint's rule enums to small indexes before bitpacking
+/// (teams, calibers, robot/rune kinds, rune stages/states and match phases).
+/// The packed checkpoint codec and the dictionary trainer share this so
+/// training corpora match live bytes. Unknown strings pass through, so a new
+/// variant costs bytes but still decodes; [`expand_checkpoint_enums`]
+/// reverses the mapping on decode.
+pub fn compact_checkpoint_enums(value: &mut Value) {
+    compact_child(None, value);
+}
+fn expand_child(array_key: Option<&str>, value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, field) in map.iter_mut() {
+                if let Value::Number(index) = &*field
+                    && let Some(index) = index.as_u64()
+                    && let Some(name) = expand_name(key, index)
+                {
+                    *field = Value::from(name);
+                } else {
+                    expand_child(Some(key), field);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                if let Value::Number(index) = &*item
+                    && let Some(index) = index.as_u64()
+                    && let Some(key) = array_key
+                    && let Some(name) = expand_element(key, index)
+                {
+                    *item = Value::from(name);
+                } else {
+                    expand_child(None, item);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+/// Inverse of [`compact_checkpoint_enums`]: only the indexes the encoder
+/// writes map back, everything else passes through to the typed deserializer.
+pub fn expand_checkpoint_enums(value: &mut Value) {
+    expand_child(None, value);
+}
 impl PlayerSnapshot {
     fn from_state(state: &SimulationState) -> Self {
         let mut state = state.clone();
@@ -57,7 +222,7 @@ impl PlayerSnapshot {
                     .map(|dwell_ns| dwell_ns.saturating_sub(dwell_base_ns));
                 ProjectileWire(
                     ball.id,
-                    ball.caliber,
+                    CaliberBit::from(ball.caliber),
                     launched_age_ns,
                     ball.position_m.map(|x| x as f32),
                     ball.velocity_m_s.map(|x| x as f32),
@@ -91,7 +256,7 @@ impl PlayerSnapshot {
             .map(
                 |ProjectileWire(
                     id,
-                    caliber,
+                    caliber_bit,
                     launched_age_ns,
                     position,
                     velocity,
@@ -107,7 +272,7 @@ impl PlayerSnapshot {
                         dwell_age_ns.map(|age_ns| dwell_base_ns.saturating_add(age_ns));
                     rm_simulator_world::ProjectileSnapshot {
                         id,
-                        caliber,
+                        caliber: rm_simulator_world::Caliber::from(caliber_bit),
                         launched_ns,
                         position_m: position.map(f64::from),
                         velocity_m_s: velocity.map(f64::from),
@@ -170,9 +335,12 @@ pub fn encode_player_message(message: &ServerMessage) -> Vec<u8> {
                     .all(|x| (x as f32).is_finite())
             }) =>
         {
-            serde_json::to_vec(&PlayerEnvelope {
+            let mut envelope = serde_json::to_value(&PlayerEnvelope {
                 snapshot: PlayerSnapshot::from_state(state),
             })
+            .expect("finite protocol message");
+            compact_checkpoint_enums(&mut envelope);
+            serde_json::to_vec(&envelope)
         }
         _ => serde_json::to_vec(message),
     }
@@ -182,9 +350,10 @@ pub fn encode_player_message(message: &ServerMessage) -> Vec<u8> {
 /// malformed bytes rather than returning a partial state, because a decoder
 /// that drops rule state gives up restoring, not drawing.
 pub fn decode_player_message(bytes: &[u8]) -> io::Result<ServerMessage> {
-    let value: Value =
+    let mut value: Value =
         serde_json::from_slice(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     if value.get("CompactSnapshot").is_some() {
+        expand_checkpoint_enums(&mut value);
         let envelope: PlayerEnvelope = serde_json::from_value(value)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         Ok(ServerMessage::Snapshot(Box::new(
@@ -352,17 +521,53 @@ mod tests {
     }
 
     #[test]
+    fn compacted_enums_round_trip_and_leave_other_values_alone() {
+        let mut value = serde_json::json!({
+            "team": "Blue",
+            "caliber": "Mm42",
+            "kind": "Small",
+            "stage": "Big",
+            "state": "Activating",
+            "phase": "Countdown",
+            "paused": true,
+            "hp": 10, // small ints under other keys stay numbers
+            "reason": "Blue", // display text under another key stays a string
+            "future": {"team": "Green"}, // unknown variants stay strings
+            "outpost_teams": ["Red", "Blue"],
+            "training_kinds": ["Small"],
+            "chassis": [{"team": "Red", "kind": "Hero"}],
+        });
+        let original = value.clone();
+        compact_checkpoint_enums(&mut value);
+        assert_eq!(value["team"], serde_json::json!(1));
+        assert_eq!(value["caliber"], serde_json::json!(1));
+        assert_eq!(value["kind"], serde_json::json!(2));
+        assert_eq!(value["stage"], serde_json::json!(3));
+        assert_eq!(value["state"], serde_json::json!(5));
+        assert_eq!(value["phase"], serde_json::json!(8));
+        assert_eq!(value["paused"], serde_json::json!(true));
+        assert_eq!(value["hp"], serde_json::json!(10));
+        assert_eq!(value["reason"], serde_json::json!("Blue"));
+        assert_eq!(value["future"]["team"], serde_json::json!("Green"));
+        assert_eq!(value["outpost_teams"], serde_json::json!([0, 1]));
+        assert_eq!(value["training_kinds"], serde_json::json!([2]));
+        expand_checkpoint_enums(&mut value);
+        assert_eq!(value, original);
+    }
+
+    #[test]
     fn projectile_timestamp_ages_reconstruct_exactly() {
         use rm_simulator_world::{Caliber, ProjectileSnapshot};
         fn ball(
             id: u64,
+            caliber: Caliber,
             launched_ns: u64,
             first_contact_ns: Option<u64>,
             dwell_since_ns: Option<u64>,
         ) -> ProjectileSnapshot {
             ProjectileSnapshot {
                 id,
-                caliber: Caliber::Mm17,
+                caliber,
                 launched_ns,
                 position_m: [1., 2., 3.],
                 velocity_m_s: [25., 0., 0.],
@@ -375,10 +580,11 @@ mod tests {
         let mut state = simulation();
         state.field.time_ns = 90_000_000_000;
         state.field.projectiles = vec![
-            ball(1, 89_000_000_000, None, None),
-            ball(2, 88_000_000_000, Some(88_500_000_000), None),
+            ball(1, Caliber::Mm17, 89_000_000_000, None, None),
+            ball(2, Caliber::Mm42, 88_000_000_000, Some(88_500_000_000), None),
             ball(
                 3,
+                Caliber::Mm17,
                 87_000_000_000,
                 Some(87_100_000_000),
                 Some(87_150_000_000),
