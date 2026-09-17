@@ -78,12 +78,14 @@ counts and publication work are the useful measurements.
 
 Host delivery reports expose `encoding` counters once per second:
 
-- `raw_world_bytes` is checkpoint JSON before delta compression, measured on the
-  normal delta path; the full-checkpoint comparison path leaves this unmeasured.
+- `raw_world_bytes` is the packed checkpoint size before delta encoding and
+  compression, measured on every periodic frame.
 - `framed_world_bytes` and `owner_bytes` count produced application bytes before
   pacing replaces or expires them.
 - `independent_bytes` and `selected_bytes` compare the baseline codec's compressed
   full alternative with its selected full/delta encoding, before fragment headers.
+- `raw_fallback_frames` counts packed checkpoint frames sent uncompressed because
+  dictionary compression would not have shrunk them.
 - `skipped_world_updates` counts world updates skipped for native backlog.
 
 Existing `sent_bytes`, `queued_bytes` and `oldest_age_ms` in the delivery report

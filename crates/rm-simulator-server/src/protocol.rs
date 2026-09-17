@@ -72,7 +72,8 @@ use serde::{Deserialize, Serialize};
 /// intended time, `Fire` and `FireAimed` no longer carry client timing
 /// diagnostics, the checkpoint's rules always travel as the restore (a state
 /// without a matching restore cannot be encoded), and the `RMI2` input batch
-/// is no longer accepted. The protocol 41 dictionary is unchanged.
+/// is no longer accepted. Owner anchor command and tyre speeds use the 1 cm/s
+/// velocity scale. The protocol 41 dictionary is unchanged.
 pub const PROTOCOL_VERSION: u32 = 43;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
@@ -345,8 +346,7 @@ impl BulletSpread {
 /// ```
 /// use rm_simulator_server::protocol::Role;
 ///
-/// // A missing role is the pilot, so an old Hello can never hand someone the
-/// // match controls.
+/// // The API default is the pilot, never the match controls.
 /// assert_eq!(Role::default(), Role::Pilot);
 /// assert!(Role::Referee.referees());
 /// assert!(!Role::Pilot.referees());
@@ -355,8 +355,7 @@ impl BulletSpread {
 /// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
-    /// Drives a chassis, aims and fires. The default for a Hello that omits
-    /// the role.
+    /// Drives a chassis, aims and fires. The API default.
     #[default]
     Pilot,
     /// Watches only. A spectator is on a team but has no chassis.
@@ -413,8 +412,7 @@ impl Role {
 pub enum Robot {
     /// Mecanum Hero with the 42 mm gun, armor number 1.
     Hero,
-    /// Omni infantry number 3 with the 17 mm gun. The default for a Hello
-    /// that names no robot.
+    /// Omni infantry number 3 with the 17 mm gun. The API default.
     #[default]
     #[value(name = "infantry-3", alias = "infantry")]
     Infantry3,

@@ -188,8 +188,8 @@ impl OwnerAnchor {
             bytes.extend(quantize_i16(v, RATE_SCALE)?.to_le_bytes());
         }
         let c = self.owner.command;
-        bytes.extend(quantize_i16(c.forward_m_s, POS_MM)?.to_le_bytes());
-        bytes.extend(quantize_i16(c.left_m_s, POS_MM)?.to_le_bytes());
+        bytes.extend(quantize_i16(c.forward_m_s, VEL_SCALE)?.to_le_bytes());
+        bytes.extend(quantize_i16(c.left_m_s, VEL_SCALE)?.to_le_bytes());
         bytes.extend(quantize_i16(c.yaw_rate_rad_s, RATE_SCALE)?.to_le_bytes());
         bytes.extend(quantize_i32(c.aim_yaw_rad, AIM_SCALE)?.to_le_bytes());
         bytes.extend(quantize_i32(c.aim_pitch_rad, AIM_SCALE)?.to_le_bytes());
@@ -205,7 +205,7 @@ impl OwnerAnchor {
                 bytes.extend(quantize_i32(v, POS_MM)?.to_le_bytes());
             }
             bytes.extend(quantize_i32(wheel.spin_rad, AIM_SCALE)?.to_le_bytes());
-            bytes.extend(quantize_i16(wheel.target_m_s, POS_MM)?.to_le_bytes());
+            bytes.extend(quantize_i16(wheel.target_m_s, VEL_SCALE)?.to_le_bytes());
         }
         if bytes.len() > MAX_BYTES {
             return Err(io::Error::other("owner anchor exceeds datagram budget"));
@@ -276,8 +276,8 @@ impl OwnerAnchor {
         let velocity_m_s = reader.q16_array::<3>(VEL_SCALE)?;
         let angular_velocity_rad_s = reader.q16_array::<3>(RATE_SCALE)?;
         let command = ChassisCommand {
-            forward_m_s: reader.q16(POS_MM)?,
-            left_m_s: reader.q16(POS_MM)?,
+            forward_m_s: reader.q16(VEL_SCALE)?,
+            left_m_s: reader.q16(VEL_SCALE)?,
             yaw_rate_rad_s: reader.q16(RATE_SCALE)?,
             aim_yaw_rad: reader.q32(AIM_SCALE)?,
             aim_pitch_rad: reader.q32(AIM_SCALE)?,
@@ -293,7 +293,7 @@ impl OwnerAnchor {
             wheels.push(WheelSnapshot {
                 hub_m: reader.q32_array::<3>(POS_MM)?,
                 spin_rad: reader.q32(AIM_SCALE)?,
-                target_m_s: reader.q16(POS_MM)?,
+                target_m_s: reader.q16(VEL_SCALE)?,
                 contact: None,
             });
         }
@@ -563,12 +563,12 @@ mod tests {
             (
                 expected.owner.command.forward_m_s,
                 actual.owner.command.forward_m_s,
-                0.001,
+                0.01,
             ),
             (
                 expected.owner.command.left_m_s,
                 actual.owner.command.left_m_s,
-                0.001,
+                0.01,
             ),
             (
                 expected.owner.command.yaw_rate_rad_s,
@@ -603,7 +603,7 @@ mod tests {
                 close(x, y, 0.001);
             }
             close(a.spin_rad, b.spin_rad, 0.0001);
-            close(a.target_m_s, b.target_m_s, 0.001);
+            close(a.target_m_s, b.target_m_s, 0.01);
         }
     }
 
