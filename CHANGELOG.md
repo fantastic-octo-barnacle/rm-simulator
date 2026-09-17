@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+- Remove JSON from the gameplay wire (protocol 38). Checkpoints are packed
+  straight from the typed state by a positional bitpack (`RMB1`) that rounds
+  fixed-point fields while serializing, with no JSON value tree, key strings
+  or type tags. Control messages, acknowledgements and retirements use the
+  same codec. The dictionary is retrained on the new frames. Host encode is
+  about 5–7× faster and client decode 10–20× faster. Sent bytes fall 7–13%
+  for idle, driving and firing workloads but rise 13% with twelve players.
+  HTTP, lobby, traces and saved preferences stay JSON.
+
 - Send small checkpoint frames uncompressed. The binary checkpoint compressor
   now returns a packed `RMB0` frame unchanged when dictionary compression
   would not shrink it, instead of emitting a larger `RMBZ` frame; the decoder

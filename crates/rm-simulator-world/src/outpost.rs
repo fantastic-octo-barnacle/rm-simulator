@@ -81,10 +81,45 @@ impl OutpostSnapshot {
 /// assert_eq!(first.hp, rm_simulator_world::outpost::INITIAL_HP);
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "OutpostRecord", into = "OutpostRecord")]
 pub struct Outpost {
-    #[serde(flatten)]
     motion: RotorMotion,
     hp: u32,
+}
+/// The serialized outpost: the rotor fields inline beside HP, spelled out
+/// rather than flattened so positional (non-self-describing) formats can carry
+/// it. Field order and names keep the existing checkpoint shape.
+#[derive(Serialize, Deserialize)]
+struct OutpostRecord {
+    pivot_cad_m: [f64; 3],
+    origin: Pose,
+    speed_rad_s: f64,
+    destroyed_ns: Option<u64>,
+    hp: u32,
+}
+impl From<OutpostRecord> for Outpost {
+    fn from(record: OutpostRecord) -> Self {
+        Self {
+            motion: RotorMotion {
+                pivot_cad_m: record.pivot_cad_m,
+                origin: record.origin,
+                speed_rad_s: record.speed_rad_s,
+                stopped_at_ns: record.destroyed_ns,
+            },
+            hp: record.hp,
+        }
+    }
+}
+impl From<Outpost> for OutpostRecord {
+    fn from(outpost: Outpost) -> Self {
+        Self {
+            pivot_cad_m: outpost.motion.pivot_cad_m,
+            origin: outpost.motion.origin,
+            speed_rad_s: outpost.motion.speed_rad_s,
+            destroyed_ns: outpost.motion.stopped_at_ns,
+            hp: outpost.hp,
+        }
+    }
 }
 impl Outpost {
     /// `origin` places the tower base on the floor in world FLU coordinates; its

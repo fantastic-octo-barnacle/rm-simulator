@@ -6,13 +6,16 @@
 //! not, so an unanswered retirement is resent on a bounded schedule rather than
 //! abandoned: dropping it locally would propose a third baseline the decoder must
 //! refuse.
+use crate::binary_snapshot::bitpack::{self, Node};
 use crate::protocol::ServerMessage;
+use crate::simulation::SimulationState;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::{collections::BTreeMap, io};
 /// First four bytes of every baseline or owner-configuration feedback payload,
 /// so a sender can tell feedback from snapshot traffic on the same lane.
-pub const ACK_MAGIC: &[u8; 4] = b"RMA1";
+pub const ACK_MAGIC: &[u8; 4] = b"RMA2";
+/// First four bytes of every [`Wire::Retire`] request.
+pub const RETIRE_MAGIC: &[u8; 4] = b"RMR1";
 const BASE_LIMIT: usize = 1024 * 1024;
 /// One application frame on the delta lane, always tagged by the state epoch.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -26,7 +29,7 @@ pub enum Wire {
         id: u64,
         /// True when the frame requires the named pinned baseline.
         delta: bool,
-        /// Complete inflated RMB0 frame, including the checked header.
+        /// Complete inflated RMB1 frame, including the checked header.
         bytes: Vec<u8>,
     },
     /// Asks the decoder to drop baseline `id` so the encoder can propose a new
@@ -38,11 +41,6 @@ pub enum Wire {
         /// Id of the baseline to drop.
         id: u64,
     },
-}
-#[derive(Serialize, Deserialize)]
-struct Envelope<T = Wire> {
-    #[serde(rename = "UdpSnapshot")]
-    message: T,
 }
 /// The decoder's answer about one baseline, or the owner codec's answer about
 /// one owner configuration. `Stored` and `Retired` confirm a state transition;
@@ -87,7 +85,7 @@ pub enum Feedback {
     },
 }
 impl Feedback {
-    /// Encodes the feedback as [`ACK_MAGIC`] followed by JSON, which keeps it
+    /// Encodes the feedback as [`ACK_MAGIC`] followed by its binary form, which keeps it
     /// distinguishable from a snapshot frame on the same unreliable lane.
     ///
     /// ```
@@ -102,7 +100,7 @@ impl Feedback {
     /// ```
     pub fn encode(self) -> Vec<u8> {
         let mut bytes = ACK_MAGIC.to_vec();
-        bytes.extend(serde_json::to_vec(&self).unwrap());
+        bytes.extend(bitpack::to_bytes(&self).expect("feedback is positional"));
         bytes
     }
     /// Decodes [`Feedback::encode`] output. Errors on a missing magic prefix or
@@ -111,16 +109,24 @@ impl Feedback {
         if bytes.len() > 256 || !bytes.starts_with(ACK_MAGIC) {
             return Err(io::Error::other("invalid baseline feedback"));
         }
-        serde_json::from_slice(&bytes[4..]).map_err(Into::into)
+        bitpack::from_bytes(&bytes[4..])
     }
 }
-/// The uncompressed envelope JSON for one [`Wire`] frame. [`encode`] compresses
-/// exactly these bytes, so the dictionary trainer sees the framing the wire
-/// does instead of re-deriving it.
+/// The uncompressed bytes for one [`Wire`] frame: a packed checkpoint is its
+/// own frame and a retirement is [`RETIRE_MAGIC`] with the epoch and id.
+/// [`encode`] compresses exactly these bytes, so the dictionary trainer sees
+/// the framing the wire does instead of re-deriving it.
 pub fn envelope_bytes(wire: &Wire) -> Vec<u8> {
-    serde_json::to_vec(&Envelope { message: wire }).unwrap()
+    match wire {
+        Wire::Packed { bytes, .. } => bytes.clone(),
+        Wire::Retire { epoch, id } => {
+            let mut bytes = RETIRE_MAGIC.to_vec();
+            bytes.extend(bitpack::to_bytes(&(epoch, id)).expect("retire is positional"));
+            bytes
+        }
+    }
 }
-/// Frames a [`Wire`] under the `UdpSnapshot` key and compresses it with the
+/// Frames a [`Wire`] and compresses it with the
 /// process-wide codec. Only the reliable [`Wire::Retire`] request travels this
 /// way; checkpoints carry their own packed framing.
 pub fn encode(wire: Wire) -> Vec<u8> {
@@ -133,23 +139,23 @@ pub fn encode(wire: Wire) -> Vec<u8> {
 pub fn encode_with(raw: bool, wire: Wire) -> Vec<u8> {
     crate::compression::encode(raw, &envelope_bytes(&wire))
 }
-/// Reads an inflated packed checkpoint or a `Retire` envelope. `Ok(None)` means
-/// the JSON carried no `UdpSnapshot`
-/// key, so a caller can leave other message kinds on the same stream alone
-/// instead of failing on them.
+/// Reads an inflated packed checkpoint or a `Retire` request. `Ok(None)` means
+/// the frame is neither, so a caller can leave other message kinds on the same
+/// stream alone instead of failing on them.
 ///
 /// ```
-/// use rm_simulator_server::udp_snapshot::{Wire, parse};
+/// use rm_simulator_server::udp_snapshot::{Wire, encode_with, parse};
+/// use rm_simulator_server::compression::decompress;
 ///
-/// let frame = br#"{"UdpSnapshot":{"Retire":{"epoch":7,"id":2}}}"#;
-/// let wire = parse(frame).unwrap().unwrap();
+/// let frame = decompress(&encode_with(true, Wire::Retire { epoch: 7, id: 2 }), 64).unwrap();
+/// let wire = parse(&frame).unwrap().unwrap();
 /// assert!(matches!(wire, Wire::Retire { epoch: 7, id: 2 }));
-/// // A JSON message of another kind is not an error here.
-/// assert!(parse(br#"{"Pong":{"nonce":1}}"#).unwrap().is_none());
+/// // A message of another kind is not an error here.
+/// assert!(parse(b"RMM1").unwrap().is_none());
 /// ```
 pub fn parse(bytes: &[u8]) -> io::Result<Option<Wire>> {
-    if bytes.starts_with(crate::binary_snapshot::bitpack::MAGIC) {
-        let (delta, epoch, id) = crate::binary_snapshot::bitpack::header(bytes)?;
+    if bytes.starts_with(bitpack::MAGIC) {
+        let (delta, epoch, id) = bitpack::header(bytes)?;
         return Ok(Some(Wire::Packed {
             epoch,
             id,
@@ -157,11 +163,11 @@ pub fn parse(bytes: &[u8]) -> io::Result<Option<Wire>> {
             bytes: bytes.to_vec(),
         }));
     }
-    let value: Value = serde_json::from_slice(bytes)?;
-    if value.get("UdpSnapshot").is_none() {
-        return Ok(None);
+    if let Some(body) = bytes.strip_prefix(RETIRE_MAGIC) {
+        let (epoch, id) = bitpack::from_bytes::<(u64, u64)>(body)?;
+        return Ok(Some(Wire::Retire { epoch, id }));
     }
-    Ok(Some(serde_json::from_value::<Envelope>(value)?.message))
+    Ok(None)
 }
 /// Server-side delta encoder for one peer.
 ///
@@ -176,9 +182,9 @@ pub fn parse(bytes: &[u8]) -> io::Result<Option<Wire>> {
 pub struct Encoder {
     epoch: Option<u64>,
     next_id: u64,
-    active: Option<(u64, Value)>,
-    pending: Option<(u64, Value)>,
-    retiring: Option<(u64, Value)>,
+    active: Option<(u64, Node)>,
+    pending: Option<(u64, Node)>,
+    retiring: Option<(u64, Node)>,
     /// Frames since the outstanding `Retire` was last sent.
     retire_age: u64,
     count: u64,
@@ -192,6 +198,8 @@ pub struct Encoder {
     pub sent_bytes: u64,
     /// Frames emitted as a packed delta.
     pub deltas: u64,
+    /// Uncompressed size of the latest independent packed checkpoint.
+    pub last_packed_bytes: usize,
 }
 impl Default for Encoder {
     fn default() -> Self {
@@ -207,7 +215,7 @@ impl Encoder {
     pub fn new() -> Self {
         Self::with_raw(false)
     }
-    /// The packed fine fixed-point encoder that emits its `RMB0` frames
+    /// The packed fine fixed-point encoder that emits its `RMB1` frames
     /// unchanged, for the loopback transport.
     pub fn new_raw() -> Self {
         Self::with_raw(true)
@@ -229,6 +237,7 @@ impl Encoder {
             full_bytes: 0,
             sent_bytes: 0,
             deltas: 0,
+            last_packed_bytes: 0,
         }
     }
     /// Packed frames the checkpoint compressor returned uncompressed because
@@ -248,16 +257,14 @@ impl Encoder {
         self.retire_age = 0;
         Some(Wire::Retire { epoch, id: *id })
     }
-    /// Encodes one frame from an independent player checkpoint, framed for the
+    /// Encodes one frame from a host state's independent player checkpoint, framed for the
     /// wire. `epoch` selects the state generation: a change discards every
     /// baseline and restarts the rotation. Binary traversal and frame-size
     /// violations return an error before transmission.
     ///
     /// ```
     /// use rm_simulator_server::compression::decompress;
-    /// use rm_simulator_server::protocol::ServerMessage;
     /// use rm_simulator_server::simulation::Simulation;
-    /// use rm_simulator_server::snapshot_codec::encode_player_message;
     /// use rm_simulator_server::udp_snapshot::{Decoder, Encoder, Wire, parse};
     /// use rm_simulator_world::{Field, FieldConfig};
     ///
@@ -265,7 +272,6 @@ impl Encoder {
     /// let mut state = simulation.state();
     /// // The decoder rejects a frame whose state epoch does not match the wire.
     /// state.input_epoch = 4;
-    /// let state = encode_player_message(&ServerMessage::Snapshot(Box::new(state)));
     /// let inflate = |bytes: &[u8]| {
     ///     parse(&decompress(bytes, 4 << 20).unwrap()).unwrap().unwrap()
     /// };
@@ -283,13 +289,8 @@ impl Encoder {
     /// assert!(matches!(second, Wire::Packed { id: 1, delta: true, .. }));
     /// assert!(encoder.deltas > 0);
     /// ```
-    pub fn snapshot(&mut self, epoch: u64, bytes: &[u8]) -> io::Result<Vec<u8>> {
-        let mut state: Value = serde_json::from_slice(bytes)?;
-        crate::binary_snapshot::fixed_point::checkpoint(
-            &mut state,
-            &mut Default::default(),
-            crate::binary_snapshot::fixed_point::Quantization::Fine,
-        );
+    pub fn snapshot(&mut self, epoch: u64, state: &SimulationState) -> io::Result<Vec<u8>> {
+        let state = crate::snapshot_codec::checkpoint_node(state)?;
         if self.epoch != Some(epoch) {
             self.epoch = Some(epoch);
             self.active = None;
@@ -303,9 +304,12 @@ impl Encoder {
         if self.retiring.is_some() {
             self.retire_age += 1;
         }
-        let independent = full_frame(&mut self.compressor, self.raw, epoch, None, &state)?;
+        let packed = bitpack::encode(&state, None, epoch, 0)?;
+        self.last_packed_bytes = packed.len();
+        let oversize = packed.len() > BASE_LIMIT;
+        let independent = self.frame(packed);
         self.full_bytes += independent.len() as u64;
-        if bytes.len() > BASE_LIMIT {
+        if oversize {
             self.sent_bytes += independent.len() as u64;
             return Ok(independent);
         }
@@ -324,25 +328,16 @@ impl Encoder {
             && let Some((id, baseline)) = self.active.as_ref()
         {
             self.recover = false;
-            full_frame(&mut self.compressor, self.raw, epoch, Some(*id), baseline)?
+            let packed = bitpack::encode(baseline, None, epoch, *id)?;
+            self.frame(packed)
         } else if let Some((id, baseline)) = &self.pending
             && self.count.is_multiple_of(8)
         {
-            full_frame(&mut self.compressor, self.raw, epoch, Some(*id), baseline)?
+            let packed = bitpack::encode(baseline, None, epoch, *id)?;
+            self.frame(packed)
         } else if let Some((id, baseline)) = &self.active {
-            let packed = crate::binary_snapshot::bitpack::encode(
-                &state,
-                Some(baseline),
-                epoch,
-                *id,
-                true,
-                true,
-            )?;
-            let delta = if self.raw {
-                packed
-            } else {
-                self.compressor.compress(&packed)
-            };
+            let packed = bitpack::encode(&state, Some(baseline), epoch, *id)?;
+            let delta = self.frame(packed);
             if delta.len() < independent.len() {
                 self.deltas += 1;
                 delta
@@ -354,6 +349,15 @@ impl Encoder {
         };
         self.sent_bytes += encoded.len() as u64;
         Ok(encoded)
+    }
+    /// A packed frame as it goes on the wire: unchanged for a raw encoder,
+    /// otherwise through the checkpoint dictionary's no-bloat gate.
+    fn frame(&mut self, packed: Vec<u8>) -> Vec<u8> {
+        if self.raw {
+            packed
+        } else {
+            self.compressor.compress(&packed)
+        }
     }
     /// Applies one decoder answer. Returns a [`Wire::Retire`] to send when the
     /// stored baseline replaced an older active one, which is the only moment a
@@ -392,25 +396,6 @@ impl Encoder {
         }
     }
 }
-/// One packed full frame for `state`, tagged as baseline `id` when the encoder
-/// proposes or refreshes one. A raw encoder returns the `RMB0` frame unchanged;
-/// otherwise the checkpoint dictionary compresses it.
-fn full_frame(
-    compressor: &mut crate::binary_snapshot::Compressor,
-    raw: bool,
-    epoch: u64,
-    id: Option<u64>,
-    state: &Value,
-) -> io::Result<Vec<u8>> {
-    let packed =
-        crate::binary_snapshot::bitpack::encode(state, None, epoch, id.unwrap_or(0), true, true)?;
-    Ok(if raw {
-        packed
-    } else {
-        compressor.compress(&packed)
-    })
-}
-
 /// Client-side delta decoder for one connection.
 ///
 /// Pins at most two baselines, the active one and the candidate replacing it.
@@ -419,7 +404,7 @@ fn full_frame(
 #[derive(Default)]
 pub struct Decoder {
     epoch: Option<u64>,
-    baselines: BTreeMap<u64, Value>,
+    baselines: BTreeMap<u64, Node>,
     retired_through: u64,
     /// Deltas refused because their baseline was not pinned.
     pub missing: u64,
@@ -475,45 +460,33 @@ impl Decoder {
                 } else {
                     None
                 };
-                let (state, _) = crate::binary_snapshot::bitpack::decode(&bytes, base, epoch)?;
-                // Cache wire-grid values; normalize only the delivered state,
-                // or later deltas would use a different baseline.
-                let normalize = state.get("CompactSnapshot").is_some();
-                let bytes = serde_json::to_vec(&state)?;
-                if !delta && id > 0 {
+                let pin = !delta && id > 0;
+                if pin {
                     if self.baselines.len() >= 2 && !self.baselines.contains_key(&id) {
                         return Err(io::Error::other("baseline cache overflow"));
                     }
                     if bytes.len() > BASE_LIMIT {
                         return Err(io::Error::other("baseline exceeds byte cap"));
                     }
-                    if self.baselines.get(&id).is_some_and(|old| old != &state) {
+                }
+                // Cache wire-grid values; only the delivered state is normalized,
+                // or later deltas would use a different baseline.
+                let (message, node) =
+                    crate::snapshot_codec::decode_checkpoint(&bytes, base, epoch, pin)?;
+                if let Some(node) = node {
+                    if self.baselines.get(&id).is_some_and(|old| old != &node) {
                         return Err(io::Error::other("baseline identity changed"));
                     }
-                    let message = validate(&bytes, epoch, normalize)?;
-                    self.baselines.insert(id, state);
+                    self.baselines.insert(id, node);
                     return Ok((Some(message), Some(Feedback::Stored { epoch, id })));
-                }
-                if bytes.len() > crate::protocol::MAX_LINE_BYTES {
-                    return Err(io::Error::other("decoded state exceeds cap"));
                 }
                 if delta {
                     self.deltas += 1;
                 }
-                Ok((Some(validate(&bytes, epoch, normalize)?), None))
+                Ok((Some(message), None))
             }
         }
     }
-}
-fn validate(bytes: &[u8], epoch: u64, packed: bool) -> io::Result<ServerMessage> {
-    let mut message = crate::snapshot_codec::decode_player_message(bytes)?;
-    if !matches!(&message, ServerMessage::Snapshot(state) if state.input_epoch == epoch) {
-        return Err(io::Error::other("invalid baseline state/epoch"));
-    }
-    if packed {
-        crate::binary_snapshot::fixed_point::normalize(&mut message)?;
-    }
-    Ok(message)
 }
 
 #[cfg(test)]
@@ -524,7 +497,7 @@ mod tests {
 
     #[test]
     fn binary_chassis_and_projectiles_round_trip_across_baselines_and_epochs() {
-        use crate::{binary_snapshot::fixed_point, layout::ChassisSpawner, protocol::Command};
+        use crate::{layout::ChassisSpawner, protocol::Command};
         use rm_simulator_world::{ChassisCommand, ChassisConfig, Team};
         let mut simulation = Simulation::new(Field::new(&FieldConfig::default()).unwrap(), false)
             .with_spawner(ChassisSpawner {
@@ -559,27 +532,24 @@ mod tests {
             let epoch = frame / 64;
             state.snapshot_id = frame + 1;
             state.input_epoch = epoch;
-            let source = crate::snapshot_codec::encode_player_message(&ServerMessage::Snapshot(
-                Box::new(state),
-            ));
-            let mut expected: Value = serde_json::from_slice(&source).unwrap();
-            let untouched = expected["CompactSnapshot"]["state"]["field"]["restore"].clone();
-            fixed_point::checkpoint(
-                &mut expected,
-                &mut Default::default(),
-                fixed_point::Quantization::Fine,
-            );
-            assert_eq!(
-                expected["CompactSnapshot"]["state"]["field"]["restore"],
-                untouched
-            );
-            let mut expected = crate::snapshot_codec::decode_player_message(
-                &serde_json::to_vec(&expected).unwrap(),
+            // The expected delivery is the quantized checkpoint decoded on its
+            // own, which also leaves the hidden restore state exact.
+            let independent = bitpack::encode(
+                &crate::snapshot_codec::checkpoint_node(&state).unwrap(),
+                None,
+                epoch,
+                0,
             )
             .unwrap();
-            fixed_point::normalize(&mut expected).unwrap();
+            let (expected, _) =
+                crate::snapshot_codec::decode_checkpoint(&independent, None, epoch, false).unwrap();
+            let ServerMessage::Snapshot(quantized) = &expected else {
+                unreachable!()
+            };
+            assert_eq!(quantized.field.restore, state.field.restore);
+            let source = state;
             let bytes = encoder.snapshot(epoch, &source).unwrap();
-            // The no-bloat gate may return a small delta as a bare `RMB0`
+            // The no-bloat gate may return a small delta as a bare packed
             // frame instead of dictionary-compressing it; both framings
             // decode through the same path the `wire` helper exercises.
             assert!(
@@ -615,15 +585,12 @@ mod tests {
     }
 
     #[test]
-    fn binary_snapshot_propagates_restore_traversal_errors() {
+    fn binary_snapshot_propagates_traversal_errors() {
         let mut encoder = Encoder::new();
         let valid = source(0, 0);
-        let mut state: Value = serde_json::from_slice(&valid).unwrap();
-        state["CompactSnapshot"]["state"]["field"]["restore"] =
-            Value::Array(vec![Value::Null; 100_000]);
-        let error = encoder
-            .snapshot(0, &serde_json::to_vec(&state).unwrap())
-            .unwrap_err();
+        let mut state = valid.clone();
+        state.bots = vec![0; 100_000];
+        let error = encoder.snapshot(0, &state).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(encoder.sent_bytes, 0);
         assert!(encoder.pending.is_none());
@@ -632,8 +599,7 @@ mod tests {
 
     #[test]
     fn malformed_binary_rotations_are_rejected_before_pinning_a_baseline() {
-        use crate::binary_snapshot::bitpack;
-        let mut state: Value = serde_json::from_slice(&source(0, 0)).unwrap();
+        let mut state = source(0, 0);
         let mut config = FieldConfig::default();
         config.chassis.push(rm_simulator_world::ChassisPlacement {
             team: rm_simulator_world::Team::Red,
@@ -641,23 +607,21 @@ mod tests {
             config: Default::default(),
             spawn: rm_simulator_world::Pose::at([0., 0., 0.2]),
         });
-        let snapshot = Field::new(&config).unwrap().snapshot();
-        state["CompactSnapshot"]["state"]["field"]["chassis"] =
-            serde_json::to_value(snapshot.chassis).unwrap();
-        state["CompactSnapshot"]["state"]["field"]["chassis"][0]["pose"]["rotation_wxyz"] =
-            serde_json::json!([0., 0., 0., 0.]);
-        let bytes = bitpack::encode(&state, None, 0, 1, true, true).unwrap();
+        state.field.chassis = Field::new(&config).unwrap().snapshot().chassis;
+        state.field.chassis[0].pose.rotation_wxyz = [0.; 4];
+        let node = crate::snapshot_codec::checkpoint_node(&state).unwrap();
+        let bytes = bitpack::encode(&node, None, 0, 1).unwrap();
         let mut decoder = Decoder::default();
         assert!(decoder.receive(parse(&bytes).unwrap().unwrap()).is_err());
         assert_eq!(decoder.pinned(), 0);
     }
-    fn source(tick: u64, epoch: u64) -> Vec<u8> {
+    fn source(tick: u64, epoch: u64) -> SimulationState {
         let mut simulation = Simulation::new(Field::new(&FieldConfig::default()).unwrap(), false);
         simulation.step(tick).unwrap();
         let mut state = simulation.state();
         state.snapshot_id = tick + 1;
         state.input_epoch = epoch;
-        crate::snapshot_codec::encode_player_message(&ServerMessage::Snapshot(Box::new(state)))
+        state
     }
     fn wire(bytes: &[u8]) -> Wire {
         parse(&crate::compression::decompress(bytes, 4 << 20).unwrap())
@@ -697,8 +661,12 @@ mod tests {
         for bytes in [&next, &next, &lost] {
             let actual = decoded(decoder.receive(wire(bytes)).unwrap().0);
             let expected = decoded(Some(
-                crate::snapshot_codec::decode_player_message(&source(actual.field.tick, 0))
-                    .unwrap(),
+                crate::snapshot_codec::decode_player_message(
+                    &crate::snapshot_codec::encode_player_message(&ServerMessage::Snapshot(
+                        Box::new(source(actual.field.tick, 0)),
+                    )),
+                )
+                .unwrap(),
             ));
             assert_eq!(actual, expected);
         }
@@ -829,7 +797,7 @@ mod tests {
             let bytes = encoder.snapshot(0, &source(tick, 0)).unwrap();
             assert!(
                 bytes.starts_with(crate::binary_snapshot::bitpack::MAGIC),
-                "a raw checkpoint is the packed RMB0 frame itself"
+                "a raw checkpoint is the packed frame itself"
             );
             assert!(!bytes.starts_with(crate::binary_snapshot::MAGIC));
             let (_, ack) = decoder.receive(wire(&bytes)).unwrap();

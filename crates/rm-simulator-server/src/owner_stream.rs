@@ -45,12 +45,14 @@ impl ConfigRevision {
     /// Zero is remapped to one so a decoded zero can never be confused with an
     /// absent reference.
     pub fn of(config: &ChassisConfig) -> Self {
-        // FNV-1a over the exact JSON both sides serialize. That encoding is
-        // deterministic (fixed struct field order, shortest round-trip floats),
-        // so it is a stable canonical form; the deflated form is not, because a
+        // FNV-1a over the exact positional bytes both sides serialize. That
+        // encoding is deterministic (fixed field order, exact float bits), so it
+        // is a stable canonical form; the deflated form is not, because a
         // different compressor version could change it.
         let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-        for byte in serde_json::to_vec(config).expect("chassis config serializes") {
+        for byte in
+            crate::binary_snapshot::bitpack::to_bytes(config).expect("chassis config serializes")
+        {
             hash ^= u64::from(byte);
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
@@ -458,7 +460,10 @@ mod tests {
     /// references: the deflated JSON the old anchor repeated, measured with the
     /// current codec so the comparison uses one compressor.
     fn embedded_config_bytes(anchor: &OwnerAnchor) -> usize {
-        2 + crate::compression::compress(&serde_json::to_vec(&anchor.owner.config).unwrap()).len()
+        2 + crate::compression::compress(
+            &crate::binary_snapshot::bitpack::to_bytes(&anchor.owner.config).unwrap(),
+        )
+        .len()
     }
 
     #[test]

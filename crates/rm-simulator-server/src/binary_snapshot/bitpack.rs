@@ -1,19 +1,40 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
-//! Lossless value codec shared by the live binary checkpoints and experiments.
-//! Self-contained full frames include every key. Deltas inherit key order and
-//! container shape from an explicitly named baseline, never the previous packet.
-use serde_json::{Map, Number, Value};
-use std::io;
+//! Positional binary codec for the serde data model, shared by the live
+//! checkpoints, every protocol message and the experiments.
+//!
+//! A value is first serialized into a [`Node`] tree that carries no field names
+//! and no type tags: struct fields and tuples are positional, sequences and
+//! maps carry a length, options a presence bit and enum variants an Elias-gamma
+//! index (one bit for the first variant, three for the next two). The decoder
+//! is driven by the Rust type, so nothing on the wire says what a value is;
+//! both ends must agree on the types, which the protocol version guarantees.
+//!
+//! Deltas inherit shape from an explicitly named baseline tree, never the
+//! previous packet. Every value in a delta costs one "changed" bit; a changed
+//! sequence, map, option or enum adds one "same shape" bit and either recurses
+//! against the baseline or carries the new value in full. `f64` values on a
+//! fixed-point grid take a grid index and a narrow integer, as a small integer
+//! difference in a delta; others take 32 bits when `f32` holds them exactly and
+//! 64 bits otherwise.
+//!
+//! Types that need a self-describing format (`#[serde(flatten)]`, untagged or
+//! internally tagged enums, `skip_serializing_if`) are refused rather than
+//! guessed at.
+use serde::de::{self, DeserializeOwned, IntoDeserializer};
+use serde::{Serialize, ser};
+use std::{fmt, io};
 
 /// First four bytes of every packed checkpoint [`encode`] writes. A frame that
 /// starts with it is already the inflated checkpoint, so the wire framing above
 /// it passes it through unchanged.
-pub const MAGIC: &[u8; 4] = b"RMB0";
+pub const MAGIC: &[u8; 4] = b"RMB1";
 const LIMIT: usize = 4 << 20;
-// Application assumptions, not rulebook constants. Fixed-point escapes retain
-// exact f64 values when a number is outside these ranges or off these grids.
-const GRIDS: [(f64, usize); 5] = [
+const MAX_NODES: usize = 100_000;
+const MAX_DEPTH: usize = 64;
+// Application assumptions, not rulebook constants. Values off these grids or
+// outside their ranges keep their exact bits.
+const GRIDS: [(f64, u32); 5] = [
     (1000., 18),
     (100., 16),
     (10000., 24),
@@ -39,55 +60,701 @@ fn grid(n: f64, index: usize) -> Option<i64> {
 fn fixed_pair(a: f64, b: f64) -> Option<(usize, i64, i64)> {
     (0..GRIDS.len()).find_map(|i| Some((i, grid(a, i)?, grid(b, i)?)))
 }
-fn unzigzag(n: u64) -> i64 {
-    ((n >> 1) as i64) ^ -((n & 1) as i64)
-}
 fn zigzag(n: i64) -> u64 {
     ((n << 1) ^ (n >> 63)) as u64
 }
-
-fn invalid() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidData,
-        "invalid experimental binary frame",
-    )
+fn unzigzag(n: u64) -> i64 {
+    ((n >> 1) as i64) ^ -((n & 1) as i64)
+}
+fn exact_f32(n: f64) -> bool {
+    f64::from(n as f32).to_bits() == n.to_bits()
 }
 
-/// Shared traversal accounting, including a delta's full-value fallback.
-#[derive(Default)]
-struct Budget {
-    nodes: usize,
+/// Codec failure: a malformed frame, a type the positional format cannot carry,
+/// or a traversal limit.
+#[derive(Debug)]
+pub struct Error(String);
+impl Error {
+    fn new(message: impl fmt::Display) -> Self {
+        Self(message.to_string())
+    }
 }
-impl Budget {
-    fn visit(&mut self, depth: usize) -> io::Result<()> {
-        self.nodes += 1;
-        if depth > 64 || self.nodes > 100_000 {
-            return Err(invalid());
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "binary codec: {}", self.0)
+    }
+}
+impl std::error::Error for Error {}
+impl ser::Error for Error {
+    fn custom<T: fmt::Display>(message: T) -> Self {
+        Self::new(message)
+    }
+}
+impl de::Error for Error {
+    fn custom<T: fmt::Display>(message: T) -> Self {
+        Self::new(message)
+    }
+}
+impl From<Error> for io::Error {
+    fn from(error: Error) -> Self {
+        io::Error::new(io::ErrorKind::InvalidData, error)
+    }
+}
+type Result<T, E = Error> = std::result::Result<T, E>;
+fn invalid() -> Error {
+    Error::new("invalid frame")
+}
+
+/// One value in the serde data model with its names stripped. Retained
+/// baselines are kept in this form, so a delta can be decoded without
+/// re-encoding the baseline.
+#[derive(Clone, Debug)]
+pub enum Node {
+    /// `()`, a unit struct, or the payload of a unit variant. Zero bits.
+    Unit,
+    /// One bit.
+    Bool(bool),
+    /// Any unsigned integer or `char`, as a varint.
+    Uint(u64),
+    /// Any signed integer, zigzag varint.
+    Int(i64),
+    /// 32 raw bits.
+    F32(f32),
+    /// Fixed-point grid, exact `f32` or 64 raw bits.
+    F64(f64),
+    /// Length-prefixed UTF-8, byte-aligned.
+    Text(String),
+    /// Length-prefixed bytes, byte-aligned.
+    Bytes(Vec<u8>),
+    /// Absent option: one bit.
+    None,
+    /// Present option: one bit, then the value.
+    Some(Box<Node>),
+    /// Struct or tuple: fields in declaration order, no length.
+    Tuple(Vec<Node>),
+    /// Sequence: varint length, then elements.
+    Seq(Vec<Node>),
+    /// Map: varint length, then key and value pairs.
+    Map(Vec<(Node, Node)>),
+    /// Enum: gamma-coded variant index, then the payload.
+    Variant(u32, Box<Node>),
+}
+impl PartialEq for Node {
+    /// Bit-exact equality: signed zero and NaN payloads differ.
+    fn eq(&self, other: &Self) -> bool {
+        use Node::*;
+        match (self, other) {
+            (Unit, Unit) | (None, None) => true,
+            (Bool(a), Bool(b)) => a == b,
+            (Uint(a), Uint(b)) => a == b,
+            (Int(a), Int(b)) => a == b,
+            (F32(a), F32(b)) => a.to_bits() == b.to_bits(),
+            (F64(a), F64(b)) => a.to_bits() == b.to_bits(),
+            (Text(a), Text(b)) => a == b,
+            (Bytes(a), Bytes(b)) => a == b,
+            (Some(a), Some(b)) => a == b,
+            (Tuple(a), Tuple(b)) | (Seq(a), Seq(b)) => a == b,
+            (Map(a), Map(b)) => a == b,
+            (Variant(i, a), Variant(j, b)) => i == j && a == b,
+            _ => false,
         }
-        Ok(())
     }
 }
 
+/// Fixed-point rounding applied while a value is serialized, selected by the
+/// field names on the path to it. The codec itself carries no names.
+pub trait Rounding: Copy {
+    /// The rule for field `key` of a struct under this rule.
+    fn field(self, key: &'static str) -> Self;
+    /// The value to encode for `value` under this rule.
+    fn round(self, value: f64) -> f64;
+}
+/// Encode every value exactly.
+#[derive(Clone, Copy)]
+pub struct Exact;
+impl Rounding for Exact {
+    fn field(self, _: &'static str) -> Self {
+        self
+    }
+    fn round(self, value: f64) -> f64 {
+        value
+    }
+}
+
+/// The tree for `value`, with every number exact.
+pub fn to_node<T: Serialize + ?Sized>(value: &T) -> Result<Node> {
+    to_node_with(value, Exact)
+}
+/// The tree for `value`, rounding `f64` values by `rule`.
+pub fn to_node_with<T: Serialize + ?Sized, R: Rounding>(value: &T, rule: R) -> Result<Node> {
+    value.serialize(NodeSerializer(rule))
+}
+/// Decodes a tree produced by [`to_node`] into `T`.
+pub fn from_node<T: DeserializeOwned>(node: &Node) -> Result<T> {
+    T::deserialize(NodeDe(node))
+}
+
+/// A value's standalone bytes, without a frame header. Used for protocol
+/// messages, which have no baseline.
+///
+/// ```
+/// use rm_simulator_server::binary_snapshot::bitpack::{from_bytes, to_bytes};
+/// let value = (7_u32, Some(1.25_f64), vec![true, false], "red".to_string());
+/// let bytes = to_bytes(&value).unwrap();
+/// assert_eq!(from_bytes::<(u32, Option<f64>, Vec<bool>, String)>(&bytes).unwrap(), value);
+/// ```
+pub fn to_bytes<T: Serialize + ?Sized>(value: &T) -> io::Result<Vec<u8>> {
+    let mut w = Writer::default();
+    w.full(&to_node(value)?, 0)?;
+    w.finish()
+}
+/// Decodes [`to_bytes`] output, refusing trailing bytes.
+pub fn from_bytes<T: DeserializeOwned>(bytes: &[u8]) -> io::Result<T> {
+    if bytes.len() > LIMIT {
+        return Err(invalid().into());
+    }
+    let mut r = Reader::new(bytes, 0);
+    let value = T::deserialize(BitDe {
+        r: &mut r,
+        base: None,
+        depth: 0,
+    })?;
+    r.finish()?;
+    Ok(value)
+}
+
+/// Encode a full frame or a delta against `baseline`. `base_id == 0` means
+/// independent; a positive id with no baseline proposes a retained full frame.
+/// The header carries the epoch and baseline identity, so no schema or
+/// dictionary is supplied out of band. Errors past 64 levels, 100,000 values or
+/// a 4 MiB frame, or for a delta with a zero baseline id or a baseline of a
+/// different type.
+///
+/// ```
+/// use rm_simulator_server::binary_snapshot::bitpack::{decode, encode, to_node};
+/// let before = to_node(&(41_u64, [1.25_f64, 2.5])).unwrap();
+/// let after = to_node(&(42_u64, [1.25_f64, 2.75])).unwrap();
+/// let bytes = encode(&after, Some(&before), 3, 1).unwrap();
+/// let (value, id) = decode::<(u64, [f64; 2])>(&bytes, Some((&before, 1)), 3).unwrap();
+/// assert_eq!((value, id), ((42, [1.25, 2.75]), 1));
+/// ```
+pub fn encode(
+    node: &Node,
+    baseline: Option<&Node>,
+    epoch: u64,
+    base_id: u64,
+) -> io::Result<Vec<u8>> {
+    if baseline.is_some() && base_id == 0 {
+        return Err(invalid().into());
+    }
+    let mut w = Writer::default();
+    w.bytes.extend_from_slice(MAGIC);
+    w.bit = 32;
+    w.bits(u64::from(baseline.is_some()), 1);
+    w.var(epoch);
+    w.var(base_id);
+    match baseline {
+        Some(base) => w.delta(base, node, 0)?,
+        None => w.full(node, 0)?,
+    }
+    w.finish()
+}
+
+/// Inspect the bounded frame header: delta flag, epoch and baseline id. This
+/// does not validate the body; callers must still call [`decode`] with a pinned
+/// baseline before delivering any state.
+pub fn header(bytes: &[u8]) -> io::Result<(bool, u64, u64)> {
+    if bytes.len() > LIMIT || !bytes.starts_with(MAGIC) {
+        return Err(invalid().into());
+    }
+    let mut r = Reader::new(bytes, 32);
+    Ok((r.bit1()?, r.var()?, r.var()?))
+}
+
+/// Decode against only the named retained baseline. The decoder limits bytes,
+/// depth, value count, lengths, variant indexes and trailing padding.
+pub fn decode<T: DeserializeOwned>(
+    bytes: &[u8],
+    baseline: Option<(&Node, u64)>,
+    epoch: u64,
+) -> io::Result<(T, u64)> {
+    let (delta, frame_epoch, id) = header(bytes)?;
+    if frame_epoch != epoch {
+        return Err(invalid().into());
+    }
+    let base = if delta {
+        let (base, expected) = baseline.ok_or_else(invalid)?;
+        if id == 0 || id != expected {
+            return Err(invalid().into());
+        }
+        Some(base)
+    } else {
+        None
+    };
+    let mut r = Reader::new(bytes, 32);
+    r.bit1()?;
+    r.var()?;
+    r.var()?;
+    let value = T::deserialize(BitDe {
+        r: &mut r,
+        base,
+        depth: 0,
+    })?;
+    r.finish()?;
+    Ok((value, id))
+}
+
+// ---------------------------------------------------------------------------
+// Serialization into a tree.
+
+struct NodeSerializer<R>(R);
+
+enum Kind {
+    Seq,
+    Tuple,
+    Variant(u32),
+}
+#[doc(hidden)]
+pub struct Items<R> {
+    rule: R,
+    items: Vec<Node>,
+    kind: Kind,
+}
+impl<R> Items<R> {
+    fn finish(self) -> Node {
+        match self.kind {
+            Kind::Seq => Node::Seq(self.items),
+            Kind::Tuple => Node::Tuple(self.items),
+            Kind::Variant(index) => Node::Variant(index, Box::new(Node::Tuple(self.items))),
+        }
+    }
+}
+#[doc(hidden)]
+pub struct Entries<R> {
+    rule: R,
+    entries: Vec<(Node, Node)>,
+    key: Option<Node>,
+}
+
+impl<R: Rounding> ser::Serializer for NodeSerializer<R> {
+    type Ok = Node;
+    type Error = Error;
+    type SerializeSeq = Items<R>;
+    type SerializeTuple = Items<R>;
+    type SerializeTupleStruct = Items<R>;
+    type SerializeTupleVariant = Items<R>;
+    type SerializeMap = Entries<R>;
+    type SerializeStruct = Items<R>;
+    type SerializeStructVariant = Items<R>;
+
+    fn is_human_readable(&self) -> bool {
+        false
+    }
+    fn serialize_bool(self, v: bool) -> Result<Node> {
+        Ok(Node::Bool(v))
+    }
+    fn serialize_i8(self, v: i8) -> Result<Node> {
+        Ok(Node::Int(v.into()))
+    }
+    fn serialize_i16(self, v: i16) -> Result<Node> {
+        Ok(Node::Int(v.into()))
+    }
+    fn serialize_i32(self, v: i32) -> Result<Node> {
+        Ok(Node::Int(v.into()))
+    }
+    fn serialize_i64(self, v: i64) -> Result<Node> {
+        Ok(Node::Int(v))
+    }
+    fn serialize_u8(self, v: u8) -> Result<Node> {
+        Ok(Node::Uint(v.into()))
+    }
+    fn serialize_u16(self, v: u16) -> Result<Node> {
+        Ok(Node::Uint(v.into()))
+    }
+    fn serialize_u32(self, v: u32) -> Result<Node> {
+        Ok(Node::Uint(v.into()))
+    }
+    fn serialize_u64(self, v: u64) -> Result<Node> {
+        Ok(Node::Uint(v))
+    }
+    fn serialize_f32(self, v: f32) -> Result<Node> {
+        Ok(Node::F32(v))
+    }
+    fn serialize_f64(self, v: f64) -> Result<Node> {
+        Ok(Node::F64(self.0.round(v)))
+    }
+    fn serialize_char(self, v: char) -> Result<Node> {
+        Ok(Node::Uint(v.into()))
+    }
+    fn serialize_str(self, v: &str) -> Result<Node> {
+        Ok(Node::Text(v.to_owned()))
+    }
+    fn serialize_bytes(self, v: &[u8]) -> Result<Node> {
+        Ok(Node::Bytes(v.to_vec()))
+    }
+    fn serialize_none(self) -> Result<Node> {
+        Ok(Node::None)
+    }
+    fn serialize_some<T: Serialize + ?Sized>(self, value: &T) -> Result<Node> {
+        Ok(Node::Some(Box::new(value.serialize(self)?)))
+    }
+    fn serialize_unit(self) -> Result<Node> {
+        Ok(Node::Unit)
+    }
+    fn serialize_unit_struct(self, _: &'static str) -> Result<Node> {
+        Ok(Node::Unit)
+    }
+    fn serialize_unit_variant(self, _: &'static str, index: u32, _: &'static str) -> Result<Node> {
+        Ok(Node::Variant(index, Box::new(Node::Unit)))
+    }
+    fn serialize_newtype_struct<T: Serialize + ?Sized>(
+        self,
+        _: &'static str,
+        value: &T,
+    ) -> Result<Node> {
+        value.serialize(self)
+    }
+    fn serialize_newtype_variant<T: Serialize + ?Sized>(
+        self,
+        _: &'static str,
+        index: u32,
+        _: &'static str,
+        value: &T,
+    ) -> Result<Node> {
+        Ok(Node::Variant(index, Box::new(value.serialize(self)?)))
+    }
+    fn serialize_seq(self, len: Option<usize>) -> Result<Items<R>> {
+        Ok(self.items(len.unwrap_or(0), Kind::Seq))
+    }
+    fn serialize_tuple(self, len: usize) -> Result<Items<R>> {
+        Ok(self.items(len, Kind::Tuple))
+    }
+    fn serialize_tuple_struct(self, _: &'static str, len: usize) -> Result<Items<R>> {
+        Ok(self.items(len, Kind::Tuple))
+    }
+    fn serialize_tuple_variant(
+        self,
+        _: &'static str,
+        index: u32,
+        _: &'static str,
+        len: usize,
+    ) -> Result<Items<R>> {
+        Ok(self.items(len, Kind::Variant(index)))
+    }
+    fn serialize_map(self, len: Option<usize>) -> Result<Entries<R>> {
+        Ok(Entries {
+            rule: self.0,
+            entries: Vec::with_capacity(len.unwrap_or(0)),
+            key: None,
+        })
+    }
+    fn serialize_struct(self, _: &'static str, len: usize) -> Result<Items<R>> {
+        Ok(self.items(len, Kind::Tuple))
+    }
+    fn serialize_struct_variant(
+        self,
+        _: &'static str,
+        index: u32,
+        _: &'static str,
+        len: usize,
+    ) -> Result<Items<R>> {
+        Ok(self.items(len, Kind::Variant(index)))
+    }
+}
+impl<R: Rounding> NodeSerializer<R> {
+    fn items(self, len: usize, kind: Kind) -> Items<R> {
+        Items {
+            rule: self.0,
+            items: Vec::with_capacity(len),
+            kind,
+        }
+    }
+}
+impl<R: Rounding> ser::SerializeSeq for Items<R> {
+    type Ok = Node;
+    type Error = Error;
+    fn serialize_element<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<()> {
+        self.items.push(value.serialize(NodeSerializer(self.rule))?);
+        Ok(())
+    }
+    fn end(self) -> Result<Node> {
+        Ok(self.finish())
+    }
+}
+impl<R: Rounding> ser::SerializeTuple for Items<R> {
+    type Ok = Node;
+    type Error = Error;
+    fn serialize_element<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<()> {
+        ser::SerializeSeq::serialize_element(self, value)
+    }
+    fn end(self) -> Result<Node> {
+        Ok(self.finish())
+    }
+}
+impl<R: Rounding> ser::SerializeTupleStruct for Items<R> {
+    type Ok = Node;
+    type Error = Error;
+    fn serialize_field<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<()> {
+        ser::SerializeSeq::serialize_element(self, value)
+    }
+    fn end(self) -> Result<Node> {
+        Ok(self.finish())
+    }
+}
+impl<R: Rounding> ser::SerializeTupleVariant for Items<R> {
+    type Ok = Node;
+    type Error = Error;
+    fn serialize_field<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<()> {
+        ser::SerializeSeq::serialize_element(self, value)
+    }
+    fn end(self) -> Result<Node> {
+        Ok(self.finish())
+    }
+}
+impl<R: Rounding> ser::SerializeStruct for Items<R> {
+    type Ok = Node;
+    type Error = Error;
+    fn serialize_field<T: Serialize + ?Sized>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> Result<()> {
+        self.items
+            .push(value.serialize(NodeSerializer(self.rule.field(key)))?);
+        Ok(())
+    }
+    fn skip_field(&mut self, key: &'static str) -> Result<()> {
+        Err(Error::new(format_args!(
+            "field `{key}` is skipped, which a positional codec cannot decode"
+        )))
+    }
+    fn end(self) -> Result<Node> {
+        Ok(self.finish())
+    }
+}
+impl<R: Rounding> ser::SerializeStructVariant for Items<R> {
+    type Ok = Node;
+    type Error = Error;
+    fn serialize_field<T: Serialize + ?Sized>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> Result<()> {
+        ser::SerializeStruct::serialize_field(self, key, value)
+    }
+    fn skip_field(&mut self, key: &'static str) -> Result<()> {
+        ser::SerializeStruct::skip_field(self, key)
+    }
+    fn end(self) -> Result<Node> {
+        Ok(self.finish())
+    }
+}
+impl<R: Rounding> ser::SerializeMap for Entries<R> {
+    type Ok = Node;
+    type Error = Error;
+    fn serialize_key<T: Serialize + ?Sized>(&mut self, key: &T) -> Result<()> {
+        self.key = Some(key.serialize(NodeSerializer(Exact))?);
+        Ok(())
+    }
+    fn serialize_value<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<()> {
+        let key = self
+            .key
+            .take()
+            .ok_or_else(|| Error::new("map value without a key"))?;
+        self.entries
+            .push((key, value.serialize(NodeSerializer(self.rule))?));
+        Ok(())
+    }
+    fn end(self) -> Result<Node> {
+        Ok(Node::Map(self.entries))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Deserialization from a tree.
+
+struct NodeDe<'a>(&'a Node);
+
+fn mismatch() -> Error {
+    Error::new("value does not match the expected type")
+}
+
+impl<'de> de::Deserializer<'de> for NodeDe<'_> {
+    type Error = Error;
+    fn is_human_readable(&self) -> bool {
+        false
+    }
+    fn deserialize_any<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        match self.0 {
+            Node::Unit => visitor.visit_unit(),
+            Node::Bool(v) => visitor.visit_bool(*v),
+            Node::Uint(v) => visitor.visit_u64(*v),
+            Node::Int(v) => visitor.visit_i64(*v),
+            Node::F32(v) => visitor.visit_f32(*v),
+            Node::F64(v) => visitor.visit_f64(*v),
+            Node::Text(v) => visitor.visit_str(v),
+            Node::Bytes(v) => visitor.visit_bytes(v),
+            Node::None => visitor.visit_none(),
+            Node::Some(v) => visitor.visit_some(NodeDe(v)),
+            Node::Tuple(items) | Node::Seq(items) => visit_node_seq(items, visitor),
+            Node::Map(entries) => {
+                let mut map = NodeMap {
+                    entries: entries.iter(),
+                    value: None,
+                };
+                let value = visitor.visit_map(&mut map)?;
+                if map.entries.len() != 0 {
+                    return Err(mismatch());
+                }
+                Ok(value)
+            }
+            Node::Variant(index, payload) => visitor.visit_enum(NodeEnum(*index, payload)),
+        }
+    }
+    fn deserialize_char<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        match self.0 {
+            Node::Uint(v) => visitor.visit_char(
+                u32::try_from(*v)
+                    .ok()
+                    .and_then(char::from_u32)
+                    .ok_or_else(mismatch)?,
+            ),
+            _ => Err(mismatch()),
+        }
+    }
+    fn deserialize_option<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        match self.0 {
+            Node::None => visitor.visit_none(),
+            Node::Some(v) => visitor.visit_some(NodeDe(v)),
+            _ => Err(mismatch()),
+        }
+    }
+    fn deserialize_newtype_struct<V: de::Visitor<'de>>(
+        self,
+        _: &'static str,
+        visitor: V,
+    ) -> Result<V::Value> {
+        visitor.visit_newtype_struct(self)
+    }
+    fn deserialize_enum<V: de::Visitor<'de>>(
+        self,
+        _: &'static str,
+        _: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value> {
+        match self.0 {
+            Node::Variant(index, payload) => visitor.visit_enum(NodeEnum(*index, payload)),
+            _ => Err(mismatch()),
+        }
+    }
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 str string bytes
+        byte_buf unit unit_struct seq tuple tuple_struct map struct identifier
+        ignored_any
+    }
+}
+fn visit_node_seq<'de, V: de::Visitor<'de>>(items: &[Node], visitor: V) -> Result<V::Value> {
+    let mut seq = NodeSeq(items.iter());
+    let value = visitor.visit_seq(&mut seq)?;
+    if seq.0.len() != 0 {
+        return Err(mismatch());
+    }
+    Ok(value)
+}
+struct NodeSeq<'a>(std::slice::Iter<'a, Node>);
+impl<'de> de::SeqAccess<'de> for NodeSeq<'_> {
+    type Error = Error;
+    fn next_element_seed<T: de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: T,
+    ) -> Result<Option<T::Value>> {
+        self.0
+            .next()
+            .map(|n| seed.deserialize(NodeDe(n)))
+            .transpose()
+    }
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.0.len())
+    }
+}
+struct NodeMap<'a> {
+    entries: std::slice::Iter<'a, (Node, Node)>,
+    value: Option<&'a Node>,
+}
+impl<'de> de::MapAccess<'de> for NodeMap<'_> {
+    type Error = Error;
+    fn next_key_seed<K: de::DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>> {
+        let Some((key, value)) = self.entries.next() else {
+            return Ok(None);
+        };
+        self.value = Some(value);
+        seed.deserialize(NodeDe(key)).map(Some)
+    }
+    fn next_value_seed<V: de::DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value> {
+        seed.deserialize(NodeDe(self.value.take().ok_or_else(mismatch)?))
+    }
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.entries.len())
+    }
+}
+struct NodeEnum<'a>(u32, &'a Node);
+impl<'de, 'a> de::EnumAccess<'de> for NodeEnum<'a> {
+    type Error = Error;
+    type Variant = NodeDe<'a>;
+    fn variant_seed<V: de::DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, NodeDe<'a>)> {
+        let de: de::value::U32Deserializer<Error> = self.0.into_deserializer();
+        Ok((seed.deserialize(de)?, NodeDe(self.1)))
+    }
+}
+impl<'de> de::VariantAccess<'de> for NodeDe<'_> {
+    type Error = Error;
+    fn unit_variant(self) -> Result<()> {
+        match self.0 {
+            Node::Unit => Ok(()),
+            _ => Err(mismatch()),
+        }
+    }
+    fn newtype_variant_seed<T: de::DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value> {
+        seed.deserialize(self)
+    }
+    fn tuple_variant<V: de::Visitor<'de>>(self, _: usize, visitor: V) -> Result<V::Value> {
+        de::Deserializer::deserialize_any(self, visitor)
+    }
+    fn struct_variant<V: de::Visitor<'de>>(
+        self,
+        _: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value> {
+        de::Deserializer::deserialize_any(self, visitor)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bits.
+
+#[derive(Default)]
 struct Writer {
     bytes: Vec<u8>,
     bit: usize,
-    packed: bool,
-    fixed: bool,
-    budget: Budget,
+    nodes: usize,
 }
 impl Writer {
-    fn bits(&mut self, value: u64, width: usize) {
-        let width = if self.packed {
-            width
-        } else {
-            width.div_ceil(8) * 8
-        };
-        for i in 0..width {
-            if self.bit.is_multiple_of(8) {
+    fn bits(&mut self, mut value: u64, mut width: u32) {
+        while width > 0 {
+            let used = (self.bit % 8) as u32;
+            if used == 0 {
                 self.bytes.push(0);
             }
-            self.bytes[self.bit / 8] |= (((value >> i) & 1) as u8) << (self.bit % 8);
-            self.bit += 1;
+            let take = (8 - used).min(width);
+            let mask = if take == 64 {
+                u64::MAX
+            } else {
+                (1 << take) - 1
+            };
+            *self.bytes.last_mut().unwrap() |= ((value & mask) as u8) << used;
+            value = value.checked_shr(take).unwrap_or(0);
+            width -= take;
+            self.bit += take as usize;
         }
     }
     fn var(&mut self, mut value: u64) {
@@ -97,119 +764,170 @@ impl Writer {
         }
         self.bits(value, 8);
     }
-    fn string(&mut self, value: &str) {
-        // Keep keys and text byte-aligned so compression can reuse them even
-        // when preceding numerical fields occupy different bit widths.
-        if self.packed && !self.bit.is_multiple_of(8) {
-            self.bits(0, 8 - self.bit % 8);
-        }
-        self.var(value.len() as u64);
-        for byte in value.bytes() {
-            self.bits(u64::from(byte), 8);
+    fn gamma(&mut self, index: u32) {
+        let n = u64::from(index) + 1;
+        let width = 63 - n.leading_zeros();
+        // `width` ones, a zero, then the low `width` bits of `n`.
+        self.bits((1 << width) - 1, width);
+        self.bits(0, 1);
+        self.bits(n, width);
+    }
+    fn align(&mut self) {
+        if !self.bit.is_multiple_of(8) {
+            self.bits(0, 8 - (self.bit % 8) as u32);
         }
     }
-    fn full(&mut self, value: &Value, depth: usize) -> io::Result<()> {
-        self.budget.visit(depth)?;
-        match value {
-            Value::Null => self.bits(0, 4),
-            Value::Bool(false) => self.bits(1, 4),
-            Value::Bool(true) => self.bits(2, 4),
-            Value::Number(n) if n.is_f64() => {
-                let n = n.as_f64().unwrap();
-                if let Some((i, q, _)) = self.fixed.then(|| fixed_pair(n, n)).flatten() {
-                    self.bits(9, 4);
-                    self.bits(i as u64, 3);
-                    self.bits((q as u64) & ((1 << GRIDS[i].1) - 1), GRIDS[i].1);
-                } else {
-                    self.bits(3, 4);
-                    self.bits(n.to_bits(), 64);
+    fn blob(&mut self, bytes: &[u8]) {
+        // Text stays byte-aligned so compression can reuse it even when the
+        // preceding fields occupy different bit widths.
+        self.align();
+        self.var(bytes.len() as u64);
+        self.bytes.extend_from_slice(bytes);
+        self.bit += bytes.len() * 8;
+    }
+    fn visit(&mut self, depth: usize) -> Result<()> {
+        self.nodes += 1;
+        if depth > MAX_DEPTH || self.nodes > MAX_NODES {
+            return Err(Error::new("traversal limit"));
+        }
+        Ok(())
+    }
+    fn finish(self) -> io::Result<Vec<u8>> {
+        if self.bytes.len() > LIMIT {
+            return Err(Error::new("frame exceeds 4 MiB").into());
+        }
+        Ok(self.bytes)
+    }
+    fn float(&mut self, n: f64) {
+        if let Some((i, q, _)) = fixed_pair(n, n) {
+            self.bits(0, 2);
+            self.bits(i as u64, 3);
+            self.bits(q as u64, GRIDS[i].1);
+        } else if exact_f32(n) {
+            self.bits(1, 2);
+            self.bits(u64::from((n as f32).to_bits()), 32);
+        } else {
+            self.bits(2, 2);
+            self.bits(n.to_bits(), 64);
+        }
+    }
+    fn full(&mut self, node: &Node, depth: usize) -> Result<()> {
+        self.visit(depth)?;
+        match node {
+            Node::Unit => {}
+            Node::Bool(v) => self.bits(u64::from(*v), 1),
+            Node::Uint(v) => self.var(*v),
+            Node::Int(v) => self.var(zigzag(*v)),
+            Node::F32(v) => self.bits(u64::from(v.to_bits()), 32),
+            Node::F64(v) => self.float(*v),
+            Node::Text(v) => self.blob(v.as_bytes()),
+            Node::Bytes(v) => self.blob(v),
+            Node::None => self.bits(0, 1),
+            Node::Some(v) => {
+                self.bits(1, 1);
+                self.full(v, depth + 1)?;
+            }
+            Node::Tuple(items) => {
+                for item in items {
+                    self.full(item, depth + 1)?;
                 }
             }
-            Value::Number(n) if n.is_u64() => {
-                self.bits(4, 4);
-                self.var(n.as_u64().unwrap());
-            }
-            Value::Number(n) => {
-                self.bits(5, 4);
-                let n = n.as_i64().unwrap();
-                self.var(((n << 1) ^ (n >> 63)) as u64);
-            }
-            Value::String(s) => {
-                self.bits(6, 4);
-                self.string(s);
-            }
-            Value::Array(a) => {
-                self.bits(7, 4);
-                self.var(a.len() as u64);
-                for v in a {
-                    self.full(v, depth + 1)?;
+            Node::Seq(items) => {
+                self.var(items.len() as u64);
+                for item in items {
+                    self.full(item, depth + 1)?;
                 }
             }
-            Value::Object(o) => {
-                self.bits(8, 4);
-                self.var(o.len() as u64);
-                for (k, v) in o {
-                    self.string(k);
-                    self.full(v, depth + 1)?;
+            Node::Map(entries) => {
+                self.var(entries.len() as u64);
+                for (key, value) in entries {
+                    self.full(key, depth + 1)?;
+                    self.full(value, depth + 1)?;
                 }
+            }
+            Node::Variant(index, payload) => {
+                self.gamma(*index);
+                self.full(payload, depth + 1)?;
             }
         }
         Ok(())
     }
-    fn delta(&mut self, before: &Value, after: &Value, depth: usize) -> io::Result<()> {
-        self.budget.visit(depth)?;
-        let unchanged = exact(before, after);
+    fn delta(&mut self, before: &Node, after: &Node, depth: usize) -> Result<()> {
+        self.visit(depth)?;
+        let unchanged = before == after;
         self.bits(u64::from(!unchanged), 1);
         if unchanged {
             return Ok(());
         }
-        let same_shape = match (before, after) {
-            (Value::Array(a), Value::Array(b)) => a.len() == b.len(),
-            (Value::Object(a), Value::Object(b)) => a.keys().eq(b.keys()),
-            (Value::Number(a), Value::Number(b)) => a.is_f64() && b.is_f64(),
-            _ => false,
-        };
-        self.bits(u64::from(same_shape), 1);
-        if !same_shape {
-            self.full(after, depth + 1)?;
-            return Ok(());
-        }
         match (before, after) {
-            (Value::Array(a), Value::Array(b)) => {
+            (Node::F64(a), Node::F64(b)) => {
+                if let Some((i, a, b)) = fixed_pair(*a, *b) {
+                    let difference = zigzag(b - a);
+                    let width = 64 - difference.leading_zeros();
+                    self.bits(1, 1);
+                    self.bits(i as u64, 3);
+                    self.bits(u64::from(width - 1), 6);
+                    self.bits(difference, width);
+                } else {
+                    let xor = a.to_bits() ^ b.to_bits();
+                    let leading = xor.leading_zeros();
+                    let trailing = xor.trailing_zeros();
+                    let width = 64 - leading - trailing;
+                    self.bits(0, 1);
+                    self.bits(u64::from(leading), 6);
+                    self.bits(u64::from(width - 1), 6);
+                    self.bits(xor >> trailing, width);
+                }
+            }
+            (Node::Tuple(a), Node::Tuple(b)) if a.len() == b.len() => {
                 for (a, b) in a.iter().zip(b) {
                     self.delta(a, b, depth + 1)?;
                 }
             }
-            (Value::Object(a), Value::Object(b)) => {
-                for (k, b) in b {
-                    self.delta(&a[k], b, depth + 1)?;
+            (Node::Seq(a), Node::Seq(b)) => {
+                self.bits(u64::from(a.len() == b.len()), 1);
+                if a.len() == b.len() {
+                    for (a, b) in a.iter().zip(b) {
+                        self.delta(a, b, depth + 1)?;
+                    }
+                } else {
+                    self.full(after, depth + 1)?;
                 }
             }
-            (Value::Number(a), Value::Number(b)) => {
-                let fixed = self
-                    .fixed
-                    .then(|| fixed_pair(a.as_f64().unwrap(), b.as_f64().unwrap()))
-                    .flatten();
-                if self.fixed {
-                    self.bits(u64::from(fixed.is_some()), 1);
+            (Node::Map(a), Node::Map(b)) => {
+                self.bits(u64::from(a.len() == b.len()), 1);
+                if a.len() == b.len() {
+                    for ((ak, av), (bk, bv)) in a.iter().zip(b) {
+                        self.delta(ak, bk, depth + 1)?;
+                        self.delta(av, bv, depth + 1)?;
+                    }
+                } else {
+                    self.full(after, depth + 1)?;
                 }
-                if let Some((i, a, b)) = fixed {
-                    let difference = zigzag(b - a);
-                    let width = (64 - difference.leading_zeros()) as usize;
-                    self.bits(i as u64, 3);
-                    self.bits((width - 1) as u64, 6);
-                    self.bits(difference, width);
-                    return Ok(());
-                }
-                let xor = a.as_f64().unwrap().to_bits() ^ b.as_f64().unwrap().to_bits();
-                let leading = xor.leading_zeros() as usize;
-                let trailing = xor.trailing_zeros() as usize;
-                let width = 64 - leading - trailing;
-                self.bits(leading as u64, 6);
-                self.bits((width - 1) as u64, 6);
-                self.bits(xor >> trailing, width);
             }
-            _ => unreachable!(),
+            (Node::Some(a), Node::Some(b)) => {
+                self.bits(1, 1);
+                self.delta(a, b, depth + 1)?;
+            }
+            (Node::None | Node::Some(_), Node::None | Node::Some(_)) => {
+                self.bits(0, 1);
+                self.full(after, depth + 1)?;
+            }
+            (Node::Variant(i, a), Node::Variant(j, b)) => {
+                self.bits(u64::from(i == j), 1);
+                if i == j {
+                    self.delta(a, b, depth + 1)?;
+                } else {
+                    self.full(after, depth + 1)?;
+                }
+            }
+            (Node::Bool(_), Node::Bool(_))
+            | (Node::Uint(_), Node::Uint(_))
+            | (Node::Int(_), Node::Int(_))
+            | (Node::F32(_), Node::F32(_))
+            | (Node::Text(_), Node::Text(_))
+            | (Node::Bytes(_), Node::Bytes(_)) => self.full(after, depth + 1)?,
+            _ => return Err(Error::new("baseline has a different type")),
         }
         Ok(())
     }
@@ -218,31 +936,40 @@ impl Writer {
 struct Reader<'a> {
     bytes: &'a [u8],
     bit: usize,
-    packed: bool,
-    budget: Budget,
-    fixed: bool,
+    nodes: usize,
 }
-impl Reader<'_> {
-    fn bits(&mut self, width: usize) -> io::Result<u64> {
-        let stored = if self.packed {
-            width
-        } else {
-            width.div_ceil(8) * 8
-        };
-        if self.bit + stored > self.bytes.len() * 8 {
+impl<'a> Reader<'a> {
+    fn new(bytes: &'a [u8], bit: usize) -> Self {
+        Self {
+            bytes,
+            bit,
+            nodes: 0,
+        }
+    }
+    fn remaining(&self) -> usize {
+        (self.bytes.len() * 8).saturating_sub(self.bit)
+    }
+    fn bits(&mut self, mut width: u32) -> Result<u64> {
+        if width as usize > self.remaining() {
             return Err(invalid());
         }
-        let mut value = 0;
-        for i in 0..stored {
-            value |= u64::from((self.bytes[self.bit / 8] >> (self.bit % 8)) & 1) << i;
-            self.bit += 1;
-        }
-        if width < 64 && value >> width != 0 {
-            return Err(invalid());
+        let mut value = 0_u64;
+        let mut shift = 0;
+        while width > 0 {
+            let used = (self.bit % 8) as u32;
+            let take = (8 - used).min(width);
+            let byte = u64::from(self.bytes[self.bit / 8] >> used) & ((1 << take) - 1);
+            value |= byte << shift;
+            shift += take;
+            width -= take;
+            self.bit += take as usize;
         }
         Ok(value)
     }
-    fn var(&mut self) -> io::Result<u64> {
+    fn bit1(&mut self) -> Result<bool> {
+        Ok(self.bits(1)? != 0)
+    }
+    fn var(&mut self) -> Result<u64> {
         let mut value = 0;
         for shift in (0..70).step_by(7) {
             let byte = self.bits(8)?;
@@ -259,382 +986,660 @@ impl Reader<'_> {
         }
         Err(invalid())
     }
-    fn length(&mut self) -> io::Result<usize> {
+    fn length(&mut self) -> Result<usize> {
         let len = usize::try_from(self.var()?).map_err(|_| invalid())?;
-        if len > LIMIT || len > self.bytes.len() * 8 - self.bit {
+        if len > MAX_NODES || len > self.remaining() {
             return Err(invalid());
         }
         Ok(len)
     }
-    fn string(&mut self) -> io::Result<String> {
-        if self.packed && !self.bit.is_multiple_of(8) && self.bits(8 - self.bit % 8)? != 0 {
+    fn gamma(&mut self) -> Result<u32> {
+        let mut width = 0;
+        while self.bit1()? {
+            width += 1;
+            if width > 32 {
+                return Err(invalid());
+            }
+        }
+        let n = (1_u64 << width) | self.bits(width)?;
+        u32::try_from(n - 1).map_err(|_| invalid())
+    }
+    fn blob(&mut self) -> Result<Vec<u8>> {
+        if !self.bit.is_multiple_of(8) && self.bits(8 - (self.bit % 8) as u32)? != 0 {
             return Err(invalid());
         }
         let len = self.length()?;
-        if len > (self.bytes.len() * 8 - self.bit) / 8 {
+        if len > self.remaining() / 8 {
             return Err(invalid());
         }
-        let bytes = (0..len)
-            .map(|_| self.bits(8).map(|x| x as u8))
-            .collect::<io::Result<Vec<_>>>()?;
-        String::from_utf8(bytes).map_err(|_| invalid())
+        let start = self.bit / 8;
+        self.bit += len * 8;
+        Ok(self.bytes[start..start + len].to_vec())
     }
-    fn full(&mut self, depth: usize) -> io::Result<Value> {
-        self.budget.visit(depth)?;
-        Ok(match self.bits(4)? {
-            0 => Value::Null,
-            1 => Value::Bool(false),
-            2 => Value::Bool(true),
-            3 => {
-                Value::Number(Number::from_f64(f64::from_bits(self.bits(64)?)).ok_or_else(invalid)?)
-            }
-            4 => Value::from(self.var()?),
-            5 => {
-                let n = self.var()?;
-                Value::from(((n >> 1) as i64) ^ -((n & 1) as i64))
-            }
-            6 => Value::String(self.string()?),
-            7 => {
-                let len = self.length()?;
-                Value::Array(
-                    (0..len)
-                        .map(|_| self.full(depth + 1))
-                        .collect::<io::Result<Vec<_>>>()?,
-                )
-            }
-            8 => {
-                let len = self.length()?;
-                let mut map = Map::new();
-                for _ in 0..len {
-                    let key = self.string()?;
-                    if map.insert(key, self.full(depth + 1)?).is_some() {
-                        return Err(invalid());
-                    }
-                }
-                Value::Object(map)
-            }
-            9 if self.fixed => {
+    fn float(&mut self) -> Result<f64> {
+        Ok(match self.bits(2)? {
+            0 => {
                 let i = self.bits(3)? as usize;
-                if i >= GRIDS.len() {
-                    return Err(invalid());
-                }
-                let width = GRIDS[i].1;
+                let (scale, width) = *GRIDS.get(i).ok_or_else(invalid)?;
                 let raw = self.bits(width)?;
                 let q = ((raw << (64 - width)) as i64) >> (64 - width);
-                Value::from(q as f64 / GRIDS[i].0)
-            }
-            _ => return Err(invalid()),
-        })
-    }
-    fn delta(&mut self, before: &Value, depth: usize) -> io::Result<Value> {
-        self.budget.visit(depth)?;
-        if self.bits(1)? == 0 {
-            return Ok(before.clone());
-        }
-        if self.bits(1)? == 0 {
-            return self.full(depth + 1);
-        }
-        Ok(match before {
-            Value::Array(a) => Value::Array(
-                a.iter()
-                    .map(|v| self.delta(v, depth + 1))
-                    .collect::<io::Result<Vec<_>>>()?,
-            ),
-            Value::Object(o) => Value::Object(
-                o.iter()
-                    .map(|(k, v)| Ok((k.clone(), self.delta(v, depth + 1)?)))
-                    .collect::<io::Result<Map<_, _>>>()?,
-            ),
-            Value::Number(n) if n.is_f64() => {
-                if self.fixed && self.bits(1)? != 0 {
-                    let i = self.bits(3)? as usize;
-                    if i >= GRIDS.len() {
-                        return Err(invalid());
-                    }
-                    let a = grid(n.as_f64().unwrap(), i).ok_or_else(invalid)?;
-                    let width = self.bits(6)? as usize + 1;
-                    let b = a
-                        .checked_add(unzigzag(self.bits(width)?))
-                        .ok_or_else(invalid)?;
-                    let value = b as f64 / GRIDS[i].0;
-                    if grid(value, i) != Some(b) {
-                        return Err(invalid());
-                    }
-                    return Ok(Value::from(value));
-                }
-                let leading = self.bits(6)? as usize;
-                let width = self.bits(6)? as usize + 1;
-                if leading + width > 64 {
+                let value = q as f64 / scale;
+                // The encoder only uses a grid it round-trips through.
+                if grid(value, i) != Some(q) {
                     return Err(invalid());
                 }
-                let xor = self.bits(width)? << (64 - leading - width);
-                Value::Number(
-                    Number::from_f64(f64::from_bits(n.as_f64().unwrap().to_bits() ^ xor))
-                        .ok_or_else(invalid)?,
-                )
+                value
             }
+            1 => f64::from(f32::from_bits(self.bits(32)? as u32)),
+            2 => f64::from_bits(self.bits(64)?),
             _ => return Err(invalid()),
         })
     }
-}
-
-/// Compare floating-point bits too: JSON value equality hides signed zero.
-pub fn exact(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Number(a), Value::Number(b)) if a.is_f64() || b.is_f64() => {
-            a.is_f64() == b.is_f64()
-                && a.as_f64().unwrap().to_bits() == b.as_f64().unwrap().to_bits()
+    fn float_delta(&mut self, before: f64) -> Result<f64> {
+        if self.bit1()? {
+            let i = self.bits(3)? as usize;
+            let (scale, _) = *GRIDS.get(i).ok_or_else(invalid)?;
+            let a = grid(before, i).ok_or_else(invalid)?;
+            let width = self.bits(6)? as u32 + 1;
+            let b = a
+                .checked_add(unzigzag(self.bits(width)?))
+                .ok_or_else(invalid)?;
+            let value = b as f64 / scale;
+            if grid(value, i) != Some(b) {
+                return Err(invalid());
+            }
+            return Ok(value);
         }
-        (Value::Array(a), Value::Array(b)) => {
-            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| exact(a, b))
-        }
-        (Value::Object(a), Value::Object(b)) => {
-            a.keys().eq(b.keys()) && a.iter().all(|(k, v)| exact(v, &b[k]))
-        }
-        _ => a == b,
-    }
-}
-
-/// Encode a full frame or a delta. `base_id == 0` means independent; a positive
-/// id with no baseline proposes a retained full frame. Header includes an epoch
-/// and baseline identity, so no schema or dictionary is supplied out of band.
-/// Returns an error when traversal exceeds 64 levels or 100,000 visited values,
-/// the frame exceeds 4 MiB, or a delta has a zero baseline id. Unchanged delta
-/// subtrees consume one visit, matching the decoder.
-///
-/// ```
-/// use rm_simulator_server::binary_snapshot::bitpack::{encode, decode};
-/// let state = serde_json::json!({"tick": 42, "x": 1.25});
-/// let bytes = encode(&state, None, 3, 0, true, true).unwrap();
-/// assert_eq!(decode(&bytes, None, 3).unwrap().0, state);
-/// ```
-pub fn encode(
-    value: &Value,
-    baseline: Option<&Value>,
-    epoch: u64,
-    base_id: u64,
-    packed: bool,
-    fixed: bool,
-) -> io::Result<Vec<u8>> {
-    if baseline.is_some() && base_id == 0 {
-        return Err(invalid());
-    }
-    let mut w = Writer {
-        bytes: MAGIC.to_vec(),
-        bit: 32,
-        packed,
-        fixed,
-        budget: Budget::default(),
-    };
-    w.bits(u64::from(packed) | (u64::from(fixed) << 1), 8);
-    w.bits(u64::from(baseline.is_some()), 1);
-    w.var(epoch);
-    w.var(base_id);
-    if let Some(base) = baseline {
-        w.delta(base, value, 0)?;
-    } else {
-        w.full(value, 0)?;
-    }
-    if w.bytes.len() > LIMIT {
-        return Err(invalid());
-    }
-    Ok(w.bytes)
-}
-
-/// Inspect the bounded frame header: delta flag, epoch and baseline id. This
-/// does not validate the body; callers must still call `decode` with a pinned
-/// baseline before delivering any state.
-pub fn header(bytes: &[u8]) -> io::Result<(bool, u64, u64)> {
-    if bytes.len() > LIMIT || !bytes.starts_with(MAGIC) || bytes.get(4).is_none_or(|b| *b > 3) {
-        return Err(invalid());
-    }
-    let mut r = Reader {
-        bytes,
-        bit: 40,
-        packed: bytes[4] & 1 != 0,
-        budget: Budget::default(),
-        fixed: bytes[4] & 2 != 0,
-    };
-    Ok((r.bits(1)? != 0, r.var()?, r.var()?))
-}
-
-/// Decode against only the named retained baseline. The decoder limits
-/// bytes, depth, node count, lengths, tags, finite floats and trailing padding.
-pub fn decode(
-    bytes: &[u8],
-    baseline: Option<(&Value, u64)>,
-    epoch: u64,
-) -> io::Result<(Value, u64)> {
-    if bytes.len() > LIMIT || !bytes.starts_with(MAGIC) || bytes.get(4).is_none_or(|b| *b > 3) {
-        return Err(invalid());
-    }
-    let mut r = Reader {
-        bytes,
-        bit: 40,
-        packed: bytes[4] & 1 != 0,
-        budget: Budget::default(),
-        fixed: bytes[4] & 2 != 0,
-    };
-    let delta = r.bits(1)? != 0;
-    if r.var()? != epoch {
-        return Err(invalid());
-    }
-    let id = r.var()?;
-    let value = if delta {
-        let (base, expected_id) = baseline.ok_or_else(invalid)?;
-        if id == 0 || id != expected_id {
+        let leading = self.bits(6)? as u32;
+        let width = self.bits(6)? as u32 + 1;
+        if leading + width > 64 {
             return Err(invalid());
         }
-        r.delta(base, 0)?
-    } else {
-        r.full(0)?
-    };
-    if r.bit.div_ceil(8) != bytes.len() {
-        return Err(invalid());
+        let xor = self.bits(width)? << (64 - leading - width);
+        Ok(f64::from_bits(before.to_bits() ^ xor))
     }
-    if r.packed && !r.bit.is_multiple_of(8) && bytes[bytes.len() - 1] >> (r.bit % 8) != 0 {
-        return Err(invalid());
+    fn visit(&mut self, depth: usize) -> Result<()> {
+        self.nodes += 1;
+        if depth > MAX_DEPTH || self.nodes > MAX_NODES {
+            return Err(Error::new("traversal limit"));
+        }
+        Ok(())
     }
-    Ok((value, id))
+    fn finish(&self) -> Result<()> {
+        if self.bit.div_ceil(8) != self.bytes.len() {
+            return Err(invalid());
+        }
+        if !self.bit.is_multiple_of(8) && self.bytes[self.bytes.len() - 1] >> (self.bit % 8) != 0 {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Type-driven decoding from bits, optionally against a baseline tree.
+
+struct BitDe<'r, 'x, 'b> {
+    r: &'r mut Reader<'x>,
+    base: Option<&'b Node>,
+    depth: usize,
+}
+/// How one value arrives: in full, unchanged from the baseline, or changed
+/// relative to it.
+enum Entry<'b> {
+    Full,
+    Same(&'b Node),
+    Changed(&'b Node),
+}
+impl<'x, 'b> BitDe<'_, 'x, 'b> {
+    fn enter(&mut self) -> Result<Entry<'b>> {
+        self.r.visit(self.depth)?;
+        Ok(match self.base {
+            None => Entry::Full,
+            Some(base) if self.r.bit1()? => Entry::Changed(base),
+            Some(base) => Entry::Same(base),
+        })
+    }
+    /// A changed container's "same shape" bit: `Some(base)` to recurse against
+    /// the baseline, `None` to read the value in full.
+    fn shape(&mut self, entry: Entry<'b>) -> Result<Option<&'b Node>> {
+        match entry {
+            Entry::Changed(base) if self.r.bit1()? => Ok(Some(base)),
+            _ => Ok(None),
+        }
+    }
+    fn child<'s>(&'s mut self, base: Option<&'b Node>) -> BitDe<'s, 'x, 'b> {
+        BitDe {
+            r: self.r,
+            base,
+            depth: self.depth + 1,
+        }
+    }
+    fn scalar<'de, V: de::Visitor<'de>>(
+        mut self,
+        visitor: V,
+        read: impl FnOnce(&mut Reader<'x>, V) -> Result<V::Value>,
+    ) -> Result<V::Value> {
+        match self.enter()? {
+            Entry::Same(base) => de::Deserializer::deserialize_any(NodeDe(base), visitor),
+            Entry::Full | Entry::Changed(_) => read(self.r, visitor),
+        }
+    }
+    fn items<'de, V: de::Visitor<'de>>(
+        &mut self,
+        bases: Option<&'b [Node]>,
+        len: usize,
+        visitor: V,
+    ) -> Result<V::Value> {
+        let mut seq = BitSeq {
+            de: self.child(None),
+            bases: bases.map(|b| b.iter()),
+            remaining: len,
+        };
+        let value = visitor.visit_seq(&mut seq)?;
+        if seq.remaining != 0 {
+            return Err(mismatch());
+        }
+        Ok(value)
+    }
+}
+
+impl<'de> de::Deserializer<'de> for BitDe<'_, '_, '_> {
+    type Error = Error;
+    fn is_human_readable(&self) -> bool {
+        false
+    }
+    fn deserialize_any<V: de::Visitor<'de>>(self, _: V) -> Result<V::Value> {
+        Err(Error::new(
+            "the positional codec cannot decode a self-describing type",
+        ))
+    }
+    fn deserialize_bool<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.scalar(visitor, |r, v| v.visit_bool(r.bit1()?))
+    }
+    fn deserialize_i8<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.deserialize_i64(visitor)
+    }
+    fn deserialize_i16<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.deserialize_i64(visitor)
+    }
+    fn deserialize_i32<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.deserialize_i64(visitor)
+    }
+    fn deserialize_i64<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.scalar(visitor, |r, v| v.visit_i64(unzigzag(r.var()?)))
+    }
+    fn deserialize_u8<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.deserialize_u64(visitor)
+    }
+    fn deserialize_u16<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.deserialize_u64(visitor)
+    }
+    fn deserialize_u32<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.deserialize_u64(visitor)
+    }
+    fn deserialize_u64<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.scalar(visitor, |r, v| v.visit_u64(r.var()?))
+    }
+    fn deserialize_f32<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.scalar(visitor, |r, v| {
+            v.visit_f32(f32::from_bits(r.bits(32)? as u32))
+        })
+    }
+    fn deserialize_f64<V: de::Visitor<'de>>(mut self, visitor: V) -> Result<V::Value> {
+        match self.enter()? {
+            Entry::Full => visitor.visit_f64(self.r.float()?),
+            Entry::Same(base) => de::Deserializer::deserialize_any(NodeDe(base), visitor),
+            Entry::Changed(Node::F64(before)) => visitor.visit_f64(self.r.float_delta(*before)?),
+            Entry::Changed(_) => Err(mismatch()),
+        }
+    }
+    fn deserialize_char<V: de::Visitor<'de>>(mut self, visitor: V) -> Result<V::Value> {
+        match self.enter()? {
+            Entry::Same(base) => NodeDe(base).deserialize_char(visitor),
+            Entry::Full | Entry::Changed(_) => visitor.visit_char(
+                u32::try_from(self.r.var()?)
+                    .ok()
+                    .and_then(char::from_u32)
+                    .ok_or_else(invalid)?,
+            ),
+        }
+    }
+    fn deserialize_str<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.deserialize_string(visitor)
+    }
+    fn deserialize_string<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.scalar(visitor, |r, v| {
+            v.visit_string(String::from_utf8(r.blob()?).map_err(|_| invalid())?)
+        })
+    }
+    fn deserialize_bytes<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.deserialize_byte_buf(visitor)
+    }
+    fn deserialize_byte_buf<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.scalar(visitor, |r, v| v.visit_byte_buf(r.blob()?))
+    }
+    fn deserialize_option<V: de::Visitor<'de>>(mut self, visitor: V) -> Result<V::Value> {
+        let entry = self.enter()?;
+        if let Entry::Same(base) = entry {
+            return NodeDe(base).deserialize_option(visitor);
+        }
+        match self.shape(entry)? {
+            Some(Node::Some(inner)) => visitor.visit_some(self.child(Some(inner))),
+            Some(_) => Err(invalid()),
+            None if self.r.bit1()? => visitor.visit_some(self.child(None)),
+            None => visitor.visit_none(),
+        }
+    }
+    fn deserialize_unit<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.scalar(visitor, |_, v| v.visit_unit())
+    }
+    fn deserialize_unit_struct<V: de::Visitor<'de>>(
+        self,
+        _: &'static str,
+        visitor: V,
+    ) -> Result<V::Value> {
+        self.deserialize_unit(visitor)
+    }
+    fn deserialize_newtype_struct<V: de::Visitor<'de>>(
+        self,
+        _: &'static str,
+        visitor: V,
+    ) -> Result<V::Value> {
+        visitor.visit_newtype_struct(self)
+    }
+    fn deserialize_seq<V: de::Visitor<'de>>(mut self, visitor: V) -> Result<V::Value> {
+        let entry = self.enter()?;
+        if let Entry::Same(base) = entry {
+            return de::Deserializer::deserialize_any(NodeDe(base), visitor);
+        }
+        match self.shape(entry)? {
+            Some(Node::Seq(items)) => self.items(Some(items), items.len(), visitor),
+            Some(_) => Err(invalid()),
+            None => {
+                let len = self.r.length()?;
+                self.items(None, len, visitor)
+            }
+        }
+    }
+    fn deserialize_tuple<V: de::Visitor<'de>>(
+        mut self,
+        len: usize,
+        visitor: V,
+    ) -> Result<V::Value> {
+        match self.enter()? {
+            Entry::Same(base) => de::Deserializer::deserialize_any(NodeDe(base), visitor),
+            Entry::Changed(Node::Tuple(items)) if items.len() == len => {
+                self.items(Some(items), len, visitor)
+            }
+            Entry::Changed(_) => Err(mismatch()),
+            Entry::Full => self.items(None, len, visitor),
+        }
+    }
+    fn deserialize_tuple_struct<V: de::Visitor<'de>>(
+        self,
+        _: &'static str,
+        len: usize,
+        visitor: V,
+    ) -> Result<V::Value> {
+        self.deserialize_tuple(len, visitor)
+    }
+    fn deserialize_struct<V: de::Visitor<'de>>(
+        self,
+        _: &'static str,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value> {
+        self.deserialize_tuple(fields.len(), visitor)
+    }
+    fn deserialize_map<V: de::Visitor<'de>>(mut self, visitor: V) -> Result<V::Value> {
+        let entry = self.enter()?;
+        if let Entry::Same(base) = entry {
+            return de::Deserializer::deserialize_any(NodeDe(base), visitor);
+        }
+        let (bases, len) = match self.shape(entry)? {
+            Some(Node::Map(entries)) => (Some(entries.iter()), entries.len()),
+            Some(_) => return Err(invalid()),
+            None => (None, self.r.length()?),
+        };
+        let mut map = BitMap {
+            de: self.child(None),
+            bases,
+            value: None,
+            remaining: len,
+        };
+        let value = visitor.visit_map(&mut map)?;
+        if map.remaining != 0 {
+            return Err(mismatch());
+        }
+        Ok(value)
+    }
+    fn deserialize_enum<V: de::Visitor<'de>>(
+        mut self,
+        _: &'static str,
+        variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value> {
+        let entry = self.enter()?;
+        if let Entry::Same(base) = entry {
+            return NodeDe(base).deserialize_enum("", variants, visitor);
+        }
+        let (index, payload) = match self.shape(entry)? {
+            Some(Node::Variant(index, payload)) => (*index, Some(&**payload)),
+            Some(_) => return Err(invalid()),
+            None => (self.r.gamma()?, None),
+        };
+        if index as usize >= variants.len() {
+            return Err(invalid());
+        }
+        visitor.visit_enum(BitEnum {
+            de: self.child(payload),
+            index,
+        })
+    }
+    fn deserialize_identifier<V: de::Visitor<'de>>(self, _: V) -> Result<V::Value> {
+        Err(Error::new("the positional codec carries no identifiers"))
+    }
+    fn deserialize_ignored_any<V: de::Visitor<'de>>(self, _: V) -> Result<V::Value> {
+        Err(Error::new("the positional codec cannot skip a value"))
+    }
+    fn deserialize_i128<V: de::Visitor<'de>>(self, _: V) -> Result<V::Value> {
+        Err(Error::new("128-bit integers are not supported"))
+    }
+    fn deserialize_u128<V: de::Visitor<'de>>(self, _: V) -> Result<V::Value> {
+        Err(Error::new("128-bit integers are not supported"))
+    }
+}
+
+struct BitSeq<'s, 'x, 'b> {
+    de: BitDe<'s, 'x, 'b>,
+    bases: Option<std::slice::Iter<'b, Node>>,
+    remaining: usize,
+}
+impl<'de> de::SeqAccess<'de> for BitSeq<'_, '_, '_> {
+    type Error = Error;
+    fn next_element_seed<T: de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: T,
+    ) -> Result<Option<T::Value>> {
+        if self.remaining == 0 {
+            return Ok(None);
+        }
+        self.remaining -= 1;
+        let base = match &mut self.bases {
+            Some(bases) => Some(bases.next().ok_or_else(mismatch)?),
+            None => None,
+        };
+        seed.deserialize(BitDe {
+            r: self.de.r,
+            base,
+            depth: self.de.depth,
+        })
+        .map(Some)
+    }
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.remaining.min(4096))
+    }
+}
+struct BitMap<'s, 'x, 'b> {
+    de: BitDe<'s, 'x, 'b>,
+    bases: Option<std::slice::Iter<'b, (Node, Node)>>,
+    value: Option<&'b Node>,
+    remaining: usize,
+}
+impl<'de> de::MapAccess<'de> for BitMap<'_, '_, '_> {
+    type Error = Error;
+    fn next_key_seed<K: de::DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>> {
+        if self.remaining == 0 {
+            return Ok(None);
+        }
+        self.remaining -= 1;
+        let key = match &mut self.bases {
+            Some(bases) => {
+                let (key, value) = bases.next().ok_or_else(mismatch)?;
+                self.value = Some(value);
+                Some(key)
+            }
+            None => None,
+        };
+        seed.deserialize(BitDe {
+            r: self.de.r,
+            base: key,
+            depth: self.de.depth,
+        })
+        .map(Some)
+    }
+    fn next_value_seed<V: de::DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value> {
+        seed.deserialize(BitDe {
+            r: self.de.r,
+            base: self.value.take(),
+            depth: self.de.depth,
+        })
+    }
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.remaining.min(4096))
+    }
+}
+struct BitEnum<'s, 'x, 'b> {
+    de: BitDe<'s, 'x, 'b>,
+    index: u32,
+}
+impl<'de, 's, 'x, 'b> de::EnumAccess<'de> for BitEnum<'s, 'x, 'b> {
+    type Error = Error;
+    type Variant = BitDe<'s, 'x, 'b>;
+    fn variant_seed<V: de::DeserializeSeed<'de>>(
+        self,
+        seed: V,
+    ) -> Result<(V::Value, Self::Variant)> {
+        let index: de::value::U32Deserializer<Error> = self.index.into_deserializer();
+        Ok((seed.deserialize(index)?, self.de))
+    }
+}
+impl<'de> de::VariantAccess<'de> for BitDe<'_, '_, '_> {
+    type Error = Error;
+    fn unit_variant(self) -> Result<()> {
+        de::Deserializer::deserialize_unit(self, de::IgnoredAny).map(|_| ())
+    }
+    fn newtype_variant_seed<T: de::DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value> {
+        seed.deserialize(self)
+    }
+    fn tuple_variant<V: de::Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value> {
+        de::Deserializer::deserialize_tuple(self, len, visitor)
+    }
+    fn struct_variant<V: de::Visitor<'de>>(
+        self,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value> {
+        de::Deserializer::deserialize_tuple(self, fields.len(), visitor)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde::Deserialize;
+    use std::collections::BTreeMap;
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    enum Shape {
+        Empty,
+        Point(f64),
+        Pair(i32, Option<u8>),
+        Named { label: String, flags: Vec<bool> },
+    }
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    struct Unit;
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    struct Wrapper(u64);
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    struct State {
+        tick: u64,
+        pos: [f64; 3],
+        shapes: Vec<Shape>,
+        opt: Option<Box<State>>,
+        map: BTreeMap<String, i64>,
+        unit: Unit,
+        wrapper: Wrapper,
+        ch: char,
+        small: f32,
+        bytes: Vec<u8>,
+    }
+    fn state(seed: u64) -> State {
+        State {
+            tick: seed,
+            pos: [1.25 * seed as f64, -0.0, f64::MAX],
+            shapes: (0..seed % 4)
+                .map(|i| match i {
+                    0 => Shape::Empty,
+                    1 => Shape::Point(0.1 + seed as f64),
+                    2 => Shape::Pair(-(seed as i32), Some(seed as u8)),
+                    _ => Shape::Named {
+                        label: "红".repeat(seed as usize % 3),
+                        flags: vec![true, seed.is_multiple_of(2)],
+                    },
+                })
+                .collect(),
+            opt: (seed % 3 == 1).then(|| Box::new(state(seed / 3))),
+            map: (0..seed % 3)
+                .map(|i| (format!("k{i}"), i as i64 - 1))
+                .collect(),
+            unit: Unit,
+            wrapper: Wrapper(u64::MAX - seed),
+            ch: 'é',
+            small: seed as f32 / 3.,
+            bytes: vec![seed as u8; (seed % 5) as usize],
+        }
+    }
 
     #[test]
-    fn lossless_types_shapes_extremes_and_signed_zero() {
-        let states = [
-            json!({"float": -0.0, "balls": [], "opt": null, "int": u64::MAX}),
-            json!({"float": 0.0, "balls": [1.25, true, "红"], "opt": 4, "int": i64::MIN}),
-            json!({"float": f64::MAX, "balls": [1.250000000001, false, "blue"], "opt": null, "int": -1}),
-            json!({"float": f64::MIN_POSITIVE, "new": [f64::from_bits(1), -f64::MAX]}),
-        ];
-        for packed in [false, true] {
-            for state in &states {
-                let bytes = encode(state, None, 7, 1, packed, true).unwrap();
-                assert!(exact(&decode(&bytes, None, 7).unwrap().0, state));
-                for base in &states {
-                    let bytes = encode(state, Some(base), 7, 1, packed, true).unwrap();
-                    assert!(exact(&decode(&bytes, Some((base, 1)), 7).unwrap().0, state));
-                    assert!(decode(&bytes, None, 7).is_err());
-                    assert!(decode(&bytes, Some((base, 2)), 7).is_err());
-                    assert!(decode(&bytes, Some((base, 1)), 8).is_err());
-                }
+    fn full_and_delta_frames_round_trip_every_shape() {
+        let states: Vec<State> = (0..12).map(state).collect();
+        for value in &states {
+            let node = to_node(value).unwrap();
+            assert_eq!(&from_node::<State>(&node).unwrap(), value);
+            let bytes = encode(&node, None, 7, 1).unwrap();
+            let decoded = decode::<State>(&bytes, None, 7).unwrap().0;
+            assert_eq!(to_node(&decoded).unwrap(), node);
+            for base in &states {
+                let base = to_node(base).unwrap();
+                let bytes = encode(&node, Some(&base), 7, 1).unwrap();
+                let decoded = decode::<State>(&bytes, Some((&base, 1)), 7).unwrap().0;
+                assert_eq!(to_node(&decoded).unwrap(), node);
+                assert!(decode::<State>(&bytes, None, 7).is_err());
+                assert!(decode::<State>(&bytes, Some((&base, 2)), 7).is_err());
+                assert!(decode::<State>(&bytes, Some((&base, 1)), 8).is_err());
             }
         }
     }
 
     #[test]
-    fn truncation_trailing_bytes_and_hostile_input_are_rejected_without_panics() {
-        for flags in 0_u8..4 {
-            let packed = flags & 1 != 0;
-            let state = json!({"x": [1.25, "test", false], "v": u64::MAX});
-            let mut bytes = encode(&state, None, 0, 0, packed, flags & 2 != 0).unwrap();
+    fn floats_pick_the_narrowest_exact_form() {
+        let bits = |n: f64| to_bytes(&n).unwrap().len();
+        assert_eq!(bits(1.235), 3); // 2 + 3 + 18 bits on the millimetre grid
+        assert_eq!(bits(0.1_f32 as f64), 5); // exact f32
+        assert_eq!(bits(0.123456789), 9); // raw f64
+        assert_eq!(
+            from_bytes::<f64>(&to_bytes(&-0.0_f64).unwrap())
+                .unwrap()
+                .to_bits(),
+            (-0.0_f64).to_bits()
+        );
+    }
+
+    #[test]
+    fn variant_indexes_are_gamma_coded() {
+        for index in [0, 1, 2, 3, 6, 7, 1000, u32::MAX - 1] {
+            let mut w = Writer::default();
+            w.gamma(index);
+            let len = w.bit;
+            let mut r = Reader::new(&w.bytes, 0);
+            assert_eq!(r.gamma().unwrap(), index);
+            assert_eq!(r.bit, len);
+        }
+        let mut w = Writer::default();
+        w.gamma(0);
+        assert_eq!(w.bit, 1);
+    }
+
+    #[test]
+    fn skipped_fields_and_self_describing_types_are_refused() {
+        #[derive(Serialize)]
+        struct Skips {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            a: Option<u8>,
+        }
+        assert!(to_node(&Skips { a: None }).is_err());
+        assert!(from_bytes::<serde_json::Value>(&[0]).is_err());
+    }
+
+    #[test]
+    fn truncated_trailing_and_hostile_frames_are_rejected_without_panics() {
+        let value = state(11);
+        let node = to_node(&value).unwrap();
+        let base = to_node(&state(7)).unwrap();
+        for baseline in [None, Some(&base)] {
+            let mut bytes = encode(&node, baseline, 0, 1).unwrap();
+            let pinned = baseline.map(|b| (b, 1));
             for len in 0..bytes.len() {
-                assert!(decode(&bytes[..len], None, 0).is_err());
+                assert!(decode::<State>(&bytes[..len], pinned, 0).is_err());
             }
             bytes.push(0);
-            assert!(decode(&bytes, None, 0).is_err());
-            // Deterministic malformed bodies exercise lengths, varints and tags.
+            assert!(decode::<State>(&bytes, pinned, 0).is_err());
             let mut seed = 1_u64;
-            for delta in [false, true] {
-                for len in 0..256 {
-                    let mut writer = Writer {
-                        bytes: MAGIC.to_vec(),
-                        bit: 32,
-                        packed,
-                        fixed: flags & 2 != 0,
-                        budget: Budget::default(),
-                    };
-                    writer.bits(u64::from(flags), 8);
-                    writer.bits(u64::from(delta), 1);
-                    writer.var(0);
-                    writer.var(1);
-                    for _ in 0..len {
-                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-                        writer.bits((seed >> 32) & 255, 8);
-                    }
-                    let _ = decode(&writer.bytes, Some((&state, 1)), 0);
+            for len in 0..256 {
+                let mut w = Writer::default();
+                w.bytes.extend_from_slice(MAGIC);
+                w.bit = 32;
+                w.bits(u64::from(baseline.is_some()), 1);
+                w.var(0);
+                w.var(1);
+                for _ in 0..len {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    w.bits((seed >> 32) & 255, 8);
                 }
+                let frame = w.bytes;
+                let _ = decode::<State>(&frame, pinned, 0);
             }
         }
     }
 
     #[test]
-    fn full_and_delta_traversal_limits_match() {
-        for packed in [false, true] {
-            for fixed in [false, true] {
-                // Full arrays visit the root plus each element; changed integer
-                // deltas additionally visit a full replacement for each leaf.
-                for (base, leaf, accepted) in [
-                    (None, Value::Null, 99_999),
-                    (Some(Value::from(0)), Value::from(1), 49_999),
-                ] {
-                    for len in [accepted, accepted + 1] {
-                        let value = Value::Array(vec![leaf.clone(); len]);
-                        let baseline = base.as_ref().map(|v| Value::Array(vec![v.clone(); len]));
-                        let encoded = encode(&value, baseline.as_ref(), 0, 1, packed, fixed);
-                        if len == accepted {
-                            let bytes = encoded.unwrap();
-                            let decoded = decode(&bytes, baseline.as_ref().map(|b| (b, 1)), 0)
-                                .unwrap()
-                                .0;
-                            assert!(exact(&decoded, &value));
-                        } else {
-                            assert!(encoded.is_err());
-                        }
-                    }
-                }
-                for depth in [63, 64, 65] {
-                    let mut value = Value::from(1);
-                    let mut baseline = Value::from(0);
-                    for _ in 0..depth {
-                        value = Value::Array(vec![value]);
-                        baseline = Value::Array(vec![baseline]);
-                    }
-                    for base in [None, Some(&baseline)] {
-                        let encoded = encode(&value, base, 0, 1, packed, fixed);
-                        let limit = if base.is_some() { 63 } else { 64 };
-                        if depth <= limit {
-                            assert!(exact(
-                                &decode(&encoded.unwrap(), base.map(|b| (b, 1)), 0)
-                                    .unwrap()
-                                    .0,
-                                &value
-                            ));
-                        } else {
-                            assert!(encoded.is_err());
-                        }
-                    }
-                }
-                // An unchanged subtree counts as one delta visit, even when
-                // expanding it as a full frame would exceed the node budget.
-                let value = Value::Array(vec![Value::Null; 100_000]);
-                let bytes = encode(&value, Some(&value), 0, 1, packed, fixed).unwrap();
-                assert!(exact(
-                    &decode(&bytes, Some((&value, 1)), 0).unwrap().0,
-                    &value
-                ));
-            }
-        }
+    fn traversal_limits_hold_for_full_and_delta_frames() {
+        let value = vec![0_u8; MAX_NODES];
+        assert!(encode(&to_node(&value).unwrap(), None, 0, 0).is_err());
+        let fits = to_node(&vec![0_u8; MAX_NODES - 1]).unwrap();
+        let bytes = encode(&fits, None, 0, 0).unwrap();
+        assert_eq!(
+            decode::<Vec<u8>>(&bytes, None, 0).unwrap().0.len(),
+            MAX_NODES - 1
+        );
+        // An unchanged subtree is one visit, however large.
+        let bytes = encode(&fits, Some(&fits), 0, 1).unwrap();
+        assert_eq!(bytes.len(), 7);
+        assert_eq!(
+            decode::<Vec<u8>>(&bytes, Some((&fits, 1)), 0)
+                .unwrap()
+                .0
+                .len(),
+            MAX_NODES - 1
+        );
     }
 
     #[test]
     fn independent_baseline_survives_lost_reordered_and_duplicate_deltas() {
-        let base = json!({"tick": 1, "pos": [1.0, 2.0, 3.0]});
-        for packed in [false, true] {
-            let a = json!({"tick": 2, "pos": [1.1, 2.2, 3.3]});
-            let b = json!({"tick": 3, "pos": [1.2, 2.4, 3.6]});
-            let packet_a = encode(&a, Some(&base), 0, 9, packed, true).unwrap();
-            let packet_b = encode(&b, Some(&base), 0, 9, packed, true).unwrap();
-            for (packet, expected) in [(&packet_b, &b), (&packet_b, &b), (&packet_a, &a)] {
-                assert!(exact(
-                    &decode(packet, Some((&base, 9)), 0).unwrap().0,
-                    expected
-                ));
-            }
+        let base = to_node(&(1_u64, [1.0_f64, 2.0, 3.0])).unwrap();
+        let a = (2_u64, [1.1_f64, 2.2, 3.3]);
+        let b = (3_u64, [1.2_f64, 2.4, 3.6]);
+        let packet_a = encode(&to_node(&a).unwrap(), Some(&base), 0, 9).unwrap();
+        let packet_b = encode(&to_node(&b).unwrap(), Some(&base), 0, 9).unwrap();
+        for (packet, expected) in [(&packet_b, b), (&packet_b, b), (&packet_a, a)] {
+            assert_eq!(
+                decode::<(u64, [f64; 3])>(packet, Some((&base, 9)), 0)
+                    .unwrap()
+                    .0,
+                expected
+            );
         }
     }
 }

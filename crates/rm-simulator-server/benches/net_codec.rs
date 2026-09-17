@@ -17,10 +17,9 @@
 use criterion::{BenchmarkId, Throughput, criterion_group, criterion_main};
 use criterion::{Criterion, measurement::WallTime};
 use rm_simulator_server::binary_snapshot::bitpack;
-use rm_simulator_server::binary_snapshot::fixed_point::{Quantization, checkpoint};
-use rm_simulator_server::protocol::{Command, ServerMessage};
+use rm_simulator_server::protocol::Command;
+use rm_simulator_server::simulation::SimulationState;
 use rm_simulator_server::{compression, snapshot_codec, udp_snapshot, workload};
-use serde_json::Value;
 use std::hint::black_box;
 use std::time::Duration;
 
@@ -32,20 +31,18 @@ const LEVELS: [i32; 5] = [1, 3, 6, 9, 12];
 /// bench cannot name because it is crate-private.
 const PRODUCTION_LEVEL: i32 = 6;
 
-/// One deterministic sample set: compact checkpoint JSON values plus the
-/// packed `RMB0` bytes and dictionary-framed bytes the live path derives.
+/// One deterministic sample set: checkpoint states plus the packed `RMB1`
+/// bytes and dictionary-framed bytes the live path derives.
 struct Samples {
     /// Workload label for [`BenchmarkId`].
     name: &'static str,
-    /// Compact checkpoint values before quantization.
-    values: Vec<Value>,
-    /// Fine-quantized, bitpacked `RMB0` frames.
+    /// Checkpoint states the [`udp_snapshot::Encoder`] consumes.
+    states: Vec<SimulationState>,
+    /// Fine-quantized, bitpacked `RMB1` frames.
     packed: Vec<Vec<u8>>,
-    /// Production-equivalent level-3 dictionary frames (or bare `RMB0` when
+    /// Production-equivalent dictionary frames (or bare `RMB1` when
     /// the no-bloat gate fires).
     framed: Vec<Vec<u8>>,
-    /// Compact JSON bytes the [`udp_snapshot::Encoder`] consumes.
-    compact: Vec<Vec<u8>>,
 }
 
 /// Frames a packed checkpoint exactly like the production compressor: `RMBZ`
@@ -67,8 +64,7 @@ fn frame_checkpoint(compressor: &mut zstd::bulk::Compressor<'static>, packed: &[
 fn samples(name: &'static str, players: usize, drive: bool, fire: bool) -> Samples {
     let (mut simulation, chassis) = workload::simulation(players);
     let driver = chassis[0];
-    let mut values: Vec<Value> = Vec::with_capacity(FRAMES);
-    let mut compact = Vec::with_capacity(FRAMES);
+    let mut states = Vec::with_capacity(FRAMES);
     for frame in 0..FRAMES as u64 {
         if drive {
             simulation
@@ -87,9 +83,7 @@ fn samples(name: &'static str, players: usize, drive: bool, fire: bool) -> Sampl
         simulation.step(32).unwrap();
         let mut state = simulation.state();
         state.snapshot_id = frame + 1;
-        let message = ServerMessage::Snapshot(Box::new(state));
-        compact.push(snapshot_codec::encode_player_message(&message));
-        values.push(serde_json::from_slice(&compact[frame as usize]).unwrap());
+        states.push(state);
     }
     let mut packed = Vec::with_capacity(FRAMES);
     let mut framed = Vec::with_capacity(FRAMES);
@@ -98,19 +92,17 @@ fn samples(name: &'static str, players: usize, drive: bool, fire: bool) -> Sampl
         rm_simulator_server::binary_snapshot::dictionary(),
     )
     .unwrap();
-    for value in &values {
-        let mut quantized = value.clone();
-        checkpoint(&mut quantized, &mut Default::default(), Quantization::Fine);
-        let bytes = bitpack::encode(&quantized, None, 0, 0, true, true).unwrap();
+    for state in &states {
+        let node = snapshot_codec::checkpoint_node(state).unwrap();
+        let bytes = bitpack::encode(&node, None, state.input_epoch, 0).unwrap();
         framed.push(frame_checkpoint(&mut compressor, &bytes));
         packed.push(bytes);
     }
     Samples {
         name,
-        values,
+        states,
         packed,
         framed,
-        compact,
     }
 }
 
@@ -133,11 +125,10 @@ fn bench_encode(c: &mut Criterion<WallTime>) {
         group.bench_with_input(BenchmarkId::from_parameter(set.name), &set, |b, set| {
             let mut index = 0;
             b.iter(|| {
-                let frame = &set.values[index % FRAMES];
+                let state = black_box(&set.states[index % FRAMES]);
                 index += 1;
-                let mut quantized = black_box(frame.clone());
-                checkpoint(&mut quantized, &mut Default::default(), Quantization::Fine);
-                black_box(bitpack::encode(&quantized, None, 0, 0, true, true).unwrap());
+                let node = snapshot_codec::checkpoint_node(state).unwrap();
+                black_box(bitpack::encode(&node, None, state.input_epoch, 0).unwrap());
             });
         });
     }
@@ -237,9 +228,13 @@ fn bench_decode(c: &mut Criterion<WallTime>) {
         group.bench_with_input(BenchmarkId::from_parameter(set.name), &set, |b, set| {
             let mut index = 0;
             b.iter(|| {
+                let epoch = set.states[index % FRAMES].input_epoch;
                 let packed = &set.packed[index % FRAMES];
                 index += 1;
-                black_box(bitpack::decode(black_box(packed), None, 0).unwrap());
+                black_box(
+                    snapshot_codec::decode_checkpoint(black_box(packed), None, epoch, false)
+                        .unwrap(),
+                );
             });
         });
     }
@@ -257,8 +252,8 @@ fn bench_roundtrip(c: &mut Criterion<WallTime>) {
             let mut encoder = udp_snapshot::Encoder::new();
             let mut decoder = udp_snapshot::Decoder::default();
             // Warm the baseline rotation before measuring steady state.
-            for bytes in set.compact.iter().take(32) {
-                let wire = encoder.snapshot(0, bytes).unwrap();
+            for state in set.states.iter().take(32) {
+                let wire = encoder.snapshot(state.input_epoch, state).unwrap();
                 let parsed = udp_snapshot::parse(&compression::decompress(&wire, 4 << 20).unwrap())
                     .unwrap()
                     .unwrap();
@@ -272,9 +267,11 @@ fn bench_roundtrip(c: &mut Criterion<WallTime>) {
             }
             let mut index = 0;
             b.iter(|| {
-                let bytes = &set.compact[index % FRAMES];
+                let state = &set.states[index % FRAMES];
                 index += 1;
-                let wire = encoder.snapshot(0, black_box(bytes)).unwrap();
+                let wire = encoder
+                    .snapshot(state.input_epoch, black_box(state))
+                    .unwrap();
                 let parsed = udp_snapshot::parse(&compression::decompress(&wire, 4 << 20).unwrap())
                     .unwrap()
                     .unwrap();

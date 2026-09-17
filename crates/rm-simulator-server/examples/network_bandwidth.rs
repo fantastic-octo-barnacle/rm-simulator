@@ -49,11 +49,8 @@ fn main() {
             }
             let mut state = simulation.state();
             state.snapshot_id = frame + 1;
-            let message =
-                rm_simulator_server::protocol::ServerMessage::Snapshot(Box::new(state.clone()));
             let started = std::time::Instant::now();
-            let compact = rm_simulator_server::snapshot_codec::encode_player_message(&message);
-            let wire = encoder.snapshot(state.input_epoch, &compact).unwrap();
+            let wire = encoder.snapshot(state.input_epoch, &state).unwrap();
             encode_us += started.elapsed().as_micros();
             let started = std::time::Instant::now();
             let parsed = rm_simulator_server::udp_snapshot::parse(

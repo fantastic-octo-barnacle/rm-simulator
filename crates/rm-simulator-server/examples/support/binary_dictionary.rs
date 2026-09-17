@@ -3,7 +3,6 @@
 //! Dictionary framing for experiments only. These frames must never masquerade
 //! as the production RMBZ checkpoint frames, which carry the embedded fine
 //! fixed-point dictionary.
-use super::fixed_point::Quantization;
 use std::io;
 
 const MAGIC: &[u8; 4] = b"RMBZ";
@@ -11,17 +10,6 @@ const MAGIC: &[u8; 4] = b"RMBZ";
 /// the trainer's raw-content fallback and would silently degrade every frame it
 /// compresses, so the experimental codec refuses it.
 const TRAINED_DICTIONARY_MAGIC: [u8; 4] = [0x37, 0xa4, 0x30, 0xec];
-
-/// File stem identifying a binary layout and its numeric precision policy.
-pub fn name(packed: bool, mode: Quantization) -> &'static str {
-    match mode {
-        Quantization::None if packed => "bit-lossless",
-        Quantization::None => "byte-lossless",
-        Quantization::Coarse => "fixed-coarse",
-        Quantization::Fine => "fixed-fine",
-        Quantization::Chassis => "fixed-chassis",
-    }
-}
 
 /// Reused ZSTD level 3 contexts for one trained experimental dictionary.
 pub struct Codec {

@@ -5,144 +5,67 @@
 //! Commands, configuration, clocks, ids, contacts, scoring and hidden rules stay
 //! exact. Reconstructed quaternion components are normalized before physics use.
 use crate::protocol::ServerMessage;
-use serde_json::Value;
 
-/// Precision candidates; all leave configuration, commands and rule state exact.
+/// Fine fixed-point rounding for the compact player checkpoint, selected by the
+/// field path while the checkpoint is serialized. Chassis dynamics round onto
+/// their bitpack grids; projectile position and velocity round to 1 mm and
+/// 1 mm/s, both on the 18-bit grid, and a 0.5 mm/s velocity error drifts a
+/// four-second flight by about 2 mm, far below armor scale. A value outside a
+/// grid's range keeps its exact bits instead of clamping.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Quantization {
-    /// Preserve all current compact-checkpoint values exactly.
-    None,
-    /// Quantize chassis dynamics; preserve current projectile values exactly.
+pub enum Fine {
+    /// The `PlayerSnapshot` itself.
+    Root,
+    /// Inside `state`, the `SimulationState`.
+    State,
+    /// Inside `state.field`.
+    Field,
+    /// Inside a chassis, outside its configuration and command.
     Chassis,
-    /// Also round projectiles to 1 mm and 0.01 m/s steps.
-    Coarse,
-    /// Also round projectiles to 1 mm and 1 mm/s steps. Both fit the bitpack
-    /// 18-bit grids (4+3+18 bits per component instead of 4+3+24/26), and a
-    /// 0.5 mm/s velocity error drifts a four-second flight by about 2 mm,
-    /// far below armor scale.
-    Fine,
+    /// Inside the hoisted projectile array.
+    Projectiles,
+    /// Every `f64` beneath rounds to `1 / scale` steps within a signed
+    /// integer of `width` bits.
+    Round {
+        /// Steps per unit.
+        scale: f64,
+        /// Signed integer width the rounded value must fit.
+        width: u32,
+    },
+    /// Every value beneath stays exact.
+    Exact,
 }
-
-/// Maximum absolute component errors from the explicitly rounded fields.
-#[derive(Default)]
-pub struct Errors {
-    /// Position and wheel-hub component error, metres.
-    pub position_m: f64,
-    /// Linear velocity and wheel target speed component error, metres/second.
-    pub velocity_m_s: f64,
-    /// Held aim and wheel spin error, radians.
-    pub angle_rad: f64,
-    /// Body and gimbal angular velocity component error, radians/second.
-    pub angular_velocity_rad_s: f64,
-    /// Dimensionless quaternion component error before normalization.
-    pub quaternion_component: f64,
-    /// Out-of-range components left at their original precision.
-    pub escapes: usize,
-}
-
-fn round(value: &mut Value, scale: f64, width: u32, maximum: &mut f64, escapes: &mut usize) {
-    if let Some(values) = value.as_array_mut() {
-        for v in values {
-            round(v, scale, width, maximum, escapes);
+impl crate::binary_snapshot::bitpack::Rounding for Fine {
+    fn field(self, key: &'static str) -> Self {
+        let round = |scale, width| Fine::Round { scale, width };
+        match (self, key) {
+            (Fine::Root, "state") => Fine::State,
+            (Fine::Root, "projectiles") => Fine::Projectiles,
+            (Fine::State, "field") => Fine::Field,
+            (Fine::Field, "chassis") => Fine::Chassis,
+            (Fine::Chassis, "config" | "command") => Fine::Exact,
+            (Fine::Chassis, "translation_m" | "hub_m") => round(1000., 18),
+            (Fine::Chassis, "velocity_m_s" | "target_m_s") => round(100., 16),
+            (Fine::Chassis, "angular_velocity_rad_s" | "gimbal_velocity_rad_s") => round(1000., 18),
+            (Fine::Chassis, "held_aim_rad" | "spin_rad") => round(10000., 24),
+            (Fine::Chassis, "rotation_wxyz") => round(32767., 16),
+            (Fine::Chassis, _) => Fine::Chassis,
+            (Fine::Projectiles, "position_m" | "velocity_m_s") => round(1000., 18),
+            (Fine::Projectiles, _) => Fine::Projectiles,
+            (Fine::Round { .. }, _) => self,
+            _ => Fine::Exact,
         }
-    } else if let Some(n) = value.as_f64() {
-        let q = (n * scale).round();
+    }
+    fn round(self, value: f64) -> f64 {
+        let Fine::Round { scale, width } = self else {
+            return value;
+        };
+        let q = (value * scale).round();
         let bound = (1_u64 << (width - 1)) as f64;
         if !q.is_finite() || q < -bound || q >= bound {
-            *escapes += 1;
-            return;
+            return value;
         }
-        let quantized = q / scale;
-        *maximum = maximum.max((n - quantized).abs());
-        *value = Value::from(quantized);
-    }
-}
-
-fn chassis(value: &mut Value, e: &mut Errors) {
-    match value {
-        Value::Object(map) => {
-            for (key, value) in map {
-                match key.as_str() {
-                    "config" | "command" => (),
-                    "translation_m" | "hub_m" => {
-                        round(value, 1000., 18, &mut e.position_m, &mut e.escapes)
-                    }
-                    "velocity_m_s" | "target_m_s" => {
-                        round(value, 100., 16, &mut e.velocity_m_s, &mut e.escapes)
-                    }
-                    "angular_velocity_rad_s" | "gimbal_velocity_rad_s" => round(
-                        value,
-                        1000.,
-                        18,
-                        &mut e.angular_velocity_rad_s,
-                        &mut e.escapes,
-                    ),
-                    "held_aim_rad" | "spin_rad" => {
-                        round(value, 10000., 24, &mut e.angle_rad, &mut e.escapes)
-                    }
-                    "rotation_wxyz" => round(
-                        value,
-                        32767.,
-                        16,
-                        &mut e.quaternion_component,
-                        &mut e.escapes,
-                    ),
-                    _ => chassis(value, e),
-                }
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                chassis(value, e);
-            }
-        }
-        _ => (),
-    }
-}
-
-/// Round only explicitly selected player-checkpoint fields, retaining f64 for
-/// out-of-range values. The integer representation is emitted by `bitpack`.
-pub fn checkpoint(value: &mut Value, errors: &mut Errors, mode: Quantization) {
-    if mode == Quantization::None {
-        return;
-    }
-    // Extreme projectiles make the compact encoder fall back to a full
-    // Snapshot. Preserve that diagnostic state exactly instead of indexing a
-    // missing compact envelope.
-    let Some(chassis_value) = value.pointer_mut("/CompactSnapshot/state/field/chassis") else {
-        return;
-    };
-    chassis(chassis_value, errors);
-    if mode == Quantization::Chassis {
-        return;
-    }
-    let (position_scale, position_bits, velocity_scale, velocity_bits) =
-        if mode == Quantization::Fine {
-            (1000., 18, 1000., 18)
-        } else {
-            (1000., 18, 100., 16)
-        };
-    let Some(projectiles) = value
-        .pointer_mut("/CompactSnapshot/projectiles")
-        .and_then(Value::as_array_mut)
-    else {
-        return;
-    };
-    for projectile in projectiles {
-        round(
-            &mut projectile[3],
-            position_scale,
-            position_bits,
-            &mut errors.position_m,
-            &mut errors.escapes,
-        );
-        round(
-            &mut projectile[4],
-            velocity_scale,
-            velocity_bits,
-            &mut errors.velocity_m_s,
-            &mut errors.escapes,
-        );
+        q / scale
     }
 }
 
@@ -172,24 +95,27 @@ pub fn normalize(message: &mut ServerMessage) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use crate::binary_snapshot::bitpack::Rounding;
 
     #[test]
     fn rounding_has_half_step_error_and_never_clamps_extreme_values() {
-        let mut error = 0.;
-        let mut escapes = 0;
-        let mut values = json!([-200., -131.072, -1.23456, 0.0005, 131.0709, 200.]);
-        round(&mut values, 1000., 18, &mut error, &mut escapes);
-        assert!(error <= 0.0005);
-        assert_eq!(escapes, 2);
+        let rule = Fine::Root.field("projectiles").field("position_m");
+        let values = [-200., -131.072, -1.23456, 0.0005, 131.0709, 200.];
+        let rounded = values.map(|v| rule.round(v));
+        assert_eq!(rounded, [-200., -131.072, -1.235, 0.001, 131.071, 200.]);
+        let chassis = Fine::Root.field("state").field("field").field("chassis");
         assert_eq!(
-            values,
-            json!([-200., -131.072, -1.235, 0.001, 131.071, 200.])
+            chassis.field("pose").field("translation_m").round(1.23456),
+            1.235
         );
-        let mut chassis_value = json!({"pose": {"translation_m": [1.23456, 0., 0.]}, "config": {"hub_m": [1.23456]}, "command": {"forward_m_s": 1.23456}});
-        chassis(&mut chassis_value, &mut Errors::default());
-        assert_eq!(chassis_value["pose"]["translation_m"][0], 1.235);
-        assert_eq!(chassis_value["config"]["hub_m"][0], 1.23456);
-        assert_eq!(chassis_value["command"]["forward_m_s"], 1.23456);
+        assert_eq!(
+            chassis.field("config").field("hub_m").round(1.23456),
+            1.23456
+        );
+        assert_eq!(
+            chassis.field("command").field("forward_m_s").round(1.23456),
+            1.23456
+        );
+        assert_eq!(Fine::Root.field("state").field("paused"), Fine::Exact);
     }
 }

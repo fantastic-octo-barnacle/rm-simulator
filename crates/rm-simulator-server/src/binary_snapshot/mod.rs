@@ -29,7 +29,7 @@ const CHECKPOINT_LEVEL: i32 = 6;
 pub(crate) struct Compressor {
     inner: zstd::bulk::Compressor<'static>,
     /// Packed frames emitted uncompressed because dictionary compression
-    /// would not have shrunk them. The bare `RMB0` framing is the
+    /// would not have shrunk them. The bare `RMB1` framing is the
     /// already-decoded signal, so no new header was needed.
     raw_fallbacks: u64,
 }
@@ -46,7 +46,7 @@ impl Compressor {
     /// Compresses one packed `RMB0` checkpoint with the embedded dictionary,
     /// or returns it unchanged when the compressed frame would be no smaller.
     /// Both framings decode through [`crate::compression::decompress`]: `RMBZ`
-    /// dictionary frames inflate, while a bare `RMB0` frame passes through as
+    /// dictionary frames inflate, while a bare `RMB1` frame passes through as
     /// the already-inflated checkpoint that [`crate::udp_snapshot::parse`]
     /// inspects.
     pub(crate) fn compress(&mut self, raw: &[u8]) -> Vec<u8> {
@@ -79,7 +79,7 @@ mod tests {
         assert_eq!(dictionary().len(), 32768);
         assert_eq!(
             format!("{:x}", Sha256::digest(dictionary())),
-            "3d6ffcaf5e78d99f8b0b71a7f5f5804764ed9433e170ebab9609b2365c3031b5"
+            "dc9dabe1224eb9fdac14f06106eab2070297d6b1ba6328c6217ce3e40c46f69c"
         );
         assert_eq!(
             dictionary(),
@@ -102,7 +102,7 @@ mod tests {
     fn incompressible_frames_pass_through_as_bare_packed_checkpoints() {
         // Pseudo-random bytes defeat the dictionary, so the gate must return
         // the packed frame itself rather than a larger compressed one. The
-        // shared decompressor already treats bare `RMB0` as inflated.
+        // shared decompressor already treats bare `RMB1` as inflated.
         let mut state = 0x2545_f491_4f6c_dd1du64;
         let mut packed = bitpack::MAGIC.to_vec();
         packed.extend((0..1024).map(|_| {
