@@ -94,7 +94,6 @@ impl Session {
             shooter,
             shot_id,
             input,
-            timing: Some(self.fire_timing()),
         };
         self.client.send(command).map_err(|e| e.to_string())?;
         self.shots.next_launch_ns = input
@@ -259,7 +258,7 @@ impl Session {
     /// Take scheduled and answered shot messages from the client and update
     /// the flights accordingly.
     pub(super) fn poll_shot_results(&mut self) {
-        for (shooter, id, _) in self.client.take_scheduled_shots() {
+        for (shooter, id) in self.client.take_scheduled_shots() {
             if Some(shooter) == self.chassis_id
                 && let Some(flight) = self.shots.flights.get_mut(&id)
             {
@@ -472,7 +471,6 @@ mod tests {
             shooter,
             shot_id: 1,
             input,
-            timing: None,
         };
         for id in 1..=32 {
             session.shots.flights.insert(

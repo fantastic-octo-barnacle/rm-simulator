@@ -481,7 +481,7 @@ impl Session {
             }
             return;
         }
-        let command = if let Command::Fire { shooter, timing } = command {
+        let command = if let Command::Fire { shooter } = command {
             if let Some(input) = self.last_input_frame {
                 let shot_id = self.next_shot_id;
                 self.next_shot_id = self.next_shot_id.saturating_add(1);
@@ -489,7 +489,6 @@ impl Session {
                     shooter,
                     shot_id,
                     input,
-                    timing,
                 }
             } else {
                 command
@@ -599,18 +598,6 @@ impl Session {
     /// is a function of time are drawn here so aiming needs no latency lead.
     pub fn fire_time_ns(&self) -> u64 {
         self.input_time_ns()
-    }
-    /// Timing attached to a shot: the host's probes plus the snapshot time and
-    /// chassis pose the client aimed from.
-    pub fn fire_timing(&self) -> rm_simulator_server::protocol::FireTiming {
-        let mut timing = self.client.fire_timing();
-        timing.observed_snapshot_time_ns = Some(if self.prediction.chassis.is_some() {
-            self.prediction.time_ns
-        } else {
-            self.snapshot.time_ns
-        });
-        timing.observed_chassis_pose = self.presented_chassis().map(|chassis| chassis.pose);
-        timing
     }
     /// Drain the connection, apply new host state and advance prediction and
     /// provisional shots. An `Err` means the embedded host failed; a remote

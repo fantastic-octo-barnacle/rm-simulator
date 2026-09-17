@@ -348,16 +348,13 @@ pub struct ProjectileSnapshot {
     pub angular_velocity_rad_s: [f64; 3],
     /// The chassis credited with the shot, when a pilot fired it, so a
     /// restored field scores the ball for the same robot the host does.
-    #[serde(default)]
     pub shooter: Option<u32>,
     /// Simulation time of the ball's first contact with anything, in
     /// nanoseconds, or `None` while it has never touched. Diagnostic only.
-    #[serde(default)]
     pub first_contact_ns: Option<u64>,
     /// Start of the open low-speed retirement dwell window, in nanoseconds, or
     /// `None` when no window is open. Carried so a restored field retires the
     /// same ball on the same tick as the field it was captured from.
-    #[serde(default)]
     pub dwell_since_ns: Option<u64>,
 }
 

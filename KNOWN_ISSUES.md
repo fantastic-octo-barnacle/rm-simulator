@@ -45,12 +45,13 @@ on-wire result. See the [experiment record](docs/bandwidth-experiments.md).
 The subsequent five-seed, two-client clean matrix measured the current
 owner-configuration-reference build at 1,255.0 kbps downstream per client,
 710.0 kbps with 31.25 Hz owner / 15.625 Hz world cadence, and 662.0 kbps after
-also changing checkpoint deflate from level 1 to 4. These include a 28-byte
+also changing checkpoint deflate from level 1 to 4 (historical: DEFLATE was
+removed in protocol 35). These include a 28-byte
 IPv4/UDP allowance per packet. They are a sustained two-client workload, not a
 rerun of the historical one-client trial above. The combined experimental
 reduction is 47.3%, but still exceeds 200 kbps by more than threefold. Remote
-presentation age also increases. Neither cadence nor deflate change is enabled
-in production; see the [experiment record](docs/bandwidth-experiments.md).
+presentation age also increases. Neither cadence change is enabled in production,
+and the deflate change no longer applies; see the [experiment record](docs/bandwidth-experiments.md).
 
 Capacity trials reject acceptance: the combined candidate's 200 kbps trials
 had 4.1–4.9 s shot-confirmation p95 and long complete-context stalls. The 100 kbps
@@ -140,7 +141,7 @@ verify recovery as well as behavior during impairment.
 
 ## Measurement gaps and deferred work
 
-- The five-seed cadence/deflate matrix covers two rendered clients on one
+- The historical five-seed cadence/deflate matrix covers two rendered clients on one
   Apple M3 Pro. Cross-platform and twelve-real-client performance remain
   unmeasured. Trace-enabled versus trace-disabled overhead has not been benchmarked.
 - The listen-host trial measured remote presentation age at 52 ms median and

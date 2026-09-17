@@ -75,10 +75,7 @@ fn samples(name: &'static str, players: usize, drive: bool, fire: bool) -> Sampl
                 .unwrap();
         }
         if fire && frame.is_multiple_of(4) {
-            let _ = simulation.apply(&Command::Fire {
-                shooter: driver,
-                timing: None,
-            });
+            let _ = simulation.apply(&Command::Fire { shooter: driver });
         }
         simulation.step(32).unwrap();
         let mut state = simulation.state();
@@ -249,7 +246,7 @@ fn bench_roundtrip(c: &mut Criterion<WallTime>) {
     group.measurement_time(Duration::from_secs(8));
     for set in all_samples() {
         group.bench_with_input(BenchmarkId::from_parameter(set.name), &set, |b, set| {
-            let mut encoder = udp_snapshot::Encoder::new();
+            let mut encoder = udp_snapshot::Encoder::default();
             let mut decoder = udp_snapshot::Decoder::default();
             // Warm the baseline rotation before measuring steady state.
             for state in set.states.iter().take(32) {

@@ -103,7 +103,6 @@ impl TickSchedule {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SimulationState {
     /// Chassis ids of the training bots, ascending.
-    #[serde(default)]
     pub bots: Vec<u32>,
     /// Host publication identity; zero for an unpublished operator capture.
     pub snapshot_id: u64,
@@ -145,8 +144,6 @@ pub struct FireRecord {
     pub accepted_time_ns: u64,
     /// Muzzle pose the host fired from, in FLU metres and wxyz.
     pub authoritative_muzzle_pose: rm_simulator_world::Pose,
-    /// Client-reported timing kept for diagnostics; firing ignores it.
-    pub client_timing: Option<crate::protocol::FireTiming>,
 }
 
 /// The authoritative field with the host's pause, pacing, input and shot state.
@@ -696,17 +693,11 @@ impl Simulation {
     pub(crate) fn take_completed_shots(&mut self) -> VecDeque<crate::protocol::ShotResult> {
         std::mem::take(&mut self.completed_shots)
     }
-    /// The intended simulation time in ns of a still-queued shot with that id
-    /// and shooter.
-    pub(crate) fn scheduled_shot(&self, shooter: u32, shot_id: u64) -> Option<u64> {
-        self.pending_shots.iter().find_map(|c| match c {
-            Command::FireAimed {
-                shooter: owner,
-                shot_id: id,
-                input,
-                ..
-            } if *owner == shooter && *id == shot_id => Some(input.sampled_time_ns),
-            _ => None,
+    /// Whether a shot with that id and shooter is still queued.
+    pub(crate) fn is_shot_scheduled(&self, shooter: u32, shot_id: u64) -> bool {
+        self.pending_shots.iter().any(|c| {
+            matches!(c, Command::FireAimed { shooter: owner, shot_id: id, .. }
+                if *owner == shooter && *id == shot_id)
         })
     }
     fn cancel_pending_shots(&mut self, shooter: Option<u32>, reason: &str) {
@@ -733,7 +724,6 @@ impl Simulation {
                 shooter,
                 shot_id,
                 input,
-                timing,
             } = self.pending_shots[index]
             else {
                 unreachable!()
@@ -741,7 +731,7 @@ impl Simulation {
             let result = match self.validate_shot(shooter, shot_id, input) {
                 Err(reason) => Err(reason),
                 Ok(()) if input.sampled_time_ns <= self.field.time_ns() => {
-                    self.fire_aimed(shooter, shot_id, input, timing)
+                    self.fire_aimed(shooter, shot_id, input)
                 }
                 Ok(()) => {
                     index += 1;
@@ -757,7 +747,6 @@ impl Simulation {
         shooter: u32,
         shot_id: u64,
         input: crate::input_stream::InputFrame,
-        timing: Option<crate::protocol::FireTiming>,
     ) -> Result<u64, String> {
         self.validate_shot(shooter, shot_id, input)?;
         let state = self
@@ -776,7 +765,7 @@ impl Simulation {
         self.field
             .command_chassis(shooter, aim)
             .map_err(|e| e.to_string())?;
-        let result = self.fire_now(shooter, timing, input.sampled_time_ns);
+        let result = self.fire_now(shooter, input.sampled_time_ns);
         let _ = self.field.command_chassis(shooter, state.command);
         let projectile_id = result?;
         self.last_shot_ids
@@ -790,12 +779,7 @@ impl Simulation {
     /// within one interval of each other. A scheduled shot that arrived late,
     /// or behind a newer one, still fires, but it neither pushes the cooldown
     /// onto the correctly spaced shot behind it nor forms a burst.
-    fn fire_now(
-        &mut self,
-        shooter: u32,
-        timing: Option<crate::protocol::FireTiming>,
-        intended_ns: u64,
-    ) -> Result<u64, String> {
+    fn fire_now(&mut self, shooter: u32, intended_ns: u64) -> Result<u64, String> {
         let weapon = self.weapon_for(shooter);
         let fired = self.fired_ns.entry(shooter).or_default();
         if fired
@@ -823,7 +807,6 @@ impl Simulation {
             projectile_id,
             accepted_time_ns: self.field.time_ns(),
             authoritative_muzzle_pose: muzzle,
-            client_timing: timing,
         });
         let fired = self.fired_ns.entry(shooter).or_default();
         if fired.len() == 32 {
@@ -858,7 +841,6 @@ impl Simulation {
                 shooter,
                 shot_id,
                 input,
-                timing,
             } => {
                 if let Some(previous) = self.shot_result(*shooter, *shot_id) {
                     return previous.result.as_ref().map(|_| ()).map_err(Clone::clone);
@@ -890,7 +872,7 @@ impl Simulation {
                     });
                     return Ok(());
                 }
-                let result = self.fire_aimed(*shooter, *shot_id, *input, *timing);
+                let result = self.fire_aimed(*shooter, *shot_id, *input);
                 self.remember_shot(*shooter, *shot_id, result.clone(), false);
                 result.map(|_| ())
             }
@@ -963,9 +945,9 @@ impl Simulation {
                 .field
                 .buy_ammo(*chassis, *caliber)
                 .map_err(|e| e.to_string()),
-            Command::Fire { shooter, timing } => {
+            Command::Fire { shooter } => {
                 let now = self.field.time_ns();
-                self.fire_now(*shooter, *timing, now).map(|_| ())
+                self.fire_now(*shooter, now).map(|_| ())
             }
             Command::SpawnProjectile { muzzle, shot } => self
                 .field
@@ -1199,11 +1181,7 @@ mod tests {
     fn weapon_updates_are_per_pilot_leave_flying_bullets_alone_and_keep_cooldown() {
         let (mut sim, shooter) = pilot_simulation();
         let other = sim.spawn_chassis(Team::Blue).unwrap();
-        sim.apply(&Command::Fire {
-            shooter,
-            timing: None,
-        })
-        .unwrap();
+        sim.apply(&Command::Fire { shooter }).unwrap();
         let before = sim.snapshot().projectiles;
         let mut weapon = sim.weapon();
         weapon.shot.speed_m_s = 10.;
@@ -1217,18 +1195,10 @@ mod tests {
         .unwrap();
         assert_eq!(sim.snapshot().projectiles, before);
         assert_eq!(
-            sim.apply(&Command::Fire {
-                shooter,
-                timing: None
-            })
-            .unwrap_err(),
+            sim.apply(&Command::Fire { shooter }).unwrap_err(),
             "weapon is cooling down"
         );
-        sim.apply(&Command::Fire {
-            shooter: other,
-            timing: None,
-        })
-        .unwrap();
+        sim.apply(&Command::Fire { shooter: other }).unwrap();
         let other_bullet = sim.snapshot().projectiles.last().unwrap().clone();
         let speed = |v: [f64; 3]| v.iter().map(|v| v * v).sum::<f64>().sqrt();
         assert!((speed(other_bullet.velocity_m_s) - sim.weapon().shot.speed_m_s).abs() < 1e-9);
@@ -1238,11 +1208,7 @@ mod tests {
             shooter,
             sim.field().time_ns(),
         );
-        sim.apply(&Command::Fire {
-            shooter,
-            timing: None,
-        })
-        .unwrap();
+        sim.apply(&Command::Fire { shooter }).unwrap();
         assert_eq!(
             sim.fire_records().last().unwrap().authoritative_muzzle_pose,
             expected
@@ -1315,11 +1281,7 @@ mod tests {
         assert_eq!(sim.weapon_for(hero), weapon);
 
         for shooter in [hero, infantry] {
-            sim.apply(&Command::Fire {
-                shooter,
-                timing: None,
-            })
-            .unwrap();
+            sim.apply(&Command::Fire { shooter }).unwrap();
         }
         let calibers: Vec<_> = sim
             .snapshot()
@@ -1354,7 +1316,6 @@ mod tests {
             shooter,
             shot_id: 1,
             input,
-            timing: None,
         })
         .unwrap();
         assert_eq!(sim.snapshot().shots_fired, 0);
@@ -1662,20 +1623,8 @@ mod tests {
             .unwrap();
         let shooter = simulation.spawn_chassis(Team::Red).unwrap();
         for _ in 0..257 {
-            simulation
-                .apply(&Command::Fire {
-                    shooter,
-                    timing: None,
-                })
-                .unwrap();
-            assert!(
-                simulation
-                    .apply(&Command::Fire {
-                        shooter,
-                        timing: None
-                    })
-                    .is_err()
-            );
+            simulation.apply(&Command::Fire { shooter }).unwrap();
+            assert!(simulation.apply(&Command::Fire { shooter }).is_err());
             simulation.step(1).unwrap();
         }
         let records = simulation.fire_records();
@@ -1722,22 +1671,11 @@ mod tests {
             .unwrap();
         simulation.step(1).unwrap();
         let expected = simulation.field().chassis_muzzle_pose(chassis).unwrap();
-        let reported = crate::protocol::FireTiming {
-            client_elapsed_ns: 123,
-            estimated_simulation_time_ns: u64::MAX,
-            observed_snapshot_time_ns: Some(0),
-            observed_chassis_pose: Some(rm_simulator_world::Pose::at([999.; 3])),
-            observed_muzzle_pose: Some(rm_simulator_world::Pose::at([-999.; 3])),
-        };
         simulation
-            .apply(&Command::Fire {
-                shooter: chassis,
-                timing: Some(reported),
-            })
+            .apply(&Command::Fire { shooter: chassis })
             .unwrap();
         let records = simulation.fire_records();
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].client_timing, Some(reported));
         assert_eq!(records[0].authoritative_muzzle_pose, expected);
         assert_eq!(records[0].accepted_time_ns, rm_simulator_world::tick_ns());
         let snapshot = simulation.snapshot();
@@ -1753,46 +1691,29 @@ mod tests {
         assert!((speed - weapon.shot.speed_m_s).abs() < 1e-9);
         assert!(
             simulation
-                .apply(&Command::Fire {
-                    shooter: chassis,
-                    timing: None
-                })
+                .apply(&Command::Fire { shooter: chassis })
                 .is_err()
         );
         simulation.set_paused(true);
         assert_eq!(simulation.advance(u64::MAX).unwrap(), 0);
         assert!(
             simulation
-                .apply(&Command::Fire {
-                    shooter: chassis,
-                    timing: None
-                })
+                .apply(&Command::Fire { shooter: chassis })
                 .is_err()
         );
-        simulation
-            .apply(&Command::Fire {
-                shooter: other,
-                timing: None,
-            })
-            .unwrap();
+        simulation.apply(&Command::Fire { shooter: other }).unwrap();
         assert_eq!(simulation.snapshot().shots_fired, 2);
         // One tick past the shot the gun is still cooling; the interval is
         // longer than one tick, and two ticks clear it.
         simulation.step(1).unwrap();
         assert!(
             simulation
-                .apply(&Command::Fire {
-                    shooter: chassis,
-                    timing: None
-                })
+                .apply(&Command::Fire { shooter: chassis })
                 .is_err()
         );
         simulation.step(1).unwrap();
         simulation
-            .apply(&Command::Fire {
-                shooter: chassis,
-                timing: None,
-            })
+            .apply(&Command::Fire { shooter: chassis })
             .unwrap();
         assert_eq!(simulation.snapshot().shots_fired, 3);
     }
@@ -1813,10 +1734,7 @@ mod tests {
             .unwrap();
         assert!(
             simulation
-                .apply(&Command::Fire {
-                    shooter: chassis,
-                    timing: None
-                })
+                .apply(&Command::Fire { shooter: chassis })
                 .is_err()
         );
         simulation
@@ -1825,10 +1743,7 @@ mod tests {
             }))
             .unwrap();
         simulation
-            .apply(&Command::Fire {
-                shooter: chassis,
-                timing: None,
-            })
+            .apply(&Command::Fire { shooter: chassis })
             .unwrap();
         assert_eq!(simulation.snapshot().shots_fired, 1);
     }
@@ -1847,7 +1762,6 @@ mod tests {
             shooter,
             shot_id,
             input,
-            timing: None,
         };
         sim.apply(&fire(1)).unwrap();
         assert_eq!(sim.apply(&fire(2)).unwrap_err(), "weapon is cooling down");
@@ -1872,7 +1786,6 @@ mod tests {
                 sampled_time_ns: sim.weapon.interval_ns,
                 ..input
             },
-            timing: None,
         })
         .unwrap();
         assert_eq!(sim.snapshot().shots_fired, 2);
@@ -1902,7 +1815,6 @@ mod tests {
             shooter,
             shot_id: 1,
             input: frame(1, 0),
-            timing: None,
         })
         .unwrap();
         // The second was spaced one interval behind the first on the pilot's
@@ -1911,7 +1823,6 @@ mod tests {
             shooter,
             shot_id: 2,
             input: frame(2, interval),
-            timing: None,
         })
         .unwrap();
         assert_eq!(sim.snapshot().shots_fired, 2);
@@ -1921,7 +1832,6 @@ mod tests {
                 shooter,
                 shot_id: 3,
                 input: frame(3, interval / 2),
-                timing: None,
             })
             .unwrap_err(),
             "weapon is cooling down"
@@ -1962,7 +1872,6 @@ mod tests {
             shooter,
             shot_id: 1,
             input: frame,
-            timing: None,
         };
         let allowance = sim.snapshot().referee.unwrap().gameplay.robots[0].allowance;
         sim.apply(&fire).unwrap();
@@ -1980,7 +1889,6 @@ mod tests {
                 shooter,
                 shot_id: 1,
                 input: changed,
-                timing: None
             })
             .is_err()
         );
@@ -2047,7 +1955,6 @@ mod tests {
                     shooter,
                     shot_id,
                     input,
-                    timing: None,
                 })
                 .unwrap();
             }
@@ -2056,7 +1963,6 @@ mod tests {
                     shooter,
                     shot_id: 33,
                     input,
-                    timing: None
                 })
                 .unwrap_err(),
                 "shot schedule full"
@@ -2108,7 +2014,6 @@ mod tests {
                     shooter,
                     shot_id,
                     input,
-                    timing: None,
                 })
                 .unwrap();
             }
@@ -2145,7 +2050,6 @@ mod tests {
                 sampled_time_ns: (shot_id - 1) * interval,
                 ..frame
             },
-            timing: None,
         };
         sim.apply(&command(2)).unwrap();
         sim.step(2 * interval / rm_simulator_world::tick_ns())
@@ -2178,7 +2082,6 @@ mod tests {
                 shooter,
                 shot_id: 1,
                 input,
-                timing: None
             })
             .is_err()
         );
@@ -2188,7 +2091,6 @@ mod tests {
             shooter,
             shot_id: 2,
             input,
-            timing: None,
         };
         sim.apply(&fire).unwrap();
         sim.apply(&fire).unwrap();
@@ -2200,7 +2102,6 @@ mod tests {
                 shooter,
                 shot_id: 3,
                 input,
-                timing: None
             })
             .is_err()
         );
@@ -2263,7 +2164,6 @@ mod tests {
                 shooter: chassis,
                 shot_id: 1,
                 input: frame,
-                timing: None
             })
             .is_err()
         );
@@ -2324,7 +2224,6 @@ mod tests {
             shooter,
             shot_id: 1,
             input: earlier,
-            timing: None,
         };
         simulation.apply(&fire).unwrap();
         let shot = simulation.fire_records()[0].clone();

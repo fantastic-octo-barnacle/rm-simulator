@@ -217,14 +217,7 @@ pub struct FieldRestore {
     /// The projectile restitution, flight limit and retirement rule the field
     /// runs, so a restored field spends and retires balls exactly as the field
     /// it was captured from does.
-    #[serde(default = "legacy_projectile_policy")]
     pub projectile_policy: projectile::ProjectilePolicy,
-}
-
-/// The policy a checkpoint written before `projectile_policy` existed ran:
-/// the current restitution and flight limit with no low-speed retirement.
-fn legacy_projectile_policy() -> projectile::ProjectilePolicy {
-    projectile::ProjectilePolicy::default().without_retirement()
 }
 
 /// One authoritative tick of the whole field, as an observer or a peer
@@ -233,7 +226,6 @@ fn legacy_projectile_policy() -> projectile::ProjectilePolicy {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FieldSnapshot {
     /// Every base's fitted geometry, HP and shield.
-    #[serde(default)]
     pub bases: Vec<BaseSnapshot>,
     /// Ticks elapsed since the field was built.
     pub tick: u64,
@@ -257,7 +249,6 @@ pub struct FieldSnapshot {
     pub referee: Option<RefereeSnapshot>,
     /// Hidden rule state, for [`Field::restore`]. Present on every snapshot a
     /// field takes; a decoder that drops it gives up restoring, not drawing.
-    #[serde(default)]
     pub restore: Option<FieldRestore>,
 }
 

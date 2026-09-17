@@ -53,7 +53,7 @@ impl From<CaliberBit> for rm_simulator_world::Caliber {
 ///
 /// Nothing a decoder can derive travels. The field clock is `tick` times
 /// `tick_ns()`; the rune, outpost and referee views are rebuilt from the rule
-/// state in the restore (see [`RulesWire`]); wheel hubs and tyre targets are
+/// state in the restore (see [`DerivedRules`]); wheel hubs and tyre targets are
 /// rebuilt from the pose, configuration and command (see [`ChassisMotion`]).
 /// Every absolute timestamp rides as a [`StampCodes`] tick code, with any
 /// sub-tick remainders listed once in `sub_tick_ns`, in visit order.
@@ -75,7 +75,7 @@ struct PlayerSnapshot {
     /// Registered hits only; hit times are stamp codes.
     hits: Aligned<Vec<Aligned<rm_simulator_world::ArmorHit>>>,
     bases: Aligned<Vec<Aligned<rm_simulator_world::BaseSnapshot>>>,
-    rules: Aligned<RulesWire>,
+    rules: Aligned<DerivedRules>,
     chassis: Aligned<Vec<Aligned<ChassisRecord>>>,
     /// One per `chassis` record, in the same order.
     motion: Vec<ChassisMotion>,
@@ -96,25 +96,15 @@ struct Header {
     /// visit them.
     sub_tick_ns: Vec<u32>,
 }
-/// Where the rule state and its views travel.
-#[derive(Serialize, Deserialize)]
-enum RulesWire {
-    /// The usual case, one gamma bit: the field clock is `tick * tick_ns()`
-    /// and every rune, outpost and referee view equals what the restore's own
-    /// `snapshot` gives, so only the restore travels, with its stamps as tick
-    /// codes. A Big Rune is the `Rune::Big` variant with its whole state:
-    /// motion amplitude and frequency and epoch angle as exact `f64`, its
-    /// epoch, stage, state, first-hit and current times as stamp codes, lit
-    /// pair, hits, completed groups, restart policy and seeded stream.
-    Derived(Box<DerivedRules>),
-    /// Anything else, such as a hand-built state with no restore or a view
-    /// edited away from its rules: every part travels as it is, absolute
-    /// times included, and only the rune target poses and outpost armor poses
-    /// are rebuilt from their angles.
-    Explicit(Box<ExplicitRules>),
-}
-/// [`rm_simulator_world::FieldRestore`] with each rune and outpost aligned
-/// and the projectile policy as a preset.
+/// The rule state: [`rm_simulator_world::FieldRestore`] with each rune and
+/// outpost aligned and the projectile policy as a preset. Only the restore
+/// travels, with its stamps as tick codes; the field clock is
+/// `tick * tick_ns()` and the rune, outpost and referee views are rebuilt from
+/// the restore's own `snapshot`. A Big Rune is the `Rune::Big` variant with its
+/// whole state: motion amplitude and frequency and epoch angle as exact `f64`,
+/// its epoch, stage, state, first-hit and current times as stamp codes, lit
+/// pair, hits, completed groups, restart policy and seeded stream. A state
+/// with no restore, or with views that differ from it, cannot be encoded.
 #[derive(Serialize, Deserialize)]
 struct DerivedRules {
     runes: Vec<Aligned<rm_simulator_world::Rune>>,
@@ -145,16 +135,6 @@ impl DerivedRules {
             projectile_policy: self.projectile_policy.into_policy(),
         }
     }
-}
-/// The [`RulesWire::Explicit`] fallback: the views and the optional restore
-/// exactly as the state holds them.
-#[derive(Serialize, Deserialize)]
-struct ExplicitRules {
-    time_ns: u64,
-    runes: Vec<rm_simulator_world::RuneSnapshot>,
-    outposts: Vec<rm_simulator_world::OutpostSnapshot>,
-    referee: Option<rm_simulator_world::RefereeSnapshot>,
-    restore: Option<rm_simulator_world::FieldRestore>,
 }
 /// A projectile policy: the default in one gamma bit, anything else exactly.
 #[derive(Serialize, Deserialize)]
@@ -350,29 +330,29 @@ impl PlayerSnapshot {
                 visit(time);
             }
         }
-        if let RulesWire::Derived(restore) = &mut *self.rules {
-            for rune in &mut restore.runes {
-                rune.for_each_stamp_mut(visit);
-            }
-            for outpost in &mut restore.outposts {
-                outpost.for_each_stamp_mut(visit);
-            }
-            if let Some(referee) = &mut *restore.referee {
-                referee.for_each_stamp_mut(rm_simulator_world::StampClock::Field, visit);
-            }
-            for (_, time) in &mut restore.last_detection_ns {
-                visit(time);
-            }
+        let restore = &mut *self.rules;
+        for rune in &mut restore.runes {
+            rune.for_each_stamp_mut(visit);
+        }
+        for outpost in &mut restore.outposts {
+            outpost.for_each_stamp_mut(visit);
+        }
+        if let Some(referee) = &mut *restore.referee {
+            referee.for_each_stamp_mut(rm_simulator_world::StampClock::Field, visit);
+        }
+        for (_, time) in &mut restore.last_detection_ns {
+            visit(time);
         }
     }
     fn referee_mut(&mut self) -> Option<&mut rm_simulator_world::Referee> {
-        match &mut *self.rules {
-            RulesWire::Derived(restore) => restore.referee.as_mut(),
-            RulesWire::Explicit(_) => None,
-        }
+        self.rules.referee.as_mut()
     }
 
-    fn from_state(state: &SimulationState) -> Self {
+    /// The checkpoint for `state`. Refuses a state whose field has no restore,
+    /// whose clock is off the tick grid, or whose rune, outpost or referee views
+    /// differ from what the restore gives: the checkpoint carries only the
+    /// restore, so such views could not be reproduced.
+    fn from_state(state: &SimulationState) -> io::Result<Self> {
         let field = &state.field;
         let now_ns = field.tick.checked_mul(rm_simulator_world::tick_ns());
         let rules = match &field.restore {
@@ -392,24 +372,13 @@ impl PlayerSnapshot {
                         .all(|(view, outpost)| *view == outpost.snapshot(field.time_ns))
                     && field.referee == restore.referee.as_ref().map(|r| r.snapshot()) =>
             {
-                RulesWire::Derived(Box::new(DerivedRules::new(restore)))
+                DerivedRules::new(restore)
             }
             _ => {
-                let mut runes = field.runes.clone();
-                for rune in &mut runes {
-                    rune.target_poses = [rm_simulator_world::Pose::at([0.; 3]); 5];
-                }
-                let mut outposts = field.outposts.clone();
-                for outpost in &mut outposts {
-                    outpost.armors.clear();
-                }
-                RulesWire::Explicit(Box::new(ExplicitRules {
-                    time_ns: field.time_ns,
-                    runes,
-                    outposts,
-                    referee: field.referee.clone(),
-                    restore: field.restore.clone(),
-                }))
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "checkpoint state needs a restore that matches its views",
+                ));
             }
         };
         let chassis = field
@@ -483,8 +452,6 @@ impl PlayerSnapshot {
             motion,
             projectiles,
         };
-        // An `Explicit` field keeps its clock in `time_ns`; the stamps outside
-        // the rules still code against it.
         let mut sub_tick_ns = Vec::new();
         let round_now_ns = snapshot.referee_mut().map(|r| r.match_time_ns());
         let mut codes = StampCodes::new(field.time_ns, &mut sub_tick_ns);
@@ -496,24 +463,21 @@ impl PlayerSnapshot {
             });
         }
         snapshot.header.sub_tick_ns = sub_tick_ns;
-        snapshot
+        Ok(snapshot)
     }
 
     /// The simulation state this checkpoint carries. With `normalize`,
     /// quantized chassis rotations are normalized first (see
-    /// [`fixed_point::normalize`]), so the rebuilt wheel hubs follow the pose
+    /// [`fixed_point::normalize_pose`]), so the rebuilt wheel hubs follow the pose
     /// physics will use.
     fn into_state(mut self, normalize: bool) -> io::Result<SimulationState> {
         let invalid = |message| io::Error::new(io::ErrorKind::InvalidData, message);
         let mut sub_tick_ns = std::mem::take(&mut self.header.sub_tick_ns);
-        let time_ns = match &*self.rules {
-            RulesWire::Derived(_) => self
-                .header
-                .tick
-                .checked_mul(rm_simulator_world::tick_ns())
-                .ok_or_else(|| invalid("checkpoint tick overflows the clock"))?,
-            RulesWire::Explicit(rules) => rules.time_ns,
-        };
+        let time_ns = self
+            .header
+            .tick
+            .checked_mul(rm_simulator_world::tick_ns())
+            .ok_or_else(|| invalid("checkpoint tick overflows the clock"))?;
         let mut codes = StampCodes::new(time_ns, &mut sub_tick_ns);
         self.for_each_field_stamp(&mut |stamp| codes.decode(stamp));
         let (mut next, mut error) = (codes.next, codes.error);
@@ -540,48 +504,22 @@ impl PlayerSnapshot {
             motion,
             projectiles,
         } = self;
-        let (runes, outposts, referee, restore) = match rules.0 {
-            RulesWire::Derived(rules) => {
-                let restore = rules.into_restore();
-                (
-                    restore
-                        .runes
-                        .iter()
-                        .map(rm_simulator_world::Rune::snapshot)
-                        .collect(),
-                    restore
-                        .outposts
-                        .iter()
-                        .map(|outpost| outpost.snapshot(time_ns))
-                        .collect(),
-                    restore
-                        .referee
-                        .as_ref()
-                        .map(rm_simulator_world::Referee::snapshot),
-                    Some(restore),
-                )
-            }
-            RulesWire::Explicit(rules) => {
-                let ExplicitRules {
-                    mut runes,
-                    mut outposts,
-                    referee,
-                    restore,
-                    ..
-                } = *rules;
-                for rune in &mut runes {
-                    rune.target_poses = rm_simulator_world::rune::target_poses(
-                        rune.hub_pose,
-                        rune.target_radius_m,
-                        rune.angle_rad,
-                    );
-                }
-                for outpost in &mut outposts {
-                    outpost.rebuild_armors();
-                }
-                (runes, outposts, referee, restore)
-            }
-        };
+        let restore = rules.0.into_restore();
+        let runes = restore
+            .runes
+            .iter()
+            .map(rm_simulator_world::Rune::snapshot)
+            .collect();
+        let outposts = restore
+            .outposts
+            .iter()
+            .map(|outpost| outpost.snapshot(time_ns))
+            .collect();
+        let referee = restore
+            .referee
+            .as_ref()
+            .map(rm_simulator_world::Referee::snapshot);
+        let restore = Some(restore);
         if records.len() != motion.len() {
             return Err(invalid(
                 "checkpoint chassis motion does not match its records",
@@ -688,6 +626,13 @@ enum Wire {
 /// compact checkpoint that needs no earlier frame, and every other message its
 /// positional binary form, both behind [`SERVER_MAGIC`].
 ///
+/// # Panics
+///
+/// On a snapshot [`checkpoint_node`] refuses (no restore, or views that differ
+/// from it). Every host snapshot comes from `Field::snapshot`, which always
+/// carries a matching restore, so this is a caller bug in the same class as a
+/// message the positional format cannot hold.
+///
 /// ```
 /// use rm_simulator_server::protocol::ServerMessage;
 /// use rm_simulator_server::simulation::Simulation;
@@ -708,9 +653,9 @@ enum Wire {
 /// ```
 pub fn encode_player_message(message: &ServerMessage) -> Vec<u8> {
     let wire = match message {
-        ServerMessage::Snapshot(state) => {
-            WireRef::Snapshot(Box::new(PlayerSnapshot::from_state(state)))
-        }
+        ServerMessage::Snapshot(state) => WireRef::Snapshot(Box::new(
+            PlayerSnapshot::from_state(state).expect("a snapshot carries its matching restore"),
+        )),
         other => WireRef::Message(other),
     };
     let mut bytes = SERVER_MAGIC.to_vec();
@@ -755,10 +700,13 @@ pub fn decode_client_message(bytes: &[u8]) -> io::Result<ClientMessage> {
 }
 
 /// The fine fixed-point checkpoint tree for `state`: the tree the periodic
-/// delta lane packs and pins as a baseline.
+/// delta lane packs and pins as a baseline. Errors with
+/// [`io::ErrorKind::InvalidInput`] when the field has no restore, its clock is
+/// off the tick grid, or its rune, outpost or referee views differ from the
+/// restore, since the checkpoint carries only the restore.
 pub fn checkpoint_node(state: &SimulationState) -> io::Result<Node> {
     Ok(bitpack::to_node_with(
-        &PlayerSnapshot::from_state(state),
+        &PlayerSnapshot::from_state(state)?,
         fixed_point::Fine::Root,
     )?)
 }
@@ -1185,20 +1133,20 @@ pub fn decode_checkpoint_with(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn outpost_motion_extraction_preserves_legacy_checkpoint_shape() {
-        // The JSON shape is the world crate's saved form; the binary form below
-        // must decode the same outpost positionally.
+    fn outpost_rule_state_round_trips_json_and_bitpack() {
+        // The JSON shape is the world crate's serialized rule state; the binary
+        // form below must decode the same outpost positionally.
         use rm_simulator_world::{Outpost, Pose};
-        let legacy = serde_json::json!({
+        let saved = serde_json::json!({
             "pivot_cad_m": rm_simulator_world::outpost::PIVOT_CAD_M,
             "origin": Pose::at([4.0, 3.0, 0.0]),
             "speed_rad_s": 0.4,
             "hp": 0,
             "destroyed_ns": 123_000_000_u64
         });
-        let mut outpost: Outpost = serde_json::from_value(legacy.clone()).unwrap();
+        let mut outpost: Outpost = serde_json::from_value(saved.clone()).unwrap();
         outpost.validate().unwrap();
-        assert_eq!(serde_json::to_value(&outpost).unwrap(), legacy);
+        assert_eq!(serde_json::to_value(&outpost).unwrap(), saved);
         let bytes = crate::binary_snapshot::bitpack::to_bytes(&outpost).unwrap();
         assert_eq!(
             crate::binary_snapshot::bitpack::from_bytes::<Outpost>(&bytes).unwrap(),
@@ -1265,10 +1213,7 @@ mod tests {
             state.snapshot_id = frame + 1;
             state.field = field.snapshot();
             assert!(
-                matches!(
-                    *PlayerSnapshot::from_state(&state).rules,
-                    RulesWire::Derived(_)
-                ),
+                PlayerSnapshot::from_state(&state).is_ok(),
                 "a field's own snapshot must travel as its restore alone"
             );
             let message = ServerMessage::Snapshot(Box::new(state.clone()));
@@ -1354,7 +1299,7 @@ mod tests {
         };
         let (mut simulation, _) = crate::workload::simulation(chassis);
         simulation.step(3).unwrap();
-        let mut snapshot = PlayerSnapshot::from_state(&simulation.state());
+        let mut snapshot = PlayerSnapshot::from_state(&simulation.state()).unwrap();
         let unit = |rng: &mut Lcg| {
             let q = [0; 4].map(|_| rng.below(2001) as f64 / 1000. - 1.);
             super::quat_normalize(q)
@@ -1519,13 +1464,12 @@ mod tests {
         simulation
             .apply(&crate::protocol::Command::Fire {
                 shooter: chassis[0],
-                timing: None,
             })
             .unwrap();
         simulation.step(2).unwrap();
         let before = checkpoint_node(&simulation.state()).unwrap();
         simulation.step(8).unwrap();
-        let after = PlayerSnapshot::from_state(&simulation.state());
+        let after = PlayerSnapshot::from_state(&simulation.state()).unwrap();
         let predicted: PlayerSnapshot =
             crate::binary_snapshot::bitpack::from_node(&predict_baseline(&before, 8).unwrap())
                 .unwrap();
@@ -1582,6 +1526,7 @@ mod tests {
         assert!(rune.activated.contains(&true));
         assert!(
             !PlayerSnapshot::from_state(&state)
+                .unwrap()
                 .header
                 .sub_tick_ns
                 .is_empty(),
@@ -1706,9 +1651,14 @@ mod tests {
             state.snapshot_id = index + 1;
             state.field = field.snapshot();
             // Frozen rotor poses must reconstruct without moving the destroyed target.
+            // The view must match the restore, so destroy the rule state and
+            // rebuild the view from it.
             if index % 2 == 0 {
-                state.field.outposts[0].destroyed = true;
-                state.field.outposts[0].hp = 0;
+                let time_ns = state.field.time_ns;
+                let restore = state.field.restore.as_mut().unwrap();
+                restore.outposts[0].set_hp(time_ns, 0).unwrap();
+                state.field.outposts[0] = restore.outposts[0].snapshot(time_ns);
+                assert!(state.field.outposts[0].destroyed);
             }
             let message = ServerMessage::Snapshot(Box::new(state.clone()));
             // The JSON form is only a size reference here.
@@ -1778,7 +1728,7 @@ mod tests {
         let field = Field::new(&config).unwrap();
         let mut state = simulation();
         state.field = field.snapshot();
-        let wire = PlayerSnapshot::from_state(&state);
+        let wire = PlayerSnapshot::from_state(&state).unwrap();
         assert!(matches!(
             wire.chassis
                 .iter()
@@ -1786,10 +1736,7 @@ mod tests {
                 .collect::<Vec<_>>()[..],
             [ConfigWire::Infantry, ConfigWire::Hero, ConfigWire::Exact(_)]
         ));
-        let RulesWire::Derived(rules) = &*wire.rules else {
-            panic!("a field's own snapshot travels derived");
-        };
-        assert!(matches!(rules.projectile_policy, PolicyWire::Default));
+        assert!(matches!(wire.rules.projectile_policy, PolicyWire::Default));
         // A policy off the preset travels exactly too.
         if let Some(restore) = &mut state.field.restore {
             restore.projectile_policy = restore.projectile_policy.without_retirement();
@@ -1838,8 +1785,14 @@ mod tests {
                 dwell_since_ns,
             }
         }
+        // The clock rides as a tick, so reach 90 s by stepping the field.
+        let mut field = Field::new(&FieldConfig::default()).unwrap();
+        field
+            .step(90_000_000_000 / rm_simulator_world::tick_ns())
+            .unwrap();
         let mut state = simulation();
-        state.field.time_ns = 90_000_000_000;
+        state.field = field.snapshot();
+        assert_eq!(state.field.time_ns, 90_000_000_000);
         state.field.projectiles = vec![
             ball(1, Caliber::Mm17, 89_000_000_000, None, None),
             ball(2, Caliber::Mm42, 88_000_000_000, Some(88_500_000_000), None),
@@ -1870,10 +1823,7 @@ mod tests {
         let shooter = chassis[0];
         for frame in 0..40 {
             if frame % 4 == 0 {
-                let _ = simulation.apply(&Command::Fire {
-                    shooter,
-                    timing: None,
-                });
+                let _ = simulation.apply(&Command::Fire { shooter });
             }
             simulation.step(4).unwrap();
         }

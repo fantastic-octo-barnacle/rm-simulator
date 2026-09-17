@@ -377,7 +377,7 @@ fn record_loopback_frame(inbox: &ClientInbox, payload: &[u8]) {
         Some(b"RMRW") => "RMRW",
         Some(b"RMZ1") => "RMZ1",
         Some(b"RMBZ") => "RMBZ",
-        Some(b"RMO5") => "RMO5",
+        Some(b"RMO6") => "RMO6",
         Some(b"RMI3") => "RMI3",
         Some(b"RMC1") => "RMC1",
         Some(b"RMA2") => "RMA2",
@@ -403,7 +403,7 @@ struct Incoming {
     owner_anchor: Option<crate::owner_stream::OwnerAnchor>,
     shot_results: Vec<crate::protocol::ShotResult>,
     hits: Vec<(u64, u64, rm_simulator_world::ArmorHit)>,
-    scheduled_shots: Vec<(u32, u64, u64)>,
+    scheduled_shots: Vec<(u32, u64)>,
     snapshot: Option<Box<SimulationState>>,
     received_at: Option<Instant>,
     checkpoint_intervals: crate::network_trace::EventSamples,
@@ -477,16 +477,11 @@ impl ClientInbox {
                 data.host_telemetry = Some(stats);
                 None
             }
-            ServerMessage::ShotScheduled {
-                shooter,
-                shot_id,
-                intended_time_ns,
-            } => {
+            ServerMessage::ShotScheduled { shooter, shot_id } => {
                 if data.scheduled_shots.len() >= CLIENT_NOTICE_CAPACITY {
                     return Err(io::Error::other("too many unread shot receipts"));
                 }
-                data.scheduled_shots
-                    .push((shooter, shot_id, intended_time_ns));
+                data.scheduled_shots.push((shooter, shot_id));
                 None
             }
             ServerMessage::ShotResult(result) => {
@@ -756,10 +751,9 @@ impl Client {
             self.timing.sample(sample);
         }
     }
-    /// Drain scheduled shot receipts as `(shooter chassis id, shot id, intended
-    /// simulation time in ns)`, oldest first. A receipt means admitted, not
-    /// executed.
-    pub fn take_scheduled_shots(&self) -> Vec<(u32, u64, u64)> {
+    /// Drain scheduled shot receipts as `(shooter chassis id, shot id)`, oldest
+    /// first. A receipt means admitted, not executed.
+    pub fn take_scheduled_shots(&self) -> Vec<(u32, u64)> {
         self.inbox.try_data().map_or_else(Vec::new, |mut data| {
             std::mem::take(&mut data.scheduled_shots)
         })
@@ -880,17 +874,6 @@ impl Client {
     /// estimate never advances host physics.
     pub fn presentation_time_ns(&self) -> u64 {
         self.timing.clock.at(self.timing.elapsed_ns())
-    }
-    /// The timing stamp for a shot fired now: local elapsed ns and estimated
-    /// simulation time in ns. Observed pose fields stay unset on this path.
-    pub fn fire_timing(&self) -> crate::protocol::FireTiming {
-        crate::protocol::FireTiming {
-            client_elapsed_ns: self.timing.elapsed_ns(),
-            estimated_simulation_time_ns: self.presentation_time_ns(),
-            observed_snapshot_time_ns: None,
-            observed_chassis_pose: None,
-            observed_muzzle_pose: None,
-        }
     }
     /// Send at most one timing probe per second, with one outstanding and a 3 s timeout.
     pub fn synchronize_clock(&mut self) -> io::Result<()> {
@@ -1319,6 +1302,17 @@ mod tests {
                         .is_some_and(|c| (c.pose.translation_m[0] - 4.0).abs() < 1e-6)
                 })
         });
+        // Once the configuration handshake completes, the owner anchors travel
+        // the same codec and classify as the current `RMO6` framing.
+        wait_until("owner anchor on the loopback wire", || {
+            client.poll();
+            client
+                .trace_report()
+                .is_some_and(|report| report.stages["loopback_wire"].contains_key("RMO6"))
+        });
+        let report = client.trace_report().unwrap();
+        let kinds: Vec<_> = report.stages["loopback_wire"].keys().copied().collect();
+        assert!(!kinds.contains(&"other"), "unclassified frame: {kinds:?}");
         assert!(
             server
                 .connect_owner(
@@ -1367,7 +1361,6 @@ mod tests {
             shooter,
             shot_id: 1,
             input,
-            timing: None,
         };
         client.send(shot).unwrap();
         client.confirm().unwrap();
@@ -1375,10 +1368,7 @@ mod tests {
             client.poll();
             client.commands_confirmed()
         });
-        assert_eq!(
-            client.take_scheduled_shots(),
-            vec![(shooter, 1, scheduled_ns)]
-        );
+        assert_eq!(client.take_scheduled_shots(), vec![(shooter, 1)]);
         assert!(client.take_shot_results().is_empty());
         assert_eq!(client.state().unwrap().field.shots_fired, 0);
         let inputs = (1..=4)
@@ -2037,12 +2027,7 @@ mod tests {
                 shot: rm_simulator_world::Shot::at_limit(rm_simulator_world::Caliber::Mm17),
             })
             .unwrap();
-        rival
-            .send(Command::Fire {
-                shooter: own.id,
-                timing: None,
-            })
-            .unwrap();
+        rival.send(Command::Fire { shooter: own.id }).unwrap();
         referee.send(Command::Step { ticks: 1 }).unwrap();
         wait_until("rejections never arrived", || {
             watcher.poll();

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
-//! Reproducible JSON snapshot workload; no CAD assets or wall-clock pacing.
+//! Reproducible checkpoint workload; no CAD assets or wall-clock pacing.
 //! Measures the live player path: the compact independent checkpoint and the
 //! acknowledged UDP baseline codec that carries it.
 //!
@@ -40,12 +40,7 @@ fn main() {
                 simulation.step(advance).unwrap();
             }
             if firing && frame % (128 / step_ms) == 0 {
-                simulation
-                    .apply(&Command::Fire {
-                        shooter: 0,
-                        timing: None,
-                    })
-                    .unwrap();
+                simulation.apply(&Command::Fire { shooter: 0 }).unwrap();
             }
             let mut state = simulation.state();
             state.snapshot_id = frame + 1;

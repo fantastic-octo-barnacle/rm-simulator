@@ -106,10 +106,7 @@ pub fn checkpoints(scenario: &Scenario) -> Vec<SimulationState> {
             if scenario.fire_period != 0
                 && frame.is_multiple_of(scenario.fire_period + index as u64)
             {
-                let _ = simulation.apply(&Command::Fire {
-                    shooter: pilot,
-                    timing: None,
-                });
+                let _ = simulation.apply(&Command::Fire { shooter: pilot });
             }
         }
         if scenario.bot_churn != 0 && frame.is_multiple_of(scenario.bot_churn) && frame > 0 {

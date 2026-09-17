@@ -574,7 +574,6 @@ mod tests {
                     shooter,
                     shot_id: 1,
                     input: frame,
-                    timing: None,
                 })
                 .unwrap();
         }

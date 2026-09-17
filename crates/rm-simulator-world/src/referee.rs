@@ -355,10 +355,8 @@ pub struct TimedEvent {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RefereeSnapshot {
     /// Operator mechanism overrides, indexed red then blue.
-    #[serde(default)]
     pub base_open: [bool; 2],
     /// Dart door overrides, indexed red then blue; open by default.
-    #[serde(default)]
     pub dart_door_open: [bool; 2],
     /// Gold, counters, allowances and income policy for both teams.
     pub gameplay: rm_simulator_gameplay::live::Resources,

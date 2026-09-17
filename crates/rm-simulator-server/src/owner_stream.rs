@@ -49,7 +49,7 @@ impl ConfigRevision {
     pub fn of(config: &ChassisConfig) -> Self {
         // FNV-1a over the exact positional bytes both sides serialize. That
         // encoding is deterministic (fixed field order, exact float bits), so it
-        // is a stable canonical form; the deflated form is not, because a
+        // is a stable canonical form; a compressed form is not, because a
         // different compressor version could change it.
         let mut hash = 0xcbf2_9ce4_8422_2325_u64;
         for byte in
@@ -469,8 +469,9 @@ mod tests {
     }
 
     /// The bytes the replaced layout spent on the configuration this anchor now
-    /// references: the deflated JSON the old anchor repeated, measured with the
-    /// current codec so the comparison uses one compressor.
+    /// references: the compressed configuration the old `RMO3` anchor repeated,
+    /// measured as positional bitpack under the current ZSTD codec so the
+    /// comparison uses one compressor.
     fn embedded_config_bytes(anchor: &OwnerAnchor) -> usize {
         2 + crate::compression::compress(
             &crate::binary_snapshot::bitpack::to_bytes(&anchor.owner.config).unwrap(),

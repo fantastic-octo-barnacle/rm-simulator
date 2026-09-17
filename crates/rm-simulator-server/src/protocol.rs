@@ -68,7 +68,12 @@ use serde::{Deserialize, Serialize};
 /// realigns on its elements' first field, so retired and spawned projectiles
 /// no longer resend the whole array; delta Golomb orders are retuned for the
 /// residuals and a baseline may rotate after 12 frames instead of 32.
-pub const PROTOCOL_VERSION: u32 = 42;
+/// Version 43 removes legacy surface: `ShotScheduled` no longer carries an
+/// intended time, `Fire` and `FireAimed` no longer carry client timing
+/// diagnostics, the checkpoint's rules always travel as the restore (a state
+/// without a matching restore cannot be encoded), and the `RMI2` input batch
+/// is no longer accepted. The protocol 41 dictionary is unchanged.
+pub const PROTOCOL_VERSION: u32 = 43;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///
@@ -594,9 +599,6 @@ pub enum Command {
     Fire {
         /// Chassis that fires; must be the sender's own.
         shooter: u32,
-        /// Untrusted client timing for diagnostics only; never backdates a shot.
-        #[serde(default)]
-        timing: Option<FireTiming>,
     },
     /// A deduplicated shot bound to an exact input/aim sample.
     ///
@@ -613,8 +615,6 @@ pub enum Command {
         /// The control and aim sample the shot is bound to. Its life revision
         /// and sample time decide whether the shot is still admissible.
         input: crate::input_stream::InputFrame,
-        /// Diagnostic client timing, as in [`Command::Fire`].
-        timing: Option<FireTiming>,
     },
     /// Privileged training/free-camera projectile injection.
     SpawnProjectile {
@@ -666,7 +666,7 @@ impl Command {
     ///     }
     ///     .is_match_control()
     /// );
-    /// assert!(!Command::Fire { shooter: 1, timing: None }.is_match_control());
+    /// assert!(!Command::Fire { shooter: 1 }.is_match_control());
     ///
     /// // The panel posts the same JSON the wire carries, and omitted fields
     /// // default: a chassis command without an aim points the gun forward.
@@ -696,29 +696,6 @@ impl Command {
                 | Command::ClearBots
         )
     }
-}
-
-/// Client clock readings at fire-input sampling, not trusted rule inputs.
-///
-/// Everything here is evidence about where the client believed it was aiming.
-/// The host derives the launch from its own chassis muzzle and its own clock,
-/// and uses these readings for diagnostics only, so a forged value can move a
-/// report but never a projectile.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct FireTiming {
-    /// Time since the client's session opened, in nanoseconds, on the client's
-    /// own clock. Only comparable with other readings from the same client.
-    pub client_elapsed_ns: u64,
-    /// Simulation time the client believed it was watching, in nanoseconds.
-    /// This is the client's estimate and carries no authority.
-    pub estimated_simulation_time_ns: u64,
-    /// Snapshot underlying the observed body pose.
-    pub observed_snapshot_time_ns: Option<u64>,
-    /// The client's own chassis pose at sampling, in world FLU metres. `None`
-    /// when the client had no chassis to read.
-    pub observed_chassis_pose: Option<Pose>,
-    /// Local gimbal/barrel pose at input sampling, in world FLU.
-    pub observed_muzzle_pose: Option<Pose>,
 }
 
 /// Everything a client sends, in the transport's framed payloads.
@@ -757,18 +734,6 @@ pub struct FireTiming {
 ///     );
 /// }
 ///
-/// // A Hello that omits the newer fields still decodes and is a pilot in
-/// // infantry 3.
-/// let old: ClientMessage =
-///     serde_json::from_str(r#"{"Hello":{"protocol":3,"name":"old","team":null}}"#).unwrap();
-/// assert!(matches!(
-///     old,
-///     ClientMessage::Hello {
-///         role: Role::Pilot,
-///         robot: rm_simulator_server::protocol::Robot::Infantry3,
-///         ..
-///     }
-/// ));
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 // Keep small fixed-size control records inline in bounded transport queues.
@@ -795,7 +760,6 @@ pub enum ClientMessage {
         /// [`PROTOCOL_VERSION`] exactly.
         protocol: u32,
         /// Shared password, empty when the host set none.
-        #[serde(default)]
         password: String,
         /// Display name shown in the roster and notices.
         name: String,
@@ -804,12 +768,9 @@ pub enum ClientMessage {
         team: Option<Team>,
         /// Requested role. A host grants the referee only to the host's own
         /// operator, so this is a request rather than an assignment.
-        #[serde(default)]
         role: Role,
         /// The robot a pilot asks to drive, which fixes its chassis preset
-        /// and gun caliber. Ignored for a spectator or the referee; a Hello
-        /// that omits it drives infantry 3.
-        #[serde(default)]
+        /// and gun caliber. Ignored for a spectator or the referee.
         robot: Robot,
     },
     /// One action on the field, addressed to a chassis or to the match.
@@ -831,7 +792,6 @@ pub struct ChassisAssignment {
     /// Its configuration, for the client's visuals and camera.
     pub config: ChassisConfig,
     /// The robot it is, which the caliber in the Welcome's weapon follows.
-    #[serde(default)]
     pub robot: Robot,
 }
 /// The host's answer to [`ClientMessage::Hello`].
@@ -878,7 +838,6 @@ pub struct PlayerInfo {
     /// The chassis this player drives; only a pilot has one.
     pub chassis: Option<u32>,
     /// The robot that chassis is; `Some` exactly when `chassis` is.
-    #[serde(default)]
     pub robot: Option<Robot>,
 }
 
@@ -893,7 +852,6 @@ pub struct ShotResult {
     /// the shot was refused.
     pub executed_time_ns: Option<u64>,
     /// Actual initial speed in m/s after sampling, or `None` on rejection.
-    #[serde(default)]
     pub launch_speed_m_s: Option<f64>,
     /// Chassis that fired.
     pub shooter: u32,
@@ -961,8 +919,6 @@ pub enum ServerMessage {
         shooter: u32,
         /// Client-assigned shot identity.
         shot_id: u64,
-        /// Simulation time the host intends to fire at, in nanoseconds.
-        intended_time_ns: u64,
     },
     /// The host's verdict on one deduplicated shot.
     ShotResult(ShotResult),
@@ -1050,18 +1006,7 @@ mod tests {
         assert!(command.is_match_control());
         assert!(Command::Pause { paused: true }.is_match_control());
         assert!(!fire_command().is_match_control());
-        // A hello without a role is a pilot; a chassis command without an
-        // aim points the gun forward.
-        let hello: ClientMessage =
-            serde_json::from_str(r#"{"Hello":{"protocol":3,"name":"old","team":null}}"#).unwrap();
-        assert!(matches!(
-            hello,
-            ClientMessage::Hello {
-                role: Role::Pilot,
-                robot: Robot::Infantry3,
-                ..
-            }
-        ));
+        // A chassis command without an aim points the gun forward.
         let command: Command = serde_json::from_str(
             r#"{"Chassis":{"chassis":1,"command":{"forward_m_s":1.0,"left_m_s":0.0,"yaw_rate_rad_s":0.0}}}"#,
         )

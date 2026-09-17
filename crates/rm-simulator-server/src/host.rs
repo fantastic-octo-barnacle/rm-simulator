@@ -908,16 +908,9 @@ impl Owner {
                     && let Command::FireAimed {
                         shooter, shot_id, ..
                     } = command
-                    && let Some(intended_time_ns) = self.simulation.scheduled_shot(shooter, shot_id)
+                    && self.simulation.is_shot_scheduled(shooter, shot_id)
                 {
-                    self.send_to(
-                        id,
-                        ServerMessage::ShotScheduled {
-                            shooter,
-                            shot_id,
-                            intended_time_ns,
-                        },
-                    );
+                    self.send_to(id, ServerMessage::ShotScheduled { shooter, shot_id });
                     return;
                 }
                 if let Command::FireAimed {

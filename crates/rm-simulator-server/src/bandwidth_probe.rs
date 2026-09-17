@@ -11,8 +11,8 @@
 //!
 //! It prints one `key=value` record per workload so a shell `grep` can compare a
 //! baseline build with a candidate build: application bytes per second per
-//! direction, per class, per update, the fragment overhead, and the raw JSON
-//! section sizes that explain where a checkpoint's bytes come from. Counters
+//! direction, per class, per update, the fragment overhead, and unquantized
+//! positional section sizes (a reference measure, not wire bytes) that explain where a checkpoint's bytes come from. Counters
 //! from different stages are kept separate: production, pacing and delivery are
 //! not summed, because the same byte is accounted at more than one stage.
 //!
@@ -143,7 +143,7 @@ pub(crate) struct Totals {
     pub(crate) down_packets: u64,
     /// Downstream application bytes, fragment headers included.
     pub(crate) down_bytes: u64,
-    /// Downstream bytes in RMO5 owner anchors, as delivered.
+    /// Downstream bytes in RMO6 owner anchors, as delivered.
     pub(crate) down_owner_bytes: u64,
     /// Owner anchor bytes produced before pacing replaced or dropped them.
     pub(crate) produced_owner_bytes: u64,
@@ -167,7 +167,7 @@ pub(crate) struct Totals {
     pub(crate) down_incomplete_frames: u64,
     /// Checkpoints the client dropped as no newer than the last one delivered.
     pub(crate) down_stale_updates: u64,
-    /// RMO5 owner anchor datagrams delivered to the client.
+    /// RMO6 owner anchor datagrams delivered to the client.
     pub(crate) down_anchors: u64,
     /// Upstream datagrams the client pacer released.
     pub(crate) up_packets: u64,
@@ -181,11 +181,13 @@ pub(crate) struct Totals {
     pub(crate) up_frames: u64,
     /// Upstream datagrams that were not input batches.
     pub(crate) up_controls: u64,
-    /// Raw JSON bytes of the newest checkpoint's whole state.
+    /// Unquantized positional bitpack bytes of the newest checkpoint's whole
+    /// state: a reference measure, not what the wire sends.
     pub(crate) state_packed: usize,
     /// Encoded size of the newest owner anchor.
     pub(crate) owner_anchor_bytes: usize,
-    /// Raw JSON bytes per `FieldSnapshot` section of the newest checkpoint.
+    /// Unquantized positional bitpack bytes, a reference measure, per
+    /// `FieldSnapshot` section of the newest checkpoint.
     pub(crate) sections: BTreeMap<&'static str, usize>,
     /// Projectiles in the newest checkpoint.
     pub(crate) projectiles: usize,
@@ -380,10 +382,7 @@ pub(crate) fn run_observed(
                 client
                     .submit(
                         QueuedCommand {
-                            command: Some(Command::Fire {
-                                shooter: driver,
-                                timing: None,
-                            }),
+                            command: Some(Command::Fire { shooter: driver }),
                             confirmation: None,
                             time_probe: None,
                         },
@@ -520,6 +519,24 @@ pub(crate) struct Ablation {
     pub(crate) packed_bytes: i64,
 }
 
+/// The outpost views the restore gives at `time_ns`.
+fn rebuilt_outposts(
+    state: &SimulationState,
+    time_ns: u64,
+) -> Vec<rm_simulator_world::OutpostSnapshot> {
+    state
+        .field
+        .restore
+        .as_ref()
+        .map_or_else(Vec::new, |restore| {
+            restore
+                .outposts
+                .iter()
+                .map(|outpost| outpost.snapshot(time_ns))
+                .collect()
+        })
+}
+
 /// One named ablation that empties a section of a copied state.
 type Candidate = (&'static str, fn(&mut SimulationState));
 
@@ -538,9 +555,10 @@ type Candidate = (&'static str, fn(&mut SimulationState));
 /// built. Emptying `field.projectiles` empties the checkpoint's hoisted wire
 /// projectile array, which is where a checkpoint's projectile bytes live.
 ///
-/// `state.restore` is reported for completeness but is never a removal
-/// candidate: it is hidden rule state that `Field::restore` needs, so a frame
-/// without it is not a frame this protocol can send.
+/// `state.restore` is never a removal candidate: it is hidden rule state that
+/// `Field::restore` needs, so a frame without it is not a frame this protocol
+/// can send. Rune, outpost and referee rows clear the view and its restore
+/// together, and `state.clock` zeroes the tick with its time.
 pub(crate) fn ablation(
     compressor: &mut crate::binary_snapshot::Compressor,
     state: &SimulationState,
@@ -562,17 +580,36 @@ pub(crate) fn ablation(
         packed_bytes: whole_packed,
     }];
     // Each candidate empties one section of a fresh copy of the host state.
-    let candidates: [Candidate; 11] = [
+    // A checkpoint carries rules only as the restore its views must match, so
+    // a rule section is removed from both at once.
+    let candidates: [Candidate; 9] = [
         ("state.bases", |s| s.field.bases.clear()),
-        ("state.tick", |s| s.field.tick = 0),
-        ("state.time_ns", |s| s.field.time_ns = 0),
-        ("state.runes", |s| s.field.runes.clear()),
-        ("state.outposts", |s| s.field.outposts.clear()),
+        ("state.clock", |s| {
+            s.field.tick = 0;
+            s.field.time_ns = 0;
+            s.field.outposts = rebuilt_outposts(s, 0);
+        }),
+        ("state.runes", |s| {
+            s.field.runes.clear();
+            if let Some(restore) = &mut s.field.restore {
+                restore.runes.clear();
+            }
+        }),
+        ("state.outposts", |s| {
+            s.field.outposts.clear();
+            if let Some(restore) = &mut s.field.restore {
+                restore.outposts.clear();
+            }
+        }),
         ("state.projectiles", |s| s.field.projectiles.clear()),
         ("state.chassis", |s| s.field.chassis.clear()),
         ("state.hits", |s| s.field.hits.clear()),
-        ("state.referee", |s| s.field.referee = None),
-        ("state.restore", |s| s.field.restore = None),
+        ("state.referee", |s| {
+            s.field.referee = None;
+            if let Some(restore) = &mut s.field.restore {
+                restore.referee = None;
+            }
+        }),
         ("shot_results", |s| s.shot_results.clear()),
     ];
     for (name, clear) in candidates {

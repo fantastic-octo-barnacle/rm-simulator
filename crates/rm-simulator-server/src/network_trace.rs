@@ -251,10 +251,10 @@ impl Observer {
     }
     pub(crate) fn packet(&self, stage: &'static str, peer: Option<u32>, bytes: &[u8]) {
         let kind = match bytes.get(..4) {
-            Some(b"RMO3") | Some(b"RMO5") => "owner",
-            Some(b"RMI2") | Some(b"RMI3") => "inputs",
+            Some(b"RMO6") => "owner",
+            Some(b"RMI3") => "inputs",
             Some(b"RMC1") => "shot",
-            Some(b"RMA1") => "baseline_ack",
+            Some(b"RMA2") => "baseline_ack",
             Some(b"RMG1") if bytes.get(4) == Some(&0) => "world_fragment",
             Some(b"RMG1") => "control_fragment",
             _ => "control",
@@ -347,14 +347,9 @@ impl Observer {
                 event.shot = Some(result.shot_id);
                 event.simulation_ns = result.executed_time_ns;
             }
-            ServerMessage::ShotScheduled {
-                shot_id,
-                intended_time_ns,
-                ..
-            } => {
+            ServerMessage::ShotScheduled { shot_id, .. } => {
                 event.kind = "shot_scheduled";
                 event.shot = Some(*shot_id);
-                event.simulation_ns = Some(*intended_time_ns);
             }
             ServerMessage::Hit {
                 epoch,
@@ -472,18 +467,20 @@ mod tests {
 
     use super::*;
     #[test]
-    fn packet_classes_cover_legacy_and_current_wire_versions() {
+    fn packet_classes_match_current_wire_magics() {
         let time = crate::clock::ManualTime::new();
         let observer = Observer::open("test", time.source(), None, FILE_LIMIT);
-        for bytes in [b"RMO3data", b"RMO5data", b"RMI2data", b"RMI3data"] {
+        for bytes in [b"RMO6data", b"RMI3data", b"RMA2data", b"RMC1data"] {
             observer.packet("receive", None, bytes);
         }
         let report = observer.report().unwrap();
-        assert_eq!(report.stages["receive"]["owner"].events, 2);
-        assert_eq!(report.stages["receive"]["owner"].bytes, Some(16));
-        assert_eq!(report.stages["receive"]["inputs"].events, 2);
-        assert_eq!(report.stages["receive"]["inputs"].bytes, Some(16));
-        assert!(!report.stages["receive"].contains_key("control"));
+        let receive = &report.stages["receive"];
+        assert_eq!(receive["owner"].events, 1);
+        assert_eq!(receive["owner"].bytes, Some(8));
+        assert_eq!(receive["inputs"].events, 1);
+        assert_eq!(receive["baseline_ack"].events, 1);
+        assert_eq!(receive["shot"].events, 1);
+        assert!(!receive.contains_key("control"));
     }
 
     #[test]
@@ -503,7 +500,7 @@ mod tests {
             },
             None,
         );
-        observer.packet("receive", None, b"RMI2data");
+        observer.packet("receive", None, b"RMI3data");
         let report = observer.report().unwrap();
         assert_eq!(report.stages["enqueue_attempt"]["hello"].bytes, None);
         assert_eq!(report.stages["receive"]["inputs"].bytes, Some(8));
@@ -511,7 +508,7 @@ mod tests {
         assert!(!json.contains("do-not-log-this") && !json.contains("private-name"));
         let lock = observer.report.lock().unwrap();
         assert!(observer.report().is_none());
-        observer.packet("receive", None, b"RMI2data");
+        observer.packet("receive", None, b"RMI3data");
         drop(lock);
         assert_eq!(observer.report().unwrap().contended, 1);
     }
@@ -585,8 +582,8 @@ mod tests {
         let mut observer = Observer::open("test", TimeSource::system(), None, FILE_LIMIT);
         let (sender, _receiver) = mpsc::sync_channel(1);
         observer.sender = Some(sender);
-        observer.packet("receive", None, b"RMI2one");
-        observer.packet("receive", None, b"RMI2two");
+        observer.packet("receive", None, b"RMI3one");
+        observer.packet("receive", None, b"RMI3two");
         let report = observer.report().unwrap();
         assert_eq!(report.dropped, 1);
         assert_eq!(report.stages["receive"]["inputs"].events, 2);

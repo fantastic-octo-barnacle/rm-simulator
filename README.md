@@ -484,10 +484,9 @@ server requests. The console reports host downstream queue bytes, age and servic
 for control, owner and world traffic.
 
 `GET /api/fire-records` on the host HTTP endpoint returns the latest 256 accepted
-pilot shots, oldest first. Records include client-relative input time, estimated
-simulation time, observed chassis/muzzle poses, authoritative muzzle pose,
-acceptance time and projectile ID. These diagnostics never backdate shots or
-change hit detection. The journal is in memory; export it before host shutdown
+pilot shots, oldest first. Records include the shooter, launch speed,
+authoritative muzzle pose, acceptance time and projectile ID. These diagnostics
+never backdate shots or change hit detection. The journal is in memory; export it before host shutdown
 if needed. Rejected attempts do not create shot records.
 
 Run `just network-test` to verify the harness without building Rust. With matching

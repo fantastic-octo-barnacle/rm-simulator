@@ -9,13 +9,10 @@
 //! baseline dead-reckoned to the frame's tick, as the live lane codes it:
 //! smaller deltas are never compressed, so they would only dilute the
 //! dictionary. It serves both forms, including recovery full frames.
-#[path = "support/binary_dictionary.rs"]
-mod binary_dictionary;
-#[path = "support/bitpack.rs"]
-mod bitpack;
 #[path = "support/dictionary_workloads.rs"]
 mod dictionary_workloads;
 
+use rm_simulator_server::binary_snapshot::{CHECKPOINT_LEVEL, bitpack};
 use rm_simulator_server::snapshot_codec::{
     Prediction, checkpoint_node, decode_checkpoint, encode_checkpoint,
 };
@@ -84,14 +81,18 @@ fn main() {
             dictionary,
             zstd::dict::from_samples(&samples, 32 * 1024).unwrap()
         );
-        let mut codec = binary_dictionary::Codec::new(&dictionary).unwrap();
+        // Round-trip every sample at the production level through the candidate
+        // dictionary, as the live checkpoint compressor would use it.
+        let mut compressor =
+            zstd::bulk::Compressor::with_dictionary(CHECKPOINT_LEVEL, &dictionary).unwrap();
+        let mut decompressor = zstd::bulk::Decompressor::with_dictionary(&dictionary).unwrap();
         let mut hash = Sha256::new();
         for sample in &samples {
             hash.update((sample.len() as u64).to_le_bytes());
             hash.update(sample);
-            let compressed = codec.compress(sample);
+            let compressed = compressor.compress(sample).unwrap();
             assert_eq!(
-                codec.decompress(&compressed, sample.len()).unwrap(),
+                decompressor.decompress(&compressed, sample.len()).unwrap(),
                 *sample
             );
         }

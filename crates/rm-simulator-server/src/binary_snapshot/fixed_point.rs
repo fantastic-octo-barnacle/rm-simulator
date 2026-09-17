@@ -5,7 +5,6 @@
 //! Commands, configuration, clocks, ids, contacts, scoring and hidden rules stay
 //! exact. Reconstructed quaternion components are normalized before physics use.
 use crate::binary_snapshot::bitpack::{Fixed, Grid, Rounding};
-use crate::protocol::ServerMessage;
 
 /// Fine fixed-point rounding for the compact player checkpoint, selected by the
 /// field path while the checkpoint is serialized and again while it is decoded,
@@ -87,22 +86,9 @@ const K_ANGLE: u32 = 11;
 /// Projectile position and velocity, millimetre steps.
 const K_PROJECTILE: u32 = 7;
 
-/// Normalize quantized rotations at the physics adapter boundary. Wire values
-/// stay on their grid so the binary codec and retained baselines remain exact.
-/// Rejects nonfinite, zero or grossly nonunit quaternion norms.
-pub fn normalize(message: &mut ServerMessage) -> std::io::Result<()> {
-    if let ServerMessage::Snapshot(state) = message {
-        for chassis in &mut state.field.chassis {
-            for pose in [&mut chassis.pose, &mut chassis.turret] {
-                normalize_pose(pose)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Normalize one quantized rotation in place, refusing nonfinite, zero or
-/// grossly nonunit norms, as [`normalize`] does for a whole message.
+/// Normalize one quantized rotation in place at the physics adapter boundary,
+/// refusing nonfinite, zero or grossly nonunit norms. Wire values stay on their
+/// grid so the binary codec and retained baselines remain exact.
 pub fn normalize_pose(pose: &mut rm_simulator_world::Pose) -> std::io::Result<()> {
     let norm = pose.rotation_wxyz.iter().map(|v| v * v).sum::<f64>().sqrt();
     if !norm.is_finite() || norm < 0.5 || norm > 1.5 {
