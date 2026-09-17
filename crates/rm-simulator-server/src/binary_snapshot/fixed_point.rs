@@ -44,10 +44,10 @@ impl crate::binary_snapshot::bitpack::Rounding for Fine {
             (Fine::State, "field") => Fine::Field,
             (Fine::Field, "chassis") => Fine::Chassis,
             (Fine::Chassis, "config" | "command") => Fine::Exact,
-            (Fine::Chassis, "translation_m" | "hub_m") => round(1000., 18),
-            (Fine::Chassis, "velocity_m_s" | "target_m_s") => round(100., 16),
+            (Fine::Chassis, "translation_m") => round(1000., 18),
+            (Fine::Chassis, "velocity_m_s") => round(100., 16),
             (Fine::Chassis, "angular_velocity_rad_s" | "gimbal_velocity_rad_s") => round(1000., 18),
-            (Fine::Chassis, "held_aim_rad" | "spin_rad") => round(10000., 24),
+            (Fine::Chassis, "held_aim_rad" | "wheel_spin_rad") => round(10000., 24),
             (Fine::Chassis, "rotation_wxyz") => round(32767., 16),
             (Fine::Chassis, _) => Fine::Chassis,
             (Fine::Projectiles, "position_m" | "velocity_m_s") => round(1000., 18),
@@ -76,18 +76,25 @@ pub fn normalize(message: &mut ServerMessage) -> std::io::Result<()> {
     if let ServerMessage::Snapshot(state) = message {
         for chassis in &mut state.field.chassis {
             for pose in [&mut chassis.pose, &mut chassis.turret] {
-                let norm = pose.rotation_wxyz.iter().map(|v| v * v).sum::<f64>().sqrt();
-                if !norm.is_finite() || norm < 0.5 || norm > 1.5 {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "invalid quantized quaternion",
-                    ));
-                }
-                for v in &mut pose.rotation_wxyz {
-                    *v /= norm;
-                }
+                normalize_pose(pose)?;
             }
         }
+    }
+    Ok(())
+}
+
+/// Normalize one quantized rotation in place, refusing nonfinite, zero or
+/// grossly nonunit norms, as [`normalize`] does for a whole message.
+pub fn normalize_pose(pose: &mut rm_simulator_world::Pose) -> std::io::Result<()> {
+    let norm = pose.rotation_wxyz.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if !norm.is_finite() || norm < 0.5 || norm > 1.5 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid quantized quaternion",
+        ));
+    }
+    for v in &mut pose.rotation_wxyz {
+        *v /= norm;
     }
     Ok(())
 }

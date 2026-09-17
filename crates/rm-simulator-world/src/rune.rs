@@ -986,6 +986,50 @@ impl Rune {
         }
         Ok(())
     }
+    /// Visit every absolute field-clock timestamp the rune holds, in
+    /// nanoseconds and in a fixed order, so a wire codec can rewrite them as
+    /// tick-relative codes and back. The order is part of the protocol: a
+    /// Small Rune visits its current time, stage start and state start; a Big
+    /// Rune visits its geometry's three, then its current time, motion epoch,
+    /// stage start, state start and pending first hit. A rune whose stamps
+    /// were rewritten is meaningless until they are mapped back.
+    ///
+    /// ```rust
+    /// use rm_simulator_world::rune::SmallRune;
+    /// use rm_simulator_world::{Pose, Rune};
+    ///
+    /// let mut rune = Rune::Small(SmallRune::new(Pose::at([6.0, 0.0, 1.6])).unwrap());
+    /// rune.advance_to(2_000_000_000).unwrap();
+    /// let original = rune.clone();
+    /// let mut count = 0;
+    /// rune.for_each_stamp_mut(&mut |stamp| {
+    ///     *stamp += 5;
+    ///     count += 1;
+    /// });
+    /// assert_eq!(count, 3);
+    /// rune.for_each_stamp_mut(&mut |stamp| *stamp -= 5);
+    /// assert_eq!(rune, original);
+    /// ```
+    pub fn for_each_stamp_mut(&mut self, visit: &mut dyn FnMut(&mut u64)) {
+        fn small(rune: &mut SmallRune, visit: &mut dyn FnMut(&mut u64)) {
+            visit(&mut rune.time_ns);
+            visit(&mut rune.stage_started_ns);
+            visit(&mut rune.state_since_ns);
+        }
+        match self {
+            Self::Small(r) => small(r, visit),
+            Self::Big(r) => {
+                small(&mut r.geometry, visit);
+                visit(&mut r.time_ns);
+                visit(&mut r.epoch_ns);
+                visit(&mut r.stage_started_ns);
+                visit(&mut r.state_since_ns);
+                if let Some(first) = &mut r.first_hit_ns {
+                    visit(first);
+                }
+            }
+        }
+    }
     /// Whether the rune is Inactive, Activating or Activated.
     pub fn state(&self) -> RuneState {
         match self {

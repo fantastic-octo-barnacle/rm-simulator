@@ -191,6 +191,13 @@ impl Outpost {
     pub fn hp(&self) -> u32 {
         self.hp
     }
+    /// Visit the outpost's only absolute field-clock timestamp, the time its
+    /// rotor stopped, when it has one, so a wire codec can rewrite it and back.
+    pub fn for_each_stamp_mut(&mut self, visit: &mut dyn FnMut(&mut u64)) {
+        if let Some(stopped) = &mut self.motion.stopped_at_ns {
+            visit(stopped);
+        }
+    }
     /// Remove HP for a detected strike at `time_ns`; returns the HP actually lost.
     /// Rotation freezes when the outpost is destroyed (section 5.5.1).
     ///

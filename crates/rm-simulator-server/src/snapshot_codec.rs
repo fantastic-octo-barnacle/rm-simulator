@@ -17,43 +17,6 @@ pub const SERVER_MAGIC: &[u8; 4] = b"RMM1";
 /// First four bytes of every encoded [`ClientMessage`].
 pub const CLIENT_MAGIC: &[u8; 4] = b"RMQ1";
 
-/// Independent UDP player checkpoint. Physics restore values remain f64;
-/// ball position and velocity carry `f32` precision, well below 0.1 mm on this
-/// field, unless a value does not survive `f32`. No earlier packet or
-/// acknowledgement is needed to decode it.
-#[derive(Serialize, Deserialize)]
-struct PlayerSnapshot {
-    state: SimulationState,
-    projectiles: Vec<ProjectileWire>,
-}
-/// Stable identity, lifetime and shooter followed by a position and velocity
-/// vector, then the retirement bookkeeping. Spin is not carried: it moves no
-/// ball a client can see. The first-contact time and the open low-speed dwell
-/// window are carried so a predicting client retires the same ball on the same
-/// tick as the host does.
-///
-/// Timestamps ride as checkpoint-relative ages in nanoseconds — launch age
-/// against the checkpoint time, contact age against the launch, dwell age
-/// against the contact (or the launch when no contact is recorded) — instead
-/// of absolute simulation times. A four-second ball keeps every age under
-/// 2^33, where an absolute time costs a 9–10 byte varint. Reconstruction is
-/// exact whenever launch precedes contact precedes dwell; `saturating`
-/// arithmetic only clips states that ordering already rules out.
-///
-/// Field names never reach the wire; they select the fixed-point rounding in
-/// [`fixed_point::Fine`].
-#[derive(Serialize, Deserialize)]
-struct ProjectileWire {
-    id: u64,
-    caliber: CaliberBit,
-    launched_age_ns: u64,
-    position_m: [f64; 3],
-    velocity_m_s: [f64; 3],
-    shooter: Option<u32>,
-    first_contact_age_ns: Option<u64>,
-    dwell_age_ns: Option<u64>,
-}
-
 /// Projectile caliber as one bit on the compact checkpoint: `false` is
 /// 17 mm, `true` is 42 mm (rulebook section 1.4 projectile sizes). A third
 /// caliber would need a protocol bump; the bit order is fixed on the wire.
@@ -79,96 +42,489 @@ impl From<CaliberBit> for rm_simulator_world::Caliber {
         if bit.0 { Self::Mm42 } else { Self::Mm17 }
     }
 }
+/// Independent UDP player checkpoint. Physics restore values remain f64;
+/// ball position and velocity carry `f32` precision, well below 0.1 mm on this
+/// field, unless a value does not survive `f32`. No earlier packet or
+/// acknowledgement is needed to decode it.
+///
+/// Nothing a decoder can derive travels. The field clock is `tick` times
+/// `tick_ns()`; the rune, outpost and referee views are rebuilt from the rule
+/// state in the restore (see [`RulesWire`]); wheel hubs and tyre targets are
+/// rebuilt from the pose, configuration and command (see [`ChassisWire`]).
+/// Every absolute timestamp rides as a [`StampCodes`] tick code, with any
+/// sub-tick remainders listed once in `sub_tick_ns`, in visit order.
+///
+/// Field names never reach the wire; they select the fixed-point rounding in
+/// [`fixed_point::Fine`].
+#[derive(Serialize, Deserialize)]
+struct PlayerSnapshot {
+    state: StateWire,
+    projectiles: Vec<ProjectileWire>,
+    /// Nonzero remainders of the stamps whose code marks one, in the order
+    /// [`PlayerSnapshot::for_each_stamp`] visits them.
+    sub_tick_ns: Vec<u32>,
+}
+/// [`SimulationState`] with its field in wire form; shot results carry their
+/// execution time as a stamp code.
+#[derive(Serialize, Deserialize)]
+struct StateWire {
+    bots: Vec<u32>,
+    snapshot_id: u64,
+    input_epoch: u64,
+    shot_results: Vec<crate::protocol::ShotResult>,
+    paused: bool,
+    field: FieldWire,
+}
+/// [`rm_simulator_world::FieldSnapshot`] without its clock, derived views or
+/// projectiles (hoisted into [`ProjectileWire`]). Hit times are stamp codes.
+#[derive(Serialize, Deserialize)]
+struct FieldWire {
+    bases: Vec<rm_simulator_world::BaseSnapshot>,
+    tick: u64,
+    chassis: Vec<ChassisWire>,
+    hits: Vec<rm_simulator_world::ArmorHit>,
+    shots_fired: u64,
+    hits_detected: u64,
+    rules: RulesWire,
+}
+/// Where the rule state and its views travel.
+#[derive(Serialize, Deserialize)]
+enum RulesWire {
+    /// The usual case, one gamma bit: the field clock is `tick * tick_ns()`
+    /// and every rune, outpost and referee view equals what the restore's own
+    /// `snapshot` gives, so only the restore travels, with its stamps as tick
+    /// codes. A Big Rune is the `Rune::Big` variant with its whole state:
+    /// motion amplitude and frequency and epoch angle as exact `f64`, its
+    /// epoch, stage, state, first-hit and current times as stamp codes, lit
+    /// pair, hits, completed groups, restart policy and seeded stream.
+    Derived(Box<rm_simulator_world::FieldRestore>),
+    /// Anything else, such as a hand-built state with no restore or a view
+    /// edited away from its rules: every part travels as it is, absolute
+    /// times included, and only the rune target poses and outpost armor poses
+    /// are rebuilt from their angles.
+    Explicit(Box<ExplicitRules>),
+}
+/// The [`RulesWire::Explicit`] fallback: the views and the optional restore
+/// exactly as the state holds them.
+#[derive(Serialize, Deserialize)]
+struct ExplicitRules {
+    time_ns: u64,
+    runes: Vec<rm_simulator_world::RuneSnapshot>,
+    outposts: Vec<rm_simulator_world::OutpostSnapshot>,
+    referee: Option<rm_simulator_world::RefereeSnapshot>,
+    restore: Option<rm_simulator_world::FieldRestore>,
+}
+/// [`rm_simulator_world::ChassisSnapshot`] with each wheel reduced to its spin.
+/// Contacts are diagnostics; hubs and tyre targets are rebuilt with
+/// [`rm_simulator_world::ChassisSnapshot::derive_wheel_kinematics`] after the
+/// pose is normalized.
+#[derive(Serialize, Deserialize)]
+struct ChassisWire {
+    placement_revision: u64,
+    id: u32,
+    team: rm_simulator_world::Team,
+    config: rm_simulator_world::ChassisConfig,
+    pose: rm_simulator_world::Pose,
+    turret: rm_simulator_world::Pose,
+    velocity_m_s: [f64; 3],
+    angular_velocity_rad_s: [f64; 3],
+    command: rm_simulator_world::ChassisCommand,
+    held_aim_rad: [f64; 2],
+    gimbal_velocity_rad_s: [f64; 2],
+    wheel_spin_rad: Vec<f64>,
+    defeated: bool,
+}
+/// Stable identity and shooter, caliber, a position and velocity vector, then
+/// the retirement bookkeeping. Spin is not carried: it moves no ball a client
+/// can see. The launch, first-contact and dwell times are stamp codes, so a
+/// predicting client retires the same ball on the same tick as the host does.
+#[derive(Serialize, Deserialize)]
+struct ProjectileWire {
+    id: u64,
+    caliber: CaliberBit,
+    launched_ns: u64,
+    position_m: [f64; 3],
+    velocity_m_s: [f64; 3],
+    shooter: Option<u32>,
+    first_contact_ns: Option<u64>,
+    dwell_since_ns: Option<u64>,
+}
+
+/// Rewrites absolute nanosecond timestamps as small tick codes and back.
+///
+/// Code 0 is the clock's current time, so a value that tracks the clock
+/// (a rune's or the referee's own time, the economy's round time) costs one
+/// byte and never changes between frames. Any other stamp `t` splits into
+/// whole ticks `t / tick_ns()` and a remainder; the code is
+/// `1 + 2 * ticks + (remainder != 0)`, and a nonzero remainder is appended to
+/// the checkpoint's sub-tick list. Rule stamps land on the 128 Hz grid except
+/// where the rules add a nanosecond (a hit window "exactly at 2.5 s is valid")
+/// or a referee skip moves the round clock by an arbitrary amount, so the
+/// remainder keeps every value exact. Whole ticks since the clock's zero are
+/// used rather than ages against the checkpoint tick: an unchanged stamp then
+/// has the same code in every frame and costs one bit in a delta.
+struct StampCodes<'a> {
+    now_ns: u64,
+    sub_tick_ns: &'a mut Vec<u32>,
+    /// Next remainder to read; decoding only.
+    next: usize,
+    error: bool,
+}
+impl<'a> StampCodes<'a> {
+    fn new(now_ns: u64, sub_tick_ns: &'a mut Vec<u32>) -> Self {
+        Self {
+            now_ns,
+            sub_tick_ns,
+            next: 0,
+            error: false,
+        }
+    }
+    fn encode(&mut self, stamp: &mut u64) {
+        let tick = rm_simulator_world::tick_ns();
+        if *stamp == self.now_ns {
+            *stamp = 0;
+            return;
+        }
+        let remainder = *stamp % tick;
+        if remainder != 0 {
+            self.sub_tick_ns
+                .push(u32::try_from(remainder).expect("a tick is shorter than 4 s"));
+        }
+        *stamp = 1 + 2 * (*stamp / tick) + u64::from(remainder != 0);
+    }
+    fn decode(&mut self, stamp: &mut u64) {
+        if *stamp == 0 {
+            *stamp = self.now_ns;
+            return;
+        }
+        let code = *stamp - 1;
+        let remainder = if code & 1 == 1 {
+            let Some(&remainder) = self.sub_tick_ns.get(self.next) else {
+                self.error = true;
+                return;
+            };
+            self.next += 1;
+            u64::from(remainder)
+        } else {
+            0
+        };
+        match (code >> 1)
+            .checked_mul(rm_simulator_world::tick_ns())
+            .and_then(|ns| ns.checked_add(remainder))
+        {
+            Some(ns) => *stamp = ns,
+            None => self.error = true,
+        }
+    }
+}
+
 impl PlayerSnapshot {
-    fn from_state(state: &SimulationState) -> Self {
-        let mut state = state.clone();
-        let time_ns = state.field.time_ns;
-        let projectiles = std::mem::take(&mut state.field.projectiles)
-            .into_iter()
-            .map(|ball| {
-                let launched_age_ns = time_ns.saturating_sub(ball.launched_ns);
-                let first_contact_age_ns = ball
-                    .first_contact_ns
-                    .map(|contact_ns| contact_ns.saturating_sub(ball.launched_ns));
-                let dwell_base_ns = ball.first_contact_ns.unwrap_or(ball.launched_ns);
-                let dwell_age_ns = ball
-                    .dwell_since_ns
-                    .map(|dwell_ns| dwell_ns.saturating_sub(dwell_base_ns));
-                ProjectileWire {
-                    id: ball.id,
-                    caliber: CaliberBit::from(ball.caliber),
-                    launched_age_ns,
-                    position_m: ball.position_m.map(single_precision),
-                    velocity_m_s: ball.velocity_m_s.map(single_precision),
-                    shooter: ball.shooter,
-                    first_contact_age_ns,
-                    dwell_age_ns,
-                }
-            })
-            .collect();
-        for rune in &mut state.field.runes {
-            rune.target_poses = [rm_simulator_world::Pose::at([0.; 3]); 5];
-        }
-        for outpost in &mut state.field.outposts {
-            outpost.armors.clear();
-        }
-        for chassis in &mut state.field.chassis {
-            for wheel in &mut chassis.wheels {
-                wheel.contact = None;
+    /// Visit every field-clock stamp in the checkpoint: shot results, hits,
+    /// projectiles, then a derived restore's runes, outposts, referee and
+    /// detection times. The referee's round-clock stamps follow separately.
+    /// The visit order is the wire order of `sub_tick_ns`.
+    fn for_each_field_stamp(&mut self, visit: &mut dyn FnMut(&mut u64)) {
+        for result in &mut self.state.shot_results {
+            if let Some(time) = &mut result.executed_time_ns {
+                visit(time);
             }
         }
-        // Failed-contact diagnostics only fed the removed impact markers. Keep
-        // genuine registered hits, damage and rune outcomes for armor feedback.
-        state.field.hits.retain(|hit| hit.detected);
-        Self { state, projectiles }
+        for hit in &mut self.state.field.hits {
+            visit(&mut hit.time_ns);
+        }
+        for ball in &mut self.projectiles {
+            visit(&mut ball.launched_ns);
+            if let Some(time) = &mut ball.first_contact_ns {
+                visit(time);
+            }
+            if let Some(time) = &mut ball.dwell_since_ns {
+                visit(time);
+            }
+        }
+        if let RulesWire::Derived(restore) = &mut self.state.field.rules {
+            for rune in &mut restore.runes {
+                rune.for_each_stamp_mut(visit);
+            }
+            for outpost in &mut restore.outposts {
+                outpost.for_each_stamp_mut(visit);
+            }
+            if let Some(referee) = &mut restore.referee {
+                referee.for_each_stamp_mut(rm_simulator_world::StampClock::Field, visit);
+            }
+            for (_, time) in &mut restore.last_detection_ns {
+                visit(time);
+            }
+        }
     }
-    fn into_state(mut self) -> SimulationState {
-        let time_ns = self.state.field.time_ns;
-        self.state.field.projectiles = self
-            .projectiles
-            .into_iter()
-            .map(
-                |ProjectileWire {
-                     id,
-                     caliber,
-                     launched_age_ns,
-                     position_m,
-                     velocity_m_s,
-                     shooter,
-                     first_contact_age_ns,
-                     dwell_age_ns,
-                 }| {
-                    let launched_ns = time_ns.saturating_sub(launched_age_ns);
-                    let first_contact_ns =
-                        first_contact_age_ns.map(|age_ns| launched_ns.saturating_add(age_ns));
-                    let dwell_base_ns = first_contact_ns.unwrap_or(launched_ns);
-                    let dwell_since_ns =
-                        dwell_age_ns.map(|age_ns| dwell_base_ns.saturating_add(age_ns));
-                    rm_simulator_world::ProjectileSnapshot {
-                        id,
-                        caliber: rm_simulator_world::Caliber::from(caliber),
-                        launched_ns,
-                        position_m,
-                        velocity_m_s,
-                        angular_velocity_rad_s: [0.; 3],
-                        shooter,
-                        first_contact_ns,
-                        dwell_since_ns,
-                    }
-                },
-            )
+    fn referee_mut(&mut self) -> Option<&mut rm_simulator_world::Referee> {
+        match &mut self.state.field.rules {
+            RulesWire::Derived(restore) => restore.referee.as_mut(),
+            RulesWire::Explicit(_) => None,
+        }
+    }
+
+    fn from_state(state: &SimulationState) -> Self {
+        let field = &state.field;
+        let now_ns = field.tick.checked_mul(rm_simulator_world::tick_ns());
+        let rules = match &field.restore {
+            Some(restore)
+                if now_ns == Some(field.time_ns)
+                    && field.runes.len() == restore.runes.len()
+                    && field
+                        .runes
+                        .iter()
+                        .zip(&restore.runes)
+                        .all(|(view, rune)| *view == rune.snapshot())
+                    && field.outposts.len() == restore.outposts.len()
+                    && field
+                        .outposts
+                        .iter()
+                        .zip(&restore.outposts)
+                        .all(|(view, outpost)| *view == outpost.snapshot(field.time_ns))
+                    && field.referee == restore.referee.as_ref().map(|r| r.snapshot()) =>
+            {
+                RulesWire::Derived(Box::new(restore.clone()))
+            }
+            _ => {
+                let mut runes = field.runes.clone();
+                for rune in &mut runes {
+                    rune.target_poses = [rm_simulator_world::Pose::at([0.; 3]); 5];
+                }
+                let mut outposts = field.outposts.clone();
+                for outpost in &mut outposts {
+                    outpost.armors.clear();
+                }
+                RulesWire::Explicit(Box::new(ExplicitRules {
+                    time_ns: field.time_ns,
+                    runes,
+                    outposts,
+                    referee: field.referee.clone(),
+                    restore: field.restore.clone(),
+                }))
+            }
+        };
+        let chassis = field
+            .chassis
+            .iter()
+            .map(|chassis| ChassisWire {
+                placement_revision: chassis.placement_revision,
+                id: chassis.id,
+                team: chassis.team,
+                config: chassis.config.clone(),
+                pose: chassis.pose,
+                turret: chassis.turret,
+                velocity_m_s: chassis.velocity_m_s,
+                angular_velocity_rad_s: chassis.angular_velocity_rad_s,
+                command: chassis.command,
+                held_aim_rad: chassis.held_aim_rad,
+                gimbal_velocity_rad_s: chassis.gimbal_velocity_rad_s,
+                wheel_spin_rad: chassis.wheels.iter().map(|wheel| wheel.spin_rad).collect(),
+                defeated: chassis.defeated,
+            })
             .collect();
-        for rune in &mut self.state.field.runes {
-            rune.target_poses = rm_simulator_world::rune::target_poses(
-                rune.hub_pose,
-                rune.target_radius_m,
-                rune.angle_rad,
-            );
+        let projectiles = field
+            .projectiles
+            .iter()
+            .map(|ball| ProjectileWire {
+                id: ball.id,
+                caliber: CaliberBit::from(ball.caliber),
+                launched_ns: ball.launched_ns,
+                position_m: ball.position_m.map(single_precision),
+                velocity_m_s: ball.velocity_m_s.map(single_precision),
+                shooter: ball.shooter,
+                first_contact_ns: ball.first_contact_ns,
+                dwell_since_ns: ball.dwell_since_ns,
+            })
+            .collect();
+        let mut snapshot = Self {
+            state: StateWire {
+                bots: state.bots.clone(),
+                snapshot_id: state.snapshot_id,
+                input_epoch: state.input_epoch,
+                shot_results: state.shot_results.clone(),
+                paused: state.paused,
+                field: FieldWire {
+                    bases: field.bases.clone(),
+                    tick: field.tick,
+                    chassis,
+                    // Failed-contact diagnostics only fed the removed impact
+                    // markers. Keep genuine registered hits, damage and rune
+                    // outcomes for armor feedback.
+                    hits: field
+                        .hits
+                        .iter()
+                        .filter(|hit| hit.detected)
+                        .cloned()
+                        .collect(),
+                    shots_fired: field.shots_fired,
+                    hits_detected: field.hits_detected,
+                    rules,
+                },
+            },
+            projectiles,
+            sub_tick_ns: Vec::new(),
+        };
+        // An `Explicit` field keeps its clock in `time_ns`; the stamps outside
+        // the rules still code against it.
+        let mut sub_tick_ns = Vec::new();
+        let round_now_ns = snapshot.referee_mut().map(|r| r.match_time_ns());
+        let mut codes = StampCodes::new(field.time_ns, &mut sub_tick_ns);
+        snapshot.for_each_field_stamp(&mut |stamp| codes.encode(stamp));
+        if let (Some(round_now_ns), Some(referee)) = (round_now_ns, snapshot.referee_mut()) {
+            let mut codes = StampCodes::new(round_now_ns, &mut sub_tick_ns);
+            referee.for_each_stamp_mut(rm_simulator_world::StampClock::Round, &mut |stamp| {
+                codes.encode(stamp)
+            });
         }
-        for outpost in &mut self.state.field.outposts {
-            outpost.rebuild_armors();
+        snapshot.sub_tick_ns = sub_tick_ns;
+        snapshot
+    }
+
+    /// The simulation state this checkpoint carries. With `normalize`,
+    /// quantized chassis rotations are normalized first (see
+    /// [`fixed_point::normalize`]), so the rebuilt wheel hubs follow the pose
+    /// physics will use.
+    fn into_state(mut self, normalize: bool) -> io::Result<SimulationState> {
+        let invalid = |message| io::Error::new(io::ErrorKind::InvalidData, message);
+        let mut sub_tick_ns = std::mem::take(&mut self.sub_tick_ns);
+        let time_ns = match &self.state.field.rules {
+            RulesWire::Derived(_) => self
+                .state
+                .field
+                .tick
+                .checked_mul(rm_simulator_world::tick_ns())
+                .ok_or_else(|| invalid("checkpoint tick overflows the clock"))?,
+            RulesWire::Explicit(rules) => rules.time_ns,
+        };
+        let mut codes = StampCodes::new(time_ns, &mut sub_tick_ns);
+        self.for_each_field_stamp(&mut |stamp| codes.decode(stamp));
+        let (mut next, mut error) = (codes.next, codes.error);
+        if let Some(referee) = self.referee_mut() {
+            let mut codes = StampCodes::new(referee.match_time_ns(), &mut sub_tick_ns);
+            codes.next = next;
+            referee.for_each_stamp_mut(rm_simulator_world::StampClock::Round, &mut |stamp| {
+                codes.decode(stamp)
+            });
+            (next, error) = (codes.next, error || codes.error);
         }
-        self.state
+        if error || next != sub_tick_ns.len() {
+            return Err(invalid(
+                "checkpoint timestamps do not match their remainders",
+            ));
+        }
+        let PlayerSnapshot {
+            state, projectiles, ..
+        } = self;
+        let field = state.field;
+        let (runes, outposts, referee, restore) = match field.rules {
+            RulesWire::Derived(restore) => (
+                restore
+                    .runes
+                    .iter()
+                    .map(rm_simulator_world::Rune::snapshot)
+                    .collect(),
+                restore
+                    .outposts
+                    .iter()
+                    .map(|outpost| outpost.snapshot(time_ns))
+                    .collect(),
+                restore
+                    .referee
+                    .as_ref()
+                    .map(rm_simulator_world::Referee::snapshot),
+                Some(*restore),
+            ),
+            RulesWire::Explicit(rules) => {
+                let ExplicitRules {
+                    mut runes,
+                    mut outposts,
+                    referee,
+                    restore,
+                    ..
+                } = *rules;
+                for rune in &mut runes {
+                    rune.target_poses = rm_simulator_world::rune::target_poses(
+                        rune.hub_pose,
+                        rune.target_radius_m,
+                        rune.angle_rad,
+                    );
+                }
+                for outpost in &mut outposts {
+                    outpost.rebuild_armors();
+                }
+                (runes, outposts, referee, restore)
+            }
+        };
+        let mut chassis = Vec::with_capacity(field.chassis.len());
+        for wire in field.chassis {
+            if wire.wheel_spin_rad.len() != wire.config.wheel_hubs_m.len() {
+                return Err(invalid("checkpoint wheel count does not match the chassis"));
+            }
+            let mut snapshot = rm_simulator_world::ChassisSnapshot {
+                placement_revision: wire.placement_revision,
+                id: wire.id,
+                team: wire.team,
+                config: wire.config,
+                pose: wire.pose,
+                turret: wire.turret,
+                velocity_m_s: wire.velocity_m_s,
+                angular_velocity_rad_s: wire.angular_velocity_rad_s,
+                command: wire.command,
+                held_aim_rad: wire.held_aim_rad,
+                gimbal_velocity_rad_s: wire.gimbal_velocity_rad_s,
+                wheels: wire
+                    .wheel_spin_rad
+                    .into_iter()
+                    .map(|spin_rad| rm_simulator_world::WheelSnapshot {
+                        spin_rad,
+                        ..Default::default()
+                    })
+                    .collect(),
+                defeated: wire.defeated,
+            };
+            if normalize {
+                for pose in [&mut snapshot.pose, &mut snapshot.turret] {
+                    fixed_point::normalize_pose(pose)?;
+                }
+            }
+            snapshot.derive_wheel_kinematics();
+            chassis.push(snapshot);
+        }
+        let projectiles = projectiles
+            .into_iter()
+            .map(|ball| rm_simulator_world::ProjectileSnapshot {
+                id: ball.id,
+                caliber: rm_simulator_world::Caliber::from(ball.caliber),
+                launched_ns: ball.launched_ns,
+                position_m: ball.position_m,
+                velocity_m_s: ball.velocity_m_s,
+                angular_velocity_rad_s: [0.; 3],
+                shooter: ball.shooter,
+                first_contact_ns: ball.first_contact_ns,
+                dwell_since_ns: ball.dwell_since_ns,
+            })
+            .collect();
+        Ok(SimulationState {
+            bots: state.bots,
+            snapshot_id: state.snapshot_id,
+            input_epoch: state.input_epoch,
+            shot_results: state.shot_results,
+            paused: state.paused,
+            field: rm_simulator_world::FieldSnapshot {
+                bases: field.bases,
+                tick: field.tick,
+                time_ns,
+                runes,
+                outposts,
+                projectiles,
+                chassis,
+                hits: field.hits,
+                shots_fired: field.shots_fired,
+                hits_detected: field.hits_detected,
+                referee,
+                restore,
+            },
+        })
     }
 }
 /// `x` at `f32` precision when `f32` holds it finitely, otherwise exact, so an
@@ -235,7 +591,7 @@ pub fn decode_player_message(bytes: &[u8]) -> io::Result<ServerMessage> {
         .strip_prefix(SERVER_MAGIC)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not a server message"))?;
     Ok(match bitpack::from_bytes::<Wire>(body)? {
-        Wire::Snapshot(snapshot) => ServerMessage::Snapshot(Box::new(snapshot.into_state())),
+        Wire::Snapshot(snapshot) => ServerMessage::Snapshot(Box::new(snapshot.into_state(false)?)),
         Wire::Message(message) => message,
     })
 }
@@ -289,8 +645,7 @@ pub fn decode_checkpoint(
     if snapshot.state.input_epoch != epoch {
         return Err(io::Error::other("invalid baseline state/epoch"));
     }
-    let mut message = ServerMessage::Snapshot(Box::new(snapshot.into_state()));
-    fixed_point::normalize(&mut message)?;
+    let message = ServerMessage::Snapshot(Box::new(snapshot.into_state(true)?));
     Ok((message, node))
 }
 
@@ -361,6 +716,179 @@ mod tests {
             _ => assert_eq!(a, b),
         }
     }
+    /// Steps `field` through 40 published frames, checking each checkpoint
+    /// decodes exactly through the independent codec and through the
+    /// acknowledged delta lane, then restores the last decoded checkpoint and
+    /// replays `replay_ticks` against the host.
+    fn assert_rules_round_trip(field: &mut Field, replay_ticks: u64) {
+        use crate::udp_snapshot::{Decoder, Encoder, parse};
+        let geometry = field.static_geometry_snapshot();
+        let mut encoder = Encoder::default();
+        let mut decoder = Decoder::default();
+        let mut last = None;
+        for frame in 0..40 {
+            field.step(1).unwrap();
+            let mut state = simulation();
+            state.snapshot_id = frame + 1;
+            state.field = field.snapshot();
+            assert!(
+                matches!(
+                    PlayerSnapshot::from_state(&state).state.field.rules,
+                    RulesWire::Derived(_)
+                ),
+                "a field's own snapshot must travel as its restore alone"
+            );
+            let message = ServerMessage::Snapshot(Box::new(state.clone()));
+            assert_eq!(
+                decode_player_message(&encode_player_message(&message)).unwrap(),
+                message
+            );
+            let bytes = encoder.snapshot(0, &state).unwrap();
+            let wire = parse(&crate::compression::decompress(&bytes, 4 << 20).unwrap())
+                .unwrap()
+                .unwrap();
+            let (received, feedback) = decoder.receive(wire).unwrap();
+            let Some(ServerMessage::Snapshot(received)) = received else {
+                panic!("every frame must deliver a snapshot");
+            };
+            assert_eq!(received.field, state.field);
+            if let Some(feedback) = feedback
+                && let Some(retire) = encoder.feedback(feedback)
+                && let (_, Some(retired)) = decoder.receive(retire).unwrap()
+            {
+                encoder.feedback(retired);
+            }
+            last = Some(received.field);
+        }
+        assert!(
+            encoder.deltas > 0,
+            "the delta lane must have been exercised"
+        );
+        let mut restored = Field::restore(&last.unwrap(), &geometry, 0.).unwrap();
+        field.step(replay_ticks).unwrap();
+        restored.step(replay_ticks).unwrap();
+        let (host, replay) = (field.snapshot(), restored.snapshot());
+        assert_eq!(replay.runes, host.runes);
+        assert_eq!(replay.referee, host.referee);
+        assert_eq!(replay.restore, host.restore);
+    }
+
+    /// Hits the first lit blade of rune `index` at the field's current time.
+    fn hit_lit_blade(field: &mut Field, index: usize) {
+        use rm_simulator_world::HitOutcome;
+        let now = field.time_ns();
+        let blade = field.snapshot().runes[index]
+            .active_blades
+            .iter()
+            .position(|lit| *lit)
+            .expect("an activating Big Rune lights a pair") as u32;
+        let outcome = field.rune_mut(index).unwrap().hit(now, blade).unwrap();
+        assert!(matches!(outcome, HitOutcome::GroupHit { bonus: false, .. }));
+    }
+
+    #[test]
+    fn a_big_rune_with_a_pending_bonus_window_restores_and_predicts_exactly() {
+        use rm_simulator_world::{RuneKind, RuneState};
+        let mut field = Field::new(&FieldConfig::default()).unwrap();
+        field.step(64).unwrap();
+        let now = field.time_ns();
+        let rune = field.rune_mut(0).unwrap();
+        rune.set_seed(0x5eed);
+        rune.convert(RuneKind::Big, now).unwrap();
+        // A seeded activation draws its sinusoid, so the motion is not the
+        // default and must travel exactly.
+        rune.activate(now).unwrap();
+        // Idle through one 2.5 s window: the reset lands the stage start one
+        // nanosecond off the tick grid.
+        field.step(330).unwrap();
+        hit_lit_blade(&mut field, 0);
+        let state = SimulationState {
+            field: field.snapshot(),
+            ..simulation()
+        };
+        let rune = &state.field.runes[0];
+        assert_eq!(
+            (rune.kind, rune.state),
+            (RuneKind::Big, RuneState::Activating)
+        );
+        assert!(rune.motion.is_some());
+        assert_eq!(rune.completed_groups, 0);
+        assert!(rune.activated.contains(&true));
+        assert!(
+            !PlayerSnapshot::from_state(&state).sub_tick_ns.is_empty(),
+            "the off-grid stage start must ride as a remainder"
+        );
+        // 40 frames stay inside the one-second second-hit window; the replay
+        // then crosses the group's completion and later window resets.
+        assert_rules_round_trip(&mut field, 700);
+    }
+
+    #[test]
+    fn big_runes_after_the_three_minute_stage_change_restore_and_predict_exactly() {
+        use rm_simulator_world::{
+            RefereeCommand, RefereeConfig, RuneKind, RuneStage, RuneState, Team,
+        };
+        let mut config = FieldConfig {
+            referee: Some(RefereeConfig::alternating(2, 2)),
+            ..Default::default()
+        };
+        config.runes.push(config.runes[0]);
+        let mut field = Field::new(&config).unwrap();
+        field.referee_command(RefereeCommand::StartMatch).unwrap();
+        field.step(641).unwrap();
+        // An off-grid skip puts every round-clock stamp off the tick grid.
+        field
+            .referee_command(RefereeCommand::SkipTo {
+                match_time_ns: 180_000_000_123,
+            })
+            .unwrap();
+        field.step(2).unwrap();
+        field
+            .referee_command(RefereeCommand::ActivateRune { team: Team::Red })
+            .unwrap();
+        field.step(64).unwrap();
+        let snapshot = field.snapshot();
+        assert_eq!(snapshot.referee.as_ref().unwrap().stage, RuneStage::Big);
+        assert!(snapshot.runes.iter().all(|rune| rune.kind == RuneKind::Big));
+        let index = snapshot
+            .runes
+            .iter()
+            .position(|rune| rune.state == RuneState::Activating)
+            .expect("red's rune is activating");
+        hit_lit_blade(&mut field, index);
+        assert_rules_round_trip(&mut field, 700);
+    }
+
+    #[test]
+    fn stamp_codes_are_exact_and_refuse_missing_remainders() {
+        let tick = rm_simulator_world::tick_ns();
+        let now_ns = 1_000 * tick;
+        let stamps = [
+            0,
+            now_ns,
+            now_ns + 1,
+            7 * tick,
+            7 * tick + tick - 1,
+            u64::MAX,
+        ];
+        let mut sub_tick_ns = Vec::new();
+        let mut codes = stamps;
+        let mut encoder = StampCodes::new(now_ns, &mut sub_tick_ns);
+        codes.iter_mut().for_each(|stamp| encoder.encode(stamp));
+        assert_eq!(codes[1], 0, "the current time is code zero");
+        assert_eq!(codes[3], 15, "an on-grid stamp is one plus twice its tick");
+        assert_eq!(sub_tick_ns.len(), 3);
+        let mut decoded = codes;
+        let mut decoder = StampCodes::new(now_ns, &mut sub_tick_ns);
+        decoded.iter_mut().for_each(|stamp| decoder.decode(stamp));
+        assert!(!decoder.error && decoder.next == 3);
+        assert_eq!(decoded, stamps);
+        let mut none = Vec::new();
+        let mut decoder = StampCodes::new(now_ns, &mut none);
+        decoder.decode(&mut codes[2].clone());
+        assert!(decoder.error);
+    }
+
     #[test]
     fn extreme_diagnostic_coordinates_keep_full_precision() {
         let mut state = simulation();

@@ -371,7 +371,7 @@ pub struct WheelContact {
     pub slip_m_s: f64,
 }
 /// One wheel's state at the end of a tick.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct WheelSnapshot {
     /// Wheel hub centre in world FLU metres.
     pub hub_m: [f64; 3],
@@ -416,6 +416,30 @@ pub struct ChassisSnapshot {
     /// The referee has this robot at zero HP: the drive is cut and the aim
     /// holds where it was.
     pub defeated: bool,
+}
+
+/// Body-frame wheel geometry in `ChassisConfig::wheel_hubs_m` order.
+fn wheel_geometry(config: &ChassisConfig) -> Vec<WheelGeometry> {
+    config
+        .wheel_hubs_m
+        .iter()
+        .map(|&[x, y]| {
+            let lever_m = x.hypot(y);
+            // Mecanum contact force is perpendicular to the free roller,
+            // at 45 degrees to the wheel plane, with mirrored handedness.
+            let roll = if config.mecanum {
+                Vector::new(1.0, -(x * y).signum(), 0.0).normalize()
+            } else {
+                Vector::new(-y / lever_m, x / lever_m, 0.0)
+            };
+            WheelGeometry {
+                hub_m: Vector::new(x, y, -config.hub_drop_m),
+                roll,
+                axle: Vector::new(roll.y, -roll.x, 0.0),
+                lever_m: x * roll.y - y * roll.x,
+            }
+        })
+        .collect()
 }
 
 /// Fixed body-frame geometry of one wheel.
@@ -471,6 +495,59 @@ fn rapier_pose(p: Pose) -> Pose3 {
 fn pose_is_valid(p: Pose) -> bool {
     let norm = p.rotation_wxyz.iter().map(|v| v * v).sum::<f64>();
     p.translation_m.iter().all(|v| v.is_finite()) && norm.is_finite() && (norm - 1.).abs() < 1e-6
+}
+
+impl ChassisSnapshot {
+    /// Recompute the wheel values that follow from the rest of the snapshot:
+    /// each hub centre from `pose` and the configured hub layout, and each
+    /// tyre target from the inverse kinematics of `command` (zero while
+    /// `defeated`, whose drive is cut). A codec that carries only wheel spin
+    /// calls this after decoding. The hub matches the host within the pose's
+    /// own precision. The target matches whenever the command has not changed
+    /// since the last tick; a restored chassis recomputes both before using
+    /// them, so neither affects stepping. Contacts are left alone. Wheels
+    /// beyond the configured hubs are left unchanged.
+    ///
+    /// ```rust
+    /// use rm_simulator_physics::chassis::{ChassisCommand, ChassisConfig, ChassisSnapshot};
+    /// use rm_simulator_physics::{Pose, Team};
+    ///
+    /// let config = ChassisConfig::default();
+    /// let wheels = config.wheel_hubs_m.len();
+    /// let mut snapshot = ChassisSnapshot {
+    ///     placement_revision: 0,
+    ///     id: 0,
+    ///     team: Team::Red,
+    ///     config,
+    ///     pose: Pose::at([1.0, 2.0, 0.3]),
+    ///     turret: Pose::at([1.0, 2.0, 0.5]),
+    ///     velocity_m_s: [0.0; 3],
+    ///     angular_velocity_rad_s: [0.0; 3],
+    ///     command: ChassisCommand { forward_m_s: 1.0, ..Default::default() },
+    ///     held_aim_rad: [0.0; 2],
+    ///     gimbal_velocity_rad_s: [0.0; 2],
+    ///     wheels: vec![Default::default(); wheels],
+    ///     defeated: false,
+    /// };
+    /// snapshot.derive_wheel_kinematics();
+    /// let hub = snapshot.config.wheel_hubs_m[0];
+    /// assert!((snapshot.wheels[0].hub_m[0] - (1.0 + hub[0])).abs() < 1e-12);
+    /// assert!(snapshot.wheels[0].target_m_s.abs() > 0.0);
+    /// ```
+    pub fn derive_wheel_kinematics(&mut self) {
+        let pose = rapier_pose(self.pose);
+        let command = if self.defeated {
+            ChassisCommand::default()
+        } else {
+            self.command
+        };
+        for (wheel, geometry) in self.wheels.iter_mut().zip(wheel_geometry(&self.config)) {
+            wheel.hub_m = pose.transform_point(geometry.hub_m).to_array();
+            wheel.target_m_s = command.forward_m_s * geometry.roll.x
+                + command.left_m_s * geometry.roll.y
+                + command.yaw_rate_rad_s * geometry.lever_m;
+        }
+    }
 }
 
 impl Chassis {
@@ -537,26 +614,7 @@ impl Chassis {
                 )
             })
             .collect();
-        let geometry = config
-            .wheel_hubs_m
-            .iter()
-            .map(|&[x, y]| {
-                let lever_m = x.hypot(y);
-                // Mecanum contact force is perpendicular to the free roller,
-                // at 45 degrees to the wheel plane, with mirrored handedness.
-                let roll = if config.mecanum {
-                    Vector::new(1.0, -(x * y).signum(), 0.0).normalize()
-                } else {
-                    Vector::new(-y / lever_m, x / lever_m, 0.0)
-                };
-                WheelGeometry {
-                    hub_m: Vector::new(x, y, -config.hub_drop_m),
-                    roll,
-                    axle: Vector::new(roll.y, -roll.x, 0.0),
-                    lever_m: x * roll.y - y * roll.x,
-                }
-            })
-            .collect::<Vec<_>>();
+        let geometry = wheel_geometry(&config);
         let wheels = vec![
             WheelState {
                 spin_rad: 0.0,

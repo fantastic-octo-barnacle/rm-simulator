@@ -23,7 +23,7 @@ pub use projectile::{
 use projectile::{Contact, HIT_MEMORY_NS, TargetFace, TargetFrames, WorldPhysics};
 pub use referee::{
     BuffState, MatchPhase, Referee, RefereeCommand, RefereeConfig, RefereeEvent, RefereeSnapshot,
-    RobotConfig, RobotKind, RobotSnapshot, RuneStage, Team, TeamSnapshot, TimedEvent,
+    RobotConfig, RobotKind, RobotSnapshot, RuneStage, StampClock, Team, TeamSnapshot, TimedEvent,
 };
 use rune::{BigRune, RuneError, SmallRune};
 pub use rune::{BigRuneMotion, HitOutcome, Rune, RuneKind, RuneSnapshot, RuneState};

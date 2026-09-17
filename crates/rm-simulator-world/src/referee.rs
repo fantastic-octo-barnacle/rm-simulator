@@ -505,6 +505,16 @@ pub enum RefereeCommand {
     },
 }
 
+/// The clock an absolute referee timestamp is measured on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StampClock {
+    /// The field's own tick clock (`FieldSnapshot::time_ns`).
+    Field,
+    /// The round clock (`RefereeSnapshot::match_time_ns`), which `SkipTo`
+    /// moves and which stops when a round finishes.
+    Round,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct TeamState {
     rune_opportunities: u32,
@@ -784,6 +794,53 @@ impl Referee {
             0 => 1,
             1 => 4,
             _ => 7,
+        }
+    }
+    /// Round clock time at the referee's own current time, in nanoseconds:
+    /// running time plus skips, the frozen round time once finished, and zero
+    /// before a round starts. `RefereeSnapshot::match_time_ns` reports it.
+    pub fn match_time_ns(&self) -> u64 {
+        self.match_time(self.now_ns)
+    }
+    /// Visit every absolute timestamp on `clock`, in nanoseconds and in a
+    /// fixed order, so a wire codec can rewrite them as tick-relative codes
+    /// and back.
+    ///
+    /// On [`StampClock::Field`]: the referee's current time, the phase start,
+    /// the round start, then each event's time. On [`StampClock::Round`]: the
+    /// economy's round time, then per team the activation start and the
+    /// buff's start and end, then each event's round time. The skipped round
+    /// time and a finished round's frozen time are durations, not stamps, and
+    /// are not visited, so [`Referee::match_time_ns`] only needs the field
+    /// clock stamps to be mapped back. A referee whose stamps were rewritten
+    /// is meaningless until they are mapped back.
+    pub fn for_each_stamp_mut(&mut self, clock: StampClock, visit: &mut dyn FnMut(&mut u64)) {
+        match clock {
+            StampClock::Field => {
+                visit(&mut self.now_ns);
+                visit(&mut self.phase_started_ns);
+                visit(&mut self.match_started_ns);
+                for event in &mut self.events {
+                    visit(&mut event.time_ns);
+                }
+            }
+            StampClock::Round => {
+                visit(&mut self.gameplay.match_time_ns);
+                for team in &mut self.teams {
+                    if let Some(since) = &mut team.activating_since_ns {
+                        visit(since);
+                    }
+                    if let Some(buff) = &mut team.buff {
+                        visit(&mut buff.started_ns);
+                        visit(&mut buff.expires_ns);
+                    }
+                }
+                for event in &mut self.events {
+                    if let Some(match_time) = &mut event.match_time_ns {
+                        visit(match_time);
+                    }
+                }
+            }
         }
     }
     fn match_time(&self, now_ns: u64) -> u64 {

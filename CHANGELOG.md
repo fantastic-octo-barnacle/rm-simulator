@@ -4,6 +4,17 @@
 
 ## Unreleased
 
+- Drop derived data from UDP checkpoints (protocol 39). The field clock, the
+  rune, outpost and referee views, wheel hubs and tyre targets are rebuilt on
+  decode from the tick, the restore's rule state and each chassis' pose,
+  configuration and command; only wheel spin travels per wheel. Every
+  absolute timestamp (rune, Big Rune epoch and first-hit window, referee and
+  buff times, outpost stop, detections, hits, shot results, projectiles)
+  becomes a whole-tick code with an exact sub-tick remainder, so a restored
+  Big Rune predicts identically. The dictionary is retrained. Sent checkpoint
+  bytes fall 86% idle, 57% with two players, 44% with twelve and 31% firing
+  in `network_bandwidth`.
+
 - Remove JSON from the gameplay wire (protocol 38). Checkpoints are packed
   straight from the typed state by a positional bitpack (`RMB1`) that rounds
   fixed-point fields while serializing, with no JSON value tree, key strings
