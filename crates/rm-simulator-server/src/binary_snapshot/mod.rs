@@ -12,7 +12,7 @@ pub mod fixed_point;
 /// Binary dictionary frame marker, distinct from plain ZSTD's [`crate::compression::MAGIC`].
 pub const MAGIC: &[u8; 4] = b"RMBZ";
 
-/// The fine fixed-point dictionary embedded in protocol 32. Replacing these
+/// The fine fixed-point dictionary embedded in protocol 39. Replacing these
 /// bytes requires a protocol version bump and held-out bandwidth evaluation.
 pub fn dictionary() -> &'static [u8] {
     include_bytes!("../../assets/binary-fixed-fine.zstd")
@@ -79,7 +79,7 @@ mod tests {
         assert_eq!(dictionary().len(), 32768);
         assert_eq!(
             format!("{:x}", Sha256::digest(dictionary())),
-            "dc9dabe1224eb9fdac14f06106eab2070297d6b1ba6328c6217ce3e40c46f69c"
+            "d0b9d360de64060659adeb755d6005c4a1273e1bd6be83f52acd27f0434aa2fb"
         );
         assert_eq!(
             dictionary(),

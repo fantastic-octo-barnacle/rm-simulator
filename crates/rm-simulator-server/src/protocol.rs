@@ -46,7 +46,12 @@ use serde::{Deserialize, Serialize};
 /// positional, type-driven bitpack quantized while serializing, and every
 /// other server (`RMM1`) and client (`RMQ1`) message, acknowledgement (`RMA2`)
 /// and retirement (`RMR1`) uses the same codec.
-pub const PROTOCOL_VERSION: u32 = 38;
+/// Version 39 drops derived data from the checkpoint: the field clock, the
+/// rune, outpost and referee views (rebuilt from the restore), wheel hubs and
+/// tyre targets (rebuilt from pose, configuration and command). Every absolute
+/// timestamp becomes a whole-tick code with an exact sub-tick remainder list,
+/// and the dictionary is retrained.
+pub const PROTOCOL_VERSION: u32 = 39;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///
