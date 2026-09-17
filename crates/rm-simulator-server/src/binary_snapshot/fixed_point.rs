@@ -16,7 +16,10 @@ pub enum Quantization {
     Chassis,
     /// Also round projectiles to 1 mm and 0.01 m/s steps.
     Coarse,
-    /// Also round projectiles to 0.01 mm and 0.0001 m/s steps.
+    /// Also round projectiles to 1 mm and 1 mm/s steps. Both fit the bitpack
+    /// 18-bit grids (4+3+18 bits per component instead of 4+3+24/26), and a
+    /// 0.5 mm/s velocity error drifts a four-second flight by about 2 mm,
+    /// far below armor scale.
     Fine,
 }
 
@@ -115,7 +118,7 @@ pub fn checkpoint(value: &mut Value, errors: &mut Errors, mode: Quantization) {
     }
     let (position_scale, position_bits, velocity_scale, velocity_bits) =
         if mode == Quantization::Fine {
-            (100000., 26, 10000., 24)
+            (1000., 18, 1000., 18)
         } else {
             (1000., 18, 100., 16)
         };
