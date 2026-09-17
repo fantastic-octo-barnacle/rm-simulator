@@ -724,14 +724,11 @@ impl Command {
 /// ));
 /// let ping = ClientMessage::Ping { nonce: 7 };
 ///
-/// // Each control message is one JSON document in its own framed payload.
+/// // Each control message is one positional bitpack payload behind `RMQ1`.
+/// use rm_simulator_server::snapshot_codec::{decode_client_message, encode_client_message};
 /// for message in [&hello, &start, &ping] {
-///     let bytes = serde_json::to_vec(message).unwrap();
-///     assert!(!bytes.contains(&b'\n'));
-///     assert_eq!(
-///         &serde_json::from_slice::<ClientMessage>(&bytes).unwrap(),
-///         message
-///     );
+///     let bytes = encode_client_message(message);
+///     assert_eq!(&decode_client_message(&bytes).unwrap(), message);
 /// }
 ///
 /// ```
