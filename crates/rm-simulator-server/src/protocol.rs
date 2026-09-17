@@ -74,7 +74,11 @@ use serde::{Deserialize, Serialize};
 /// without a matching restore cannot be encoded), and the `RMI2` input batch
 /// is no longer accepted. Owner anchor command and tyre speeds use the 1 cm/s
 /// velocity scale. The protocol 41 dictionary is unchanged.
-pub const PROTOCOL_VERSION: u32 = 43;
+/// Version 44 carries the gameplay engine's whole state as the referee's
+/// `game` (levels, heat, respawn timers, buffs and the round result), outpost
+/// rotor start and homing, the match's rule commands in place of `Gameplay`
+/// edits, and a chassis placement's performance type.
+pub const PROTOCOL_VERSION: u32 = 44;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///
@@ -576,12 +580,21 @@ pub enum Command {
         /// defeat.
         chassis: u32,
     },
-    /// Buy one projectile for this pilot from team gold.
+    /// Buy one Table 5-6 exchange unit for this pilot from team gold: ten
+    /// 17 mm rounds or one 42 mm round.
     BuyAmmo {
         /// The sender's own chassis.
         chassis: u32,
         /// Projectile class to buy.
         caliber: rm_simulator_world::Caliber,
+    },
+    /// Choose this pilot's section 5.4.2 performance type. The rules refuse a
+    /// type for another robot class and any change once a round is running.
+    SetPerformance {
+        /// The sender's own chassis.
+        chassis: u32,
+        /// Hero or Infantry performance type.
+        performance: rm_simulator_world::gameplay::Performance,
     },
     /// Change this pilot's weapon settings for subsequent launches. Already
     /// flying projectiles retain their velocity and caliber. Queued fire

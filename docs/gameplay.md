@@ -28,62 +28,46 @@ Read this guide before changing either gameplay integration.
 
 ## Live integration and ownership
 
-The `live::Resources` component is connected to the world referee and therefore
-to both the app and server.
+The world referee runs one `Game` as the live match authority for both the app
+and the server. It steps the engine to the round time at the start of every
+128 Hz world tick, so the engine's 1 ms clock never runs ahead of the world.
 
 | Owner | Responsibility |
 |---|---|
-| World referee | Phase and round clock |
-| `live::Resources` | Per-chassis allowances and successful shot counts for 17 mm and 42 mm, free-camera shot counts and each team's gold; no independent clock or physics authority |
-| World code | Robot, base and outpost damage and rune activation |
-| `rm-simulator-physics` | Dynamics, raw contacts and prescribed armor motion |
-| Standalone `Game` | The larger engine described below; remains standalone |
+| World referee | Phase changes, round clock, rune schedule and activation; translating engine events |
+| `Game` | HP, damage, heat, allowance, gold, experience, levels, performance, respawn, weakness, invincibility, buffs, base shield and outpost protection, rebuild opportunities, round result |
+| World `Field` | Detection (speed, area, interval) and scoring geometry; mirrors base and outpost HP into the physical objects; stops rotors; reports outpost-zone contacts and armor collisions |
+| `rm-simulator-physics` | Dynamics, raw contacts, armor collision speeds and prescribed rotor motion |
 
-`RefereeSnapshot.gameplay` exposes the live state over GNS UDP and `GET /api/state`.
-The HTTP page's ammo/economy and equipment forms send ordinary referee commands
-through `POST /api/command` or `POST /api/referee`. Clients and hosts must use
-matching builds; `PROTOCOL_VERSION` in the server's `protocol.rs` is authoritative. Pilots and spectators cannot submit these edits.
+`StartMatch` resets the engine and begins its countdown; `ResetMatch` returns it
+to Idle. Idle is free practice. The live policy defaults to
+`enforce_allowance: false, exchange_requires_zone: false`, and survives resets.
+A field without a referee keeps the physical damage path and no engine.
+
+`RefereeSnapshot.game` carries the engine snapshot over GNS UDP and
+`GET /api/state`. The HTTP page sends referee commands through
+`POST /api/command` or `POST /api/referee`. Clients and hosts must use matching
+builds; `PROTOCOL_VERSION` in the server's `protocol.rs` is authoritative.
+Pilots and spectators cannot submit referee commands; a pilot may only buy
+ammunition, pick its own performance type and fire.
 
 | Live control | Behavior |
 |---|---|
-| Ammo policy | Toggle allowance enforcement and set initial allowance for both calibers. Defaults are zero, with enforcement off for practice. |
-| Income policy | Toggle automatic income and set initial, minute and final-minute grants. Defaults follow Table 5-5. Disabled grants are skipped without back-payment. |
-| Resupply prices | Set price per projectile, initially 1 gold for 17 mm and 10 for 42 mm, based on Table 5-6 local exchange. |
-| Robot resources | Set current allowances and shot counters for an existing chassis. |
-| Team gold | Set either team's current balance. |
-| Referee resupply | Immediately purchase ammo for the selected robot using team gold and configured prices. This operator action does not claim RFID eligibility, minimum exchange units, exchange limits or remote delivery. Insufficient funds or overflow reject without changing resources. |
-| Free-camera counters | Edit separately tracked shots without a chassis. |
-| Outpost HP | Set 0..1500 HP on the physical world outpost; zero destroys it and positive HP revives it. |
-| Rune opportunities | Set a team's current opportunity count, including zero. Scheduled opportunities still arrive. |
-| Rune buff | Override defense, reported attack/cooling and duration. Zero duration clears it. Cancels the current activation attempt and darkens the rune; does not simulate activation or spend an opportunity. |
-
-Policy edits affect future operations. Initial allowances apply on start/reset
-and admission of new chassis; current balances have their own controls. Match
-start/reset clears resource counters and gold, preserves policy and restores
-physical outposts to 1500 HP. Leaving removes the chassis's resources. Only
-successful physical shots during Running consume allowance and increase counts;
-invalid launches and defeated shooters do neither. Free-camera shots remain
-unrestricted. Pausing freezes income; clock skips grant all crossed enabled
-income boundaries when the referee next ticks. Ending freezes resource tracking.
-
-The HUD displays the resource snapshots. Form inputs are not overwritten by
-polling; use their Load current buttons to replace draft values with live state.
-Configuration is in memory and does not survive host restart.
+| Policy | Toggle allowance enforcement and whether exchanges need a service zone. |
+| Team gold | Set either team's balance. |
+| Robot | Set allowance, performance type (not while Running), clear weakness, paid instant respawn, revive, set HP or apply penalty damage. |
+| Exchange | Buy Table 5-6 units for a robot from team gold. |
+| Result | `Adjudicate` a finished round the comparison could not decide. |
+| Outpost and base HP | Set through the engine; zero outpost HP counts as a destruction. |
+| Rune opportunities and buff | Set a team's opportunity count; override or clear its rune buff. |
 
 ### Outside the live integration
 
-The following remain outside live integration: automatic
-respawn, heat and power enforcement, XP, performance tables, zone detection,
-remote purchases, full match adjudication, and attack/cooling buff effects. A
-future adapter must assign one owner to each rule before connecting more of the
-standalone engine; it must not apply physical damage or advance the clock twice.
-
-The live adapter and standalone engine share the Table 5-5 income schedule,
-default grant amounts, and the allowance/shot-count update for one launch. The
-live adapter still owns its tunable economy settings, while the standalone
-engine keeps the fixed competition policy and its additional heat, experience,
-and over-allowance consequences. A conformance test runs the same income
-boundaries and launch sequence through both paths.
+Zone detection other than the outpost zone (base, resupply, highlands, road,
+fortress, assembly), remote exchanges and HP purchases, power enforcement,
+assembly, drone, dart, radar, engineer and sentry equipment, penalties,
+disconnection and multi-round series are not connected. The engine still
+implements several of them for headless scenarios.
 
 ## API and clock
 
@@ -91,8 +75,8 @@ Construct `Game::new(Config)` with a fixed roster and explicit performance
 parameters. Robot ids must be unique and HP positive. The roster supports
 Hero, Engineer, Infantry, Drone, Sentry, Dart and Radar. These records do not
 create chassis, so unsupported equipment can exist in a headless scenario.
-There is no referee robot. Dynamic pilot admission remains the existing
-server's responsibility until that adapter is implemented.
+There is no referee robot. `AddRobot` and `RemoveRobot` admit and drop robots
+at any phase; the live referee uses them as pilots join and leave.
 
 `Game::command(Command)` validates an input and commits it atomically. An error
 leaves the game unchanged, including pending deliveries and event ids.
@@ -184,17 +168,18 @@ Mechanics outside the live integration are named under
   preceding level completion and the single level-4 completion are checked.
   Robotic arm poses, shared-core exclusion and assembly failure penalties are
   still external; a player must not be allowed to certify their own completion.
-- Section 5.4.1 and Table 5-11 apply shot XP and explicit XP awards up to the
-  current cap. Kill attribution, shared XP and Tables 5-12 through 5-15's
-  performance changes are not automatic. Performance remains caller-configured.
+- Section 5.4.1 and Table 5-11 apply launch, damage and kill experience,
+  shared unattributed awards and rune rewards up to the current cap. Section
+  5.4.2 and Tables 5-12 to 5-14 select HP, heat limit and cooling by Hero or
+  Infantry performance type and level; other robots use fixed values.
 - Section 5.5.1 supplies base HP, virtual shield, outpost protection, destruction,
   cumulative base-loss rebuild opportunities and individual uninterrupted
   rebuild scans, with a strict five-minute cutoff. Rotation remains outside
-  this crate, including the manual's acceleration and stopping conditions.
-- Section 5.5.3.1 applies the strongest defense and vulnerability independently.
-  Penalties, disconnection and darts bypass defense. Incoming `Damage.amount`
-  must already include attacker-side effects. `Buff.attack_pct` is tracked for
-  that caller; it is not multiplied into damage a second time here.
+  this crate; the world starts and stops the rotor.
+- Section 5.5.3.1 applies the strongest attack, defense and vulnerability
+  independently. `ProjectileHit` computes Table 5-2 damage, the centre-square
+  bonus, attack and defense; `Damage` takes an amount that already includes
+  attacker effects. Penalties, disconnection and darts bypass defense.
 - Section 5.1.3 adds heat per detected launch, cools at 10 Hz and maintains
   independent temporary and permanent launch locks. Table 5-3 speed observations
   set independent launch locks. `Launch` is a validated action; `ObserveLaunch`

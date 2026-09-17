@@ -841,6 +841,7 @@ impl Owner {
                     | Command::Respawn { chassis }
                     | Command::ResetRobot { chassis }
                     | Command::BuyAmmo { chassis, .. }
+                    | Command::SetPerformance { chassis, .. }
                     | Command::ConfigureWeapon { chassis, .. }
                     | Command::Chassis { chassis, .. }
                     | Command::PlaceChassis { chassis, .. }
@@ -1437,6 +1438,7 @@ mod tests {
             chassis: vec![rm_simulator_world::ChassisPlacement {
                 team: Team::Red,
                 kind: rm_simulator_world::RobotKind::Infantry,
+                performance: None,
                 config: Default::default(),
                 spawn: rm_simulator_world::Pose::at([0.0, 0.0, 2.0]),
             }],

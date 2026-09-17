@@ -32,6 +32,12 @@ pub struct OutpostSnapshot {
     pub hp: u32,
     /// HP reached zero; the middle armor stopped where it was.
     pub destroyed: bool,
+    /// Field time the match's rotor spin-up began, when a match runs it.
+    pub started_ns: Option<u64>,
+    /// Field time the rotor stopped, when it has.
+    pub stopped_ns: Option<u64>,
+    /// Whether the stop returns the armor to its initial position.
+    pub homing: bool,
 }
 impl OutpostSnapshot {
     /// Reconstruct armor geometry from the transmitted rotor pose, including
@@ -56,7 +62,9 @@ impl OutpostSnapshot {
                 pivot_cad_m: self.pivot_cad_m,
                 origin: self.origin,
                 speed_rad_s: self.speed_rad_s,
-                stopped_at_ns: None,
+                stopped_at_ns: self.stopped_ns,
+                started_ns: self.started_ns,
+                homing: self.homing,
             },
             hp: self.hp,
         };
@@ -65,8 +73,11 @@ impl OutpostSnapshot {
 }
 
 /// A rotating outpost tower with its own HP. Rotation is a pure function of
-/// time: the tower spins at its configured rate until a strike destroys it,
-/// and then holds the angle it had. The three armor faces are fitted from the
+/// time. In training the tower spins at its configured rate until a strike
+/// destroys it and then holds the angle it had. In a match (section 5.5.1) it
+/// rests until the round starts, spins up, and stops for the rest of the
+/// round at its first destruction (holding the angle) or when the referee
+/// stops it alive (returning to its initial position). The three armor faces are fitted from the
 /// extracted RMUC 2026 CAD and scored by the field.
 ///
 /// ```rust
@@ -96,6 +107,8 @@ struct OutpostRecord {
     speed_rad_s: f64,
     destroyed_ns: Option<u64>,
     hp: u32,
+    started_ns: Option<u64>,
+    homing: bool,
 }
 impl From<OutpostRecord> for Outpost {
     fn from(record: OutpostRecord) -> Self {
@@ -105,6 +118,8 @@ impl From<OutpostRecord> for Outpost {
                 origin: record.origin,
                 speed_rad_s: record.speed_rad_s,
                 stopped_at_ns: record.destroyed_ns,
+                started_ns: record.started_ns,
+                homing: record.homing,
             },
             hp: record.hp,
         }
@@ -118,6 +133,8 @@ impl From<Outpost> for OutpostRecord {
             speed_rad_s: outpost.motion.speed_rad_s,
             destroyed_ns: outpost.motion.stopped_at_ns,
             hp: outpost.hp,
+            started_ns: outpost.motion.started_ns,
+            homing: outpost.motion.homing,
         }
     }
 }
@@ -154,6 +171,8 @@ impl Outpost {
                 origin,
                 speed_rad_s,
                 stopped_at_ns: None,
+                started_ns: None,
+                homing: false,
             },
             hp: INITIAL_HP,
         })
@@ -169,12 +188,14 @@ impl Outpost {
             self.motion.speed_rad_s,
             self.motion.pivot_cad_m,
         )?;
-        if self.hp > INITIAL_HP || (self.hp == 0) != self.motion.stopped_at_ns.is_some() {
+        if self.hp > INITIAL_HP || (self.hp == 0 && self.motion.stopped_at_ns.is_none()) {
             return Err("outpost HP and destruction disagree");
         }
         Ok(())
     }
-    /// Operator HP correction. Revival resumes the configured rotor motion.
+    /// Set HP at `time_ns`. Zero destroys the tower. In training a revival
+    /// resumes the configured rotor motion; in a match a stopped rotor stays
+    /// stopped for the round (section 5.5.1).
     pub fn set_hp(&mut self, time_ns: u64, hp: u32) -> Result<(), &'static str> {
         if hp > INITIAL_HP {
             return Err("outpost HP must be at most 1500");
@@ -183,19 +204,54 @@ impl Outpost {
             self.damage(time_ns, self.hp);
         } else {
             self.hp = hp;
-            self.motion.stopped_at_ns = None;
+            if self.motion.started_ns.is_none() {
+                self.motion.stopped_at_ns = None;
+                self.motion.homing = false;
+            }
         }
         Ok(())
+    }
+    /// Full HP and the match rotor: at rest until `start_ns`, then the section
+    /// 5.5.1 spin-up.
+    pub fn start_match(&mut self, start_ns: u64) {
+        self.hp = INITIAL_HP;
+        self.motion.started_ns = Some(start_ns);
+        self.motion.stopped_at_ns = None;
+        self.motion.homing = false;
+    }
+    /// Full HP and the training rotor, spinning from time zero.
+    pub fn reset_training(&mut self) {
+        self.hp = INITIAL_HP;
+        self.motion.started_ns = None;
+        self.motion.stopped_at_ns = None;
+        self.motion.homing = false;
+    }
+    /// Stop the rotor for the round at `time_ns` (section 5.5.1): a live tower
+    /// returns to its initial position, a destroyed one holds its angle. A
+    /// rotor that already stopped is unchanged.
+    pub fn stop(&mut self, time_ns: u64) {
+        if self.motion.stopped_at_ns.is_none() {
+            self.motion.stopped_at_ns = Some(time_ns);
+            self.motion.homing = self.hp > 0;
+        }
+    }
+    /// Whether the rotor has stopped.
+    pub fn stopped(&self) -> bool {
+        self.motion.stopped_at_ns.is_some()
     }
     /// Remaining HP; zero means the tower is destroyed and frozen.
     pub fn hp(&self) -> u32 {
         self.hp
     }
-    /// Visit the outpost's only absolute field-clock timestamp, the time its
-    /// rotor stopped, when it has one, so a wire codec can rewrite it and back.
+    /// Visit the outpost's absolute field-clock timestamps, the rotor stop
+    /// then the match start, when it has them, so a wire codec can rewrite
+    /// them and back.
     pub fn for_each_stamp_mut(&mut self, visit: &mut dyn FnMut(&mut u64)) {
         if let Some(stopped) = &mut self.motion.stopped_at_ns {
             visit(stopped);
+        }
+        if let Some(started) = &mut self.motion.started_ns {
+            visit(started);
         }
     }
     /// Remove HP for a detected strike at `time_ns`; returns the HP actually lost.
@@ -216,13 +272,14 @@ impl Outpost {
     /// assert_eq!(tower.damage(600_000_000, 20), 0);
     /// ```
     pub fn damage(&mut self, time_ns: u64, amount: u32) -> u32 {
-        if self.motion.stopped_at_ns.is_some() {
+        if self.hp == 0 {
             return 0;
         }
         let lost = amount.min(self.hp);
         self.hp -= lost;
-        if self.hp == 0 {
+        if self.hp == 0 && self.motion.stopped_at_ns.is_none() {
             self.motion.stopped_at_ns = Some(time_ns);
+            self.motion.homing = false;
         }
         lost
     }
@@ -261,7 +318,10 @@ impl Outpost {
             angle_rad: self.angle_at(time_ns),
             armors,
             hp: self.hp,
-            destroyed: self.motion.stopped_at_ns.is_some(),
+            destroyed: self.hp == 0,
+            started_ns: self.motion.started_ns,
+            stopped_ns: self.motion.stopped_at_ns,
+            homing: self.motion.homing,
         }
     }
 }

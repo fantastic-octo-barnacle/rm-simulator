@@ -833,6 +833,7 @@ mod tests {
                 spawn: Pose::at([8., 0., 1.]),
                 team: Team::Blue,
                 kind: rm_simulator_world::RobotKind::Infantry,
+                performance: None,
             }],
             ..default()
         })
@@ -1145,6 +1146,7 @@ mod tests {
                 config,
                 team: Team::Blue,
                 kind: rm_simulator_world::RobotKind::Infantry,
+                performance: None,
             }],
             ..default()
         })
@@ -1232,6 +1234,7 @@ mod tests {
                 config,
                 team: Team::Red,
                 kind: rm_simulator_world::RobotKind::Infantry,
+                performance: None,
             }],
             ..default()
         })

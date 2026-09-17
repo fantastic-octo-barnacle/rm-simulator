@@ -48,6 +48,8 @@ fn main() {
         pivot_cad_m: rm_simulator_physics::motion::outpost::PIVOT_CAD_M,
         speed_rad_s: 0.4,
         stopped_at_ns: None,
+        started_ns: None,
+        homing: false,
     };
     let targets = faces(&rotor, 0);
     App::new()

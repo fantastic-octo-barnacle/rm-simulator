@@ -203,6 +203,7 @@ mod tests {
                 spawn: Pose::at([0., 0., 1.]),
                 team: Team::Red,
                 kind: rm_simulator_world::RobotKind::Infantry,
+                performance: None,
             }],
             ..Default::default()
         })

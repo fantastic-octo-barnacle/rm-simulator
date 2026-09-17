@@ -260,13 +260,12 @@ impl Caliber {
             Self::Mm42 => 200,
         }
     }
-    /// Table 5-2 robot small armor damage without buffs (10 HP per 17 mm
-    /// and 100 HP per 42 mm strike; taken from memory of the table, not
-    /// re-read from the manual).
+    /// Table 5-2 robot armor damage without buffs: 20 HP per 17 mm and
+    /// 200 HP per 42 mm strike (V2.1.0).
     pub fn robot_damage(self) -> u32 {
         match self {
-            Self::Mm17 => 10,
-            Self::Mm42 => 100,
+            Self::Mm17 => 20,
+            Self::Mm42 => 200,
         }
     }
 }
@@ -489,6 +488,27 @@ pub struct Contact {
     pub normal_speed_m_s: f64,
 }
 
+/// Closing speed along an armor face's normal at or above which a chassis
+/// armor module registers a collision. Table 5-2 gives the damage (2 HP) but
+/// no detection threshold, so this is a simulator setting.
+pub const ARMOR_COLLISION_SPEED_M_S: f64 = 1.5;
+
+/// A chassis armor module that started touching something other than a
+/// projectile, faster than [`ARMOR_COLLISION_SPEED_M_S`] along its normal.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ArmorCollision {
+    /// Chassis whose armor module collided.
+    pub chassis: u32,
+    /// Armor module index in `ChassisConfig::armor_faces` order.
+    pub plate: u32,
+    /// The other chassis, when the module struck one.
+    pub other_chassis: Option<u32>,
+    /// Contact point in world FLU metres.
+    pub position_m: [f64; 3],
+    /// Closing speed along the face's outward normal, in metres per second.
+    pub normal_speed_m_s: f64,
+}
+
 struct Projectile {
     id: u64,
     shooter: Option<u32>,
@@ -541,6 +561,8 @@ pub struct WorldPhysics {
     /// Velocities before integration, in the current projectile order.
     velocities_before: Vec<Vector>,
     chassis: Vec<Chassis>,
+    /// Armor collisions since the last [`WorldPhysics::take_armor_collisions`].
+    armor_collisions: Vec<ArmorCollision>,
     next_chassis_id: u32,
     targets: Vec<TargetBody>,
     mechanisms: Vec<(
@@ -629,6 +651,7 @@ impl WorldPhysics {
             projectiles: Vec::new(),
             velocities_before: Vec::new(),
             chassis: Vec::new(),
+            armor_collisions: Vec::new(),
             next_chassis_id: 0,
             targets: Vec::new(),
             mechanisms: Vec::new(),
@@ -943,6 +966,11 @@ impl WorldPhysics {
         {
             chassis.set_defeated(defeated);
         }
+    }
+    /// Body centre of a chassis in world FLU metres; `None` for an unknown id.
+    pub fn chassis_position_m(&self, id: u32) -> Option<[f64; 3]> {
+        self.chassis_ref(id)
+            .map(|chassis| self.world.bodies[chassis.body()].translation().to_array())
     }
     /// Whether the chassis is defeated, or `None` when no chassis has that id.
     pub fn chassis_defeated(&self, id: u32) -> Option<bool> {
@@ -1432,6 +1460,7 @@ impl WorldPhysics {
             self.world.step();
             contacts
                 .extend(self.capture_contacts(frames, frac_prev, frac_next, substep_s, next_ns));
+            self.capture_armor_collisions();
             // Absorb perimeter shots the slice they cross the wall, so a fast
             // shot cannot reach past the perimeter and bounce back inside. The
             // convex XY volume also catches one that traverses an entire wall
@@ -1602,6 +1631,76 @@ impl WorldPhysics {
             }
         }
         contacts
+    }
+    /// Record armor modules that began touching anything but a projectile this
+    /// substep fast enough to register ([`ARMOR_COLLISION_SPEED_M_S`]). A
+    /// module resting against an obstacle registers once, when it arrives.
+    fn capture_armor_collisions(&mut self) {
+        for index in 0..self.chassis.len() {
+            let chassis = &self.chassis[index];
+            let mut touching = Vec::new();
+            for (plate, &armor) in chassis.armor_colliders().iter().enumerate() {
+                for pair in self.world.contact_pairs_with(armor) {
+                    if !pair.has_any_active_contact() {
+                        continue;
+                    }
+                    let other = if pair.collider1 == armor {
+                        pair.collider2
+                    } else {
+                        pair.collider1
+                    };
+                    if self.projectiles.iter().any(|p| p.collider == other) {
+                        continue;
+                    }
+                    touching.push(other);
+                    if chassis.armor_touching.contains(&other) {
+                        continue;
+                    }
+                    let Some((_, contact)) = pair.find_deepest_contact() else {
+                        continue;
+                    };
+                    let local = if pair.collider1 == armor {
+                        contact.local_p1
+                    } else {
+                        contact.local_p2
+                    };
+                    let point = self.world.colliders[armor]
+                        .position()
+                        .transform_point(local);
+                    let other_body = self.world.colliders[other].parent();
+                    let other_velocity = other_body.map_or(Vector::ZERO, |body| {
+                        self.world.bodies[body].velocity_at_point(point)
+                    });
+                    let own_velocity = self.world.bodies[chassis.body()].velocity_at_point(point);
+                    let normal = chassis
+                        .armor_pose(&self.world, plate)
+                        .transform_vector(Vector::X);
+                    let normal_speed_m_s = (own_velocity - other_velocity).dot(normal);
+                    if normal_speed_m_s < ARMOR_COLLISION_SPEED_M_S {
+                        continue;
+                    }
+                    let other_chassis = other_body.and_then(|body| {
+                        self.chassis
+                            .iter()
+                            .find(|c| c.body() == body)
+                            .map(Chassis::id)
+                    });
+                    self.armor_collisions.push(ArmorCollision {
+                        chassis: chassis.id(),
+                        plate: plate as u32,
+                        other_chassis,
+                        position_m: point.to_array(),
+                        normal_speed_m_s,
+                    });
+                }
+            }
+            self.chassis[index].armor_touching = touching;
+        }
+    }
+    /// Take the armor collisions recorded since the last call, in the order
+    /// the substeps found them. The caller decides whether they score.
+    pub fn take_armor_collisions(&mut self) -> Vec<ArmorCollision> {
+        std::mem::take(&mut self.armor_collisions)
     }
     /// Every projectile in flight, oldest first.
     pub fn snapshot(&self) -> Vec<ProjectileSnapshot> {

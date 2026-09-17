@@ -503,7 +503,55 @@ fn clock_text(session: &Session) -> String {
         .remaining_ns
         .saturating_sub(elapsed_ns)
         .div_ceil(1_000_000_000);
-    format!("{phase}\n{:02}:{:02}", seconds / 60, seconds % 60)
+    let mut text = format!("{phase}\n{:02}:{:02}", seconds / 60, seconds % 60);
+    if let Some(result) = &r.game.result {
+        text.push('\n');
+        text.push_str(&result_text(result));
+    }
+    text
+}
+
+/// One line naming a round's result (section 5.8).
+fn result_text(result: &rm_simulator_world::gameplay::RoundResult) -> String {
+    use rm_simulator_world::gameplay::{DecisionReason, RoundResult};
+    match result {
+        RoundResult::Decided { winner, reason } => {
+            let reason = match reason {
+                DecisionReason::BaseDestroyed => "BASE",
+                DecisionReason::Outpost => "OUTPOST",
+                DecisionReason::AttackDamage => "DAMAGE",
+                DecisionReason::RobotHp => "ROBOT HP",
+                DecisionReason::Equal => "TIED",
+                DecisionReason::Referee => "REFEREE",
+            };
+            match winner {
+                Some(team) => format!("{team:?} WINS ({reason})").to_uppercase(),
+                None => format!("DRAW ({reason})"),
+            }
+        }
+        RoundResult::NeedsRefereeDecision => "AWAITING REFEREE".into(),
+    }
+}
+
+/// Barrel heat and the section 5.2 weakened and invincible states of one
+/// robot; states the robot is not in are left out.
+fn robot_status(state: &rm_simulator_world::gameplay::RobotState, round_ticks: u64) -> String {
+    let stats = state.stats();
+    let mut text = format!("\nHEAT {}/{}", state.heat_tenths / 10, stats.heat_limit);
+    if state.overheated {
+        text.push_str(" OVERHEAT");
+    }
+    if state.weakened {
+        text.push_str("   WEAKENED");
+    }
+    if state.invincible_until_ticks > round_ticks {
+        text.push_str(&format!(
+            "   INVINCIBLE {}s",
+            (state.invincible_until_ticks - round_ticks)
+                .div_ceil(rm_simulator_world::gameplay::SECOND_TICKS)
+        ));
+    }
+    text
 }
 
 fn team_text(session: &Session, team: Team) -> String {
@@ -698,11 +746,12 @@ pub fn update_hud(
         .referee()
         .and_then(|r| r.robots.iter().find(|r| Some(r.id) == session.chassis_id));
     let ammo = session.referee().and_then(|r| {
-        r.gameplay
+        r.game
             .robots
             .iter()
-            .find(|r| Some(r.id) == session.chassis_id)
+            .find(|r| Some(r.config.id) == session.chassis_id)
     });
+    let round_ticks = session.referee().map_or(0, |r| r.game.round_elapsed_ticks);
     for (kind, mut text, mut node) in &mut texts {
         let value = match kind {
             Hud::AutoAim => assist.as_ref().map_or_else(String::new, |a| {
@@ -720,8 +769,16 @@ pub fn update_hud(
                     .map_or(0., |c| c.velocity_m_s[0].hypot(c.velocity_m_s[1]));
                 let mut value = robot.map_or_else(
                     || session.role.name().to_uppercase(),
-                    |r| format!("#{}  {:?}\n{} / {} HP", r.id, r.kind, r.hp, r.max_hp),
+                    |r| {
+                        format!(
+                            "#{}  {:?}  LV {}\n{} / {} HP",
+                            r.id, r.kind, r.level, r.hp, r.max_hp
+                        )
+                    },
                 );
+                if let Some(state) = ammo {
+                    value.push_str(&robot_status(state, round_ticks));
+                }
                 if let Some(drive) = &drive {
                     value.push_str(&format!(
                         "\n{speed:.1} m/s    {}",
@@ -730,8 +787,10 @@ pub fn update_hud(
                 }
                 if let Some(r) = session.referee() {
                     if session.role != rm_simulator_server::protocol::Role::Referee {
-                        value
-                            .push_str(&format!("\n{} GOLD", r.gameplay.gold[session.team.index()]));
+                        value.push_str(&format!(
+                            "\n{} GOLD",
+                            r.game.teams[session.team.index()].gold
+                        ));
                     }
                     if let Some(buff) = &r.teams[session.team.index()].buff {
                         let elapsed_ns = if !session.paused && r.phase == MatchPhase::Running {
@@ -766,7 +825,7 @@ pub fn update_hud(
                 });
                 let mode = if session
                     .referee()
-                    .is_some_and(|r| r.gameplay.settings.enforce_allowance)
+                    .is_some_and(|r| r.game.policy.enforce_allowance)
                 {
                     "LEFT"
                 } else {
@@ -792,7 +851,13 @@ pub fn update_hud(
                 .join("\n"),
             Hud::Hint => {
                 if robot.is_some_and(|r| !r.alive()) {
-                    "ROBOT DEFEATED\nWaiting for revival".into()
+                    match ammo.and_then(|r| r.respawn.as_ref()) {
+                        Some(respawn) => format!(
+                            "ROBOT DEFEATED\nRespawn progress {}%",
+                            respawn.progress_ticks * 100 / respawn.required_ticks.max(1)
+                        ),
+                        None => "ROBOT DEFEATED\nWaiting for revival".into(),
+                    }
                 } else if !player.captured {
                     "CLICK FIELD TO CONTROL".into()
                 } else {

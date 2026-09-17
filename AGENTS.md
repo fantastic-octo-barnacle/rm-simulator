@@ -70,18 +70,21 @@ two disagree, this file wins.
   travels in the chassis command and the snapshot carries the turret pose,
   so peers see where each pilot points. The
   referee (`referee.rs`) runs the match clock, rune opportunities and
-  stages, rune buffs and a robot HP record per chassis (opened when the
-  chassis joins with the kind its `ChassisPlacement` names, all with the one
-  configured HP); four small armor modules on
-  the chassis body score like outpost armor and a defeated robot cannot
-  drive, aim or fire. Live bases have HP, shield, outpost protection and
-  projectile-scoring plates; destruction ends a running match. Only the defense
-  buff affects live damage, on bases, outposts and robots. Attack/cooling buffs,
-  referee power limits, heat and full competition progression remain unenforced
-  in the live simulation. The standalone gameplay engine has broader coverage;
-  see `docs/gameplay.md` before changing either integration. The chassis has an assumed shared
-  drivetrain power budget, requested separately from referee power enforcement.
-  Do not add further rule enforcement without being asked.
+  stages, and the `rm-simulator-gameplay` `Game`, which owns HP, damage,
+  heat, allowance, gold, experience, levels, performance types, respawn
+  (in place, weakened), buffs, base shield, outpost protection and rebuild,
+  and the single round's result. A robot record opens when the chassis
+  joins with the kind and optional performance its `ChassisPlacement`
+  names; four small armor modules on the chassis body score like outpost
+  armor, collisions against them cost HP, and a defeated robot cannot drive,
+  aim or fire until it respawns. Idle is free practice. The outpost rotor
+  starts with the round and stops at its first destruction or at 3:00. Buff
+  zones other than the outpost-radius rebuild zone, referee power limits,
+  remote exchanges, engineer, drone, dart, sentry and radar equipment and
+  multi-round series remain unenforced in the live simulation; see
+  `docs/gameplay.md` before changing either side. The chassis has an assumed
+  shared drivetrain power budget, requested separately from referee power
+  enforcement. Do not add further rule enforcement without being asked.
   The rulebook does not describe how an activated rune looks beyond its
   arms being lit or how long a struck module flashes; the three 2 Hz blinks and
   the 50 ms grey flash are app settings, not rule constants.
@@ -116,7 +119,7 @@ See `docs/field-package.md` for composition, collision contracts and deployment.
 
 | Path | Contents |
 |---|---|
-| `crates/rm-simulator-gameplay` | Standalone deterministic match engine and `live::Resources` for the world referee's economy/allowance tracking. No physics, rendering or other simulator-crate dependency. |
+| `crates/rm-simulator-gameplay` | Deterministic match engine the world referee runs as its live rules authority (re-exported as `rm_simulator_world::gameplay`). No physics, rendering or other simulator-crate dependency. |
 | `crates/rm-simulator-physics` | Bevy-free, gameplay-free Rapier library. `chassis.rs` owns wheel/body dynamics, `projectile.rs` owns stepping and raw armor contacts, `geometry.rs` owns shared collision captures and clearance queries, and `motion.rs` owns prescribed rotor/rail motion and fitted armor geometry. No other simulator crate dependency. |
 | `crates/rm-simulator-world` | Complete `Field` facade, rune activation, outpost/base HP, referee integration and `scoring.rs` detection/damage. Coordinates physics on explicit ticks and restores the whole world. Re-exports existing physical types through compatibility modules. |
 | `crates/rm-simulator-render` | Bevy scene. `cad.rs` (glTF scenery and roles), `rune.rs` and `outpost.rs` (light overlays with lit and struck materials), `projectile.rs` (pooled projectile spheres), `chassis.rs` (body, armor lights, omni wheels, two-axis gimbal), `sync.rs` (`SceneState` in, transforms and materials out), `lighting.rs`. Never depends on the world crate. |

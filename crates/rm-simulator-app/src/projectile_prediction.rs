@@ -249,6 +249,7 @@ mod tests {
                 config: ChassisConfig::default(),
                 team: Team::Red,
                 kind: rm_simulator_world::RobotKind::Infantry,
+                performance: None,
                 spawn: Pose::at([-5., 0., 1.]),
             }],
             ..Default::default()

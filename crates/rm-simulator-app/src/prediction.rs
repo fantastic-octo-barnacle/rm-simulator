@@ -311,6 +311,7 @@ mod tests {
                 config: ChassisConfig::default(),
                 team: Team::Red,
                 kind: rm_simulator_world::RobotKind::Infantry,
+                performance: None,
                 spawn: Pose::at([0., 0., ChassisConfig::default().rest_height_m()]),
             }],
             ..Default::default()
@@ -381,6 +382,7 @@ mod tests {
                 config: ChassisConfig::default(),
                 team: Team::Red,
                 kind: rm_simulator_world::RobotKind::Infantry,
+                performance: None,
                 spawn: Pose::at([0., 0., ChassisConfig::default().rest_height_m()]),
             }],
             ..Default::default()

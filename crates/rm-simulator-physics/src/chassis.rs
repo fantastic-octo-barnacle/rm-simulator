@@ -477,6 +477,9 @@ pub(crate) struct Chassis {
     aim_rad: [f64; 2],
     gimbal_velocity_rad_s: [f64; 2],
     defeated: bool,
+    /// Colliders the armor housings touched after the previous substep, so a
+    /// resting contact registers one collision rather than one per substep.
+    pub(crate) armor_touching: Vec<ColliderHandle>,
 }
 
 fn vector(v: [f64; 3]) -> Vector {
@@ -642,6 +645,7 @@ impl Chassis {
             aim_rad: [yaw_of(spawn), 0.0],
             gimbal_velocity_rad_s: [0.0; 2],
             defeated: false,
+            armor_touching: Vec::new(),
         })
     }
     /// Field-assigned identity of this chassis.

@@ -1142,7 +1142,9 @@ mod tests {
             "origin": Pose::at([4.0, 3.0, 0.0]),
             "speed_rad_s": 0.4,
             "hp": 0,
-            "destroyed_ns": 123_000_000_u64
+            "destroyed_ns": 123_000_000_u64,
+            "started_ns": null,
+            "homing": false
         });
         let mut outpost: Outpost = serde_json::from_value(saved.clone()).unwrap();
         outpost.validate().unwrap();
@@ -1634,6 +1636,7 @@ mod tests {
         config.chassis.push(ChassisPlacement {
             team: Team::Red,
             kind: rm_simulator_world::RobotKind::Infantry,
+            performance: None,
             config: ChassisConfig::default(),
             spawn: Pose::at([0., 0., 0.2]),
         });
@@ -1721,6 +1724,7 @@ mod tests {
             config.chassis.push(ChassisPlacement {
                 team: Team::Red,
                 kind: rm_simulator_world::RobotKind::Infantry,
+                performance: None,
                 spawn: Pose::at([index as f64, 0., chassis.rest_height_m()]),
                 config: chassis,
             });

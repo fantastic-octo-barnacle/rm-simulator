@@ -1397,6 +1397,7 @@ mod tests {
             .add_chassis(&ChassisPlacement {
                 team: Team::Red,
                 kind: rm_simulator_world::RobotKind::Infantry,
+                performance: None,
                 spawn: Pose::at([0., 0., 0.3]),
                 config: ChassisConfig::default(),
             })

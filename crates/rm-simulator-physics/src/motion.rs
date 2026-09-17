@@ -91,7 +91,40 @@ pub fn dart_target_fraction(time_ns: u64) -> f64 {
     0.5 - 0.5 * (phase * std::f64::consts::TAU).cos()
 }
 
-/// Analytic rotor motion; stopping and resuming are caller decisions.
+/// Section 5.5.1: after the match begins the outpost reaches its speed within
+/// five seconds. The linear ramp over the whole window is an assumption.
+pub const ROTOR_SPIN_UP_NS: u64 = 5_000_000_000;
+/// Section 5.5.1: a live outpost that stops rotating returns to its initial
+/// position within ten seconds.
+pub const ROTOR_HOMING_NS: u64 = 10_000_000_000;
+
+/// Analytic rotor motion; starting, stopping and homing are caller decisions.
+///
+/// ```
+/// use rm_simulator_physics::motion::{RotorMotion, outpost, ROTOR_HOMING_NS, ROTOR_SPIN_UP_NS};
+/// use rm_simulator_physics::Pose;
+///
+/// let mut rotor = RotorMotion {
+///     pivot_cad_m: outpost::PIVOT_CAD_M,
+///     origin: Pose::default(),
+///     speed_rad_s: outpost::DEFAULT_SPEED_RAD_S,
+///     stopped_at_ns: None,
+///     started_ns: Some(1_000_000_000),
+///     homing: false,
+/// };
+/// // At rest until the match starts, then ramping up.
+/// assert_eq!(rotor.angle_at(500_000_000), 0.0);
+/// assert!(rotor.angle_at(2_000_000_000) > 0.0);
+/// assert_eq!(rotor.speed_at(1_000_000_000 + ROTOR_SPIN_UP_NS), outpost::DEFAULT_SPEED_RAD_S);
+/// // A homing stop settles on a 120 degree armor position within ten seconds.
+/// rotor.stopped_at_ns = Some(9_000_000_000);
+/// rotor.homing = true;
+/// let home = rotor.angle_at(9_000_000_000 + ROTOR_HOMING_NS);
+/// let step = std::f64::consts::TAU / 3.0;
+/// let off = (home / step).round() * step - home;
+/// assert!(off.abs() < 1e-9);
+/// assert_eq!(rotor.speed_at(9_000_000_000 + ROTOR_HOMING_NS), 0.0);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RotorMotion {
     /// Rotor pivot relative to the tower base, in the CAD frame where x is
@@ -102,16 +135,86 @@ pub struct RotorMotion {
     pub origin: Pose,
     /// Constant rotation rate about world up, in radians per second.
     pub speed_rad_s: f64,
-    /// Keep the existing serialized checkpoint field name.
+    /// Time the rotor stopped. Keep the existing serialized checkpoint field name.
     #[serde(rename = "destroyed_ns")]
     pub stopped_at_ns: Option<u64>,
+    /// Match start. With one, the rotor rests at its initial angle before it
+    /// and ramps up over [`ROTOR_SPIN_UP_NS`]; without one it turns at full
+    /// speed from time zero, as in training.
+    #[serde(default)]
+    pub started_ns: Option<u64>,
+    /// Whether a stop decelerates back to the initial position over
+    /// [`ROTOR_HOMING_NS`] (a live outpost, section 5.5.1) rather than holding
+    /// the angle it had (a destroyed one).
+    #[serde(default)]
+    pub homing: bool,
 }
 impl RotorMotion {
-    /// Rotor angle at `time_ns`, wrapped to one turn. Holds the angle reached
-    /// at `stopped_at_ns` instead of advancing past it.
+    /// Unwrapped spin angle and speed at `time_ns`, ignoring any stop.
+    fn spin(&self, time_ns: u64) -> (f64, f64) {
+        let Some(start) = self.started_ns else {
+            return (time_ns as f64 * 1e-9 * self.speed_rad_s, self.speed_rad_s);
+        };
+        let elapsed_s = time_ns.saturating_sub(start) as f64 * 1e-9;
+        let ramp_s = ROTOR_SPIN_UP_NS as f64 * 1e-9;
+        if elapsed_s < ramp_s {
+            (
+                self.speed_rad_s * elapsed_s * elapsed_s / (2.0 * ramp_s),
+                self.speed_rad_s * elapsed_s / ramp_s,
+            )
+        } else {
+            (
+                self.speed_rad_s * (elapsed_s - ramp_s / 2.0),
+                self.speed_rad_s,
+            )
+        }
+    }
+    /// Unwrapped angle and angular speed at `time_ns`. A homing stop follows a
+    /// cubic Hermite curve from the stop angle and speed to rest at the first
+    /// 120 degree armor position far enough ahead that the curve never turns
+    /// back (at least a third of the distance the stop speed would cover).
+    fn state_at(&self, time_ns: u64) -> (f64, f64) {
+        let Some(stop) = self.stopped_at_ns else {
+            return self.spin(time_ns);
+        };
+        let (angle, speed) = self.spin(stop);
+        if !self.homing {
+            return if time_ns < stop {
+                self.spin(time_ns)
+            } else {
+                (angle, 0.0)
+            };
+        }
+        if time_ns < stop {
+            return self.spin(time_ns);
+        }
+        let homing_s = ROTOR_HOMING_NS as f64 * 1e-9;
+        let u = (time_ns.saturating_sub(stop) as f64 * 1e-9 / homing_s).min(1.0);
+        let step = std::f64::consts::TAU / 3.0;
+        let reach = (angle + speed * homing_s / 3.0) / step;
+        let target = if speed >= 0.0 {
+            reach.ceil()
+        } else {
+            reach.floor()
+        } * step;
+        let tangent = speed * homing_s;
+        let (u2, u3) = (u * u, u * u * u);
+        let position = angle * (2.0 * u3 - 3.0 * u2 + 1.0)
+            + tangent * (u3 - 2.0 * u2 + u)
+            + target * (3.0 * u2 - 2.0 * u3);
+        let velocity = (angle * (6.0 * u2 - 6.0 * u)
+            + tangent * (3.0 * u2 - 4.0 * u + 1.0)
+            + target * (6.0 * u - 6.0 * u2))
+            / homing_s;
+        (position, velocity)
+    }
+    /// Rotor angle at `time_ns`, wrapped to one turn.
     pub fn angle_at(&self, time_ns: u64) -> f64 {
-        let time_ns = self.stopped_at_ns.map_or(time_ns, |stop| time_ns.min(stop));
-        (time_ns as f64 * 1e-9 * self.speed_rad_s).rem_euclid(std::f64::consts::TAU)
+        self.state_at(time_ns).0.rem_euclid(std::f64::consts::TAU)
+    }
+    /// Angular speed at `time_ns`, in radians per second.
+    pub fn speed_at(&self, time_ns: u64) -> f64 {
+        self.state_at(time_ns).1
     }
     /// The three armor scoring face poses at `time_ns`, in face order.
     pub fn armor_poses(&self, time_ns: u64) -> [Pose; 3] {

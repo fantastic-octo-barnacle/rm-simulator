@@ -457,6 +457,7 @@ pub fn chassis_placement(
         spawn,
         team,
         kind,
+        performance: None,
     }
 }
 
@@ -715,6 +716,7 @@ mod tests {
                 .add_chassis(&ChassisPlacement {
                     team: Team::Red,
                     kind: rm_simulator_world::RobotKind::Infantry,
+                    performance: None,
                     spawn: Pose::at([start[0], start[1], config.rest_height_m()]),
                     config,
                 })

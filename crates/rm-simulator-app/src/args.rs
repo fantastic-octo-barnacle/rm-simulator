@@ -20,6 +20,48 @@ pub const DEFAULT_RUNE_FLASH_HZ: f64 = 2.0;
 /// How many times an activated rune blinks before its arms stay lit.
 pub const DEFAULT_RUNE_FLASHES: u32 = 3;
 
+/// A performance type named on the command line (Tables 5-12 to 5-14).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum PerformanceChoice {
+    /// Long-range attack-focused Hero.
+    LongRange,
+    /// Melee-focused Hero.
+    Melee,
+    /// HP-focused chassis with a cooling-focused launcher.
+    HpCooling,
+    /// HP-focused chassis with a burst-focused launcher.
+    HpBurst,
+    /// Power-focused chassis with a cooling-focused launcher.
+    PowerCooling,
+    /// Power-focused chassis with a burst-focused launcher.
+    PowerBurst,
+}
+impl PerformanceChoice {
+    /// The rules' performance value for this choice.
+    pub fn performance(self) -> rm_simulator_world::gameplay::Performance {
+        use rm_simulator_world::gameplay::{
+            HeroType, InfantryChassis, InfantryLauncher, Performance,
+        };
+        let infantry = |chassis, launcher| Performance::Infantry { chassis, launcher };
+        match self {
+            Self::LongRange => Performance::Hero(HeroType::LongRangeFocused),
+            Self::Melee => Performance::Hero(HeroType::MeleeFocused),
+            Self::HpCooling => {
+                infantry(InfantryChassis::HpFocused, InfantryLauncher::CoolingFocused)
+            }
+            Self::HpBurst => infantry(InfantryChassis::HpFocused, InfantryLauncher::BurstFocused),
+            Self::PowerCooling => infantry(
+                InfantryChassis::PowerFocused,
+                InfantryLauncher::CoolingFocused,
+            ),
+            Self::PowerBurst => infantry(
+                InfantryChassis::PowerFocused,
+                InfantryLauncher::BurstFocused,
+            ),
+        }
+    }
+}
+
 /// One parsed launch. The title screen keeps the instance as `BaseArgs` and
 /// copies it into each `JoinRequest`, so a menu choice starts the same match the
 /// equivalent command line would.
@@ -69,6 +111,12 @@ pub struct Args {
     /// infantries fire 17 mm. Every host, local or remote, honours the pick.
     #[arg(long, value_enum, default_value_t = Robot::default())]
     pub robot: Robot,
+    /// Section 5.4.2 performance type to request after joining: `long-range`
+    /// or `melee` for a Hero, `hp-cooling`, `hp-burst`, `power-cooling` or
+    /// `power-burst` for an infantry. Unset keeps the rulebook default; a host
+    /// refuses a type for the other robot class or during a running round.
+    #[arg(long, value_enum)]
+    pub performance: Option<PerformanceChoice>,
     /// Start position in world FLU metres, `x,y,z`. Driving, the chassis is set
     /// down on the highest ground below `z`. Defaults to the red side before the centre-line plateau.
     #[arg(long, value_parser = parse_vec3, allow_hyphen_values = true)]
@@ -303,6 +351,21 @@ mod tests {
             assert_eq!(args.console.unwrap().port(), 0);
         }
         assert!(Args::try_parse_from(["rm-simulator", "--window-mode", "hidden"]).is_err());
+    }
+    #[test]
+    fn a_performance_choice_names_the_rules_type() {
+        use rm_simulator_world::gameplay::{HeroType, Performance, RobotKind};
+        assert_eq!(Args::parse_from(["rm-simulator"]).performance, None);
+        let hero = Args::parse_from(["rm-simulator", "--robot", "hero", "--performance", "melee"]);
+        assert_eq!(
+            hero.performance.unwrap().performance(),
+            Performance::Hero(HeroType::MeleeFocused)
+        );
+        let infantry = Args::parse_from(["rm-simulator", "--performance", "hp-cooling"]);
+        assert_eq!(
+            Some(infantry.performance.unwrap().performance()),
+            Performance::default_for(RobotKind::Infantry)
+        );
     }
     #[test]
     fn the_robot_fixes_the_caliber_and_travels_to_remote_hosts_too() {

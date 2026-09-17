@@ -2,8 +2,8 @@
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
 //! Run with `just gameplay-demo`. No CAD, renderer, sockets or wall clock.
 use rm_simulator_gameplay::{
-    COUNTDOWN_TICKS, Command, Config, DamageKind, Game, INITIALIZATION_TICKS, MatchFormat, Phase,
-    RobotConfig, RobotKind, SETUP_TICKS, Target, Team,
+    COUNTDOWN_TICKS, Command, Config, DamageKind, Game, INITIALIZATION_TICKS, MatchFormat,
+    Performance, Phase, RobotConfig, RobotKind, SETUP_TICKS, Target, Team,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,13 +16,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 id: i as u32,
                 team,
                 kind: RobotKind::Infantry,
-                // Level-1 HP-focused infantry HP, Table 5-13. Heat and cooling
-                // below are scenario parameters, not a performance-table preset.
-                max_hp: 200,
-                heat_limit: 100,
-                cooling_per_s: 20,
+                // Section 5.4.2 default: HP-focused, cooling-focused.
+                performance: Performance::default_for(RobotKind::Infantry)
+                    .expect("infantry has performance tables"),
             })
             .collect(),
+        ..Config::default()
     })?;
     while game.snapshot().phase != Phase::MatchEnded {
         game.command(Command::BeginRound)?;

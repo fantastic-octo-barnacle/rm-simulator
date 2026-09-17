@@ -983,6 +983,7 @@ mod tests {
                 spawn: Pose::yawed([1.0, 0.0, config.rest_height_m()], yaw),
                 team: Team::Blue,
                 kind: rm_simulator_world::RobotKind::Infantry,
+                performance: None,
             }],
             ..Default::default()
         })
