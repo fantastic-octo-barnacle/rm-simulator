@@ -14,16 +14,18 @@ use rm_simulator_world::{ChassisConfig, ChassisSnapshot};
 use serde::{Deserialize, Serialize};
 use std::io;
 
-/// Anchor magic, `RMO5`, checked before any field is read. The fifth revision
-/// keeps the `RMO4` header and configuration reference but quantizes every
-/// dynamic float: translations to millimetres, quaternions to 1/32767,
-/// velocities to 1 cm/s, rates to 1 mrad/s and aims to 0.1 mrad. Aims ride
+/// Anchor magic, `RMO6`, checked before any field is read. The sixth revision
+/// keeps the `RMO4` header and configuration reference and quantizes every
+/// dynamic float: translations to millimetres, velocities to 1 cm/s, rates to
+/// 1 mrad/s and aims to 0.1 mrad. Quaternions travel smallest-three in six
+/// bytes (see [`crate::binary_snapshot::bitpack::smallest_three`]), where
+/// `RMO5` spent eight on four 1/32767 components. Aims ride
 /// 32-bit alongside wheel roll because both rotate without bound; every other
 /// range fits 16 bits with room for violent motion (±327 m/s, ±32 rad/s). A
 /// hostile or corrupt anchor still decodes to finite values, and
 /// out-of-range or non-finite dynamics fail at encode time, so the datagram
 /// size stays fixed whatever the motion.
-pub const MAGIC: &[u8; 4] = b"RMO5";
+pub const MAGIC: &[u8; 4] = b"RMO6";
 /// Largest accepted anchor datagram in bytes. An encoding past this fails
 /// rather than fragmenting, because one anchor must fit one datagram.
 pub const MAX_BYTES: usize = 1000;
@@ -174,15 +176,11 @@ impl OwnerAnchor {
         for v in self.owner.pose.translation_m {
             bytes.extend(quantize_i32(v, POS_MM)?.to_le_bytes());
         }
-        for v in self.owner.pose.rotation_wxyz {
-            bytes.extend(quantize_i16(v, QUAT_SCALE)?.to_le_bytes());
-        }
+        bytes.extend(rotation(self.owner.pose.rotation_wxyz)?);
         for v in self.owner.turret.translation_m {
             bytes.extend(quantize_i32(v, POS_MM)?.to_le_bytes());
         }
-        for v in self.owner.turret.rotation_wxyz {
-            bytes.extend(quantize_i16(v, QUAT_SCALE)?.to_le_bytes());
-        }
+        bytes.extend(rotation(self.owner.turret.rotation_wxyz)?);
         for v in self.owner.velocity_m_s {
             bytes.extend(quantize_i16(v, VEL_SCALE)?.to_le_bytes());
         }
@@ -269,11 +267,11 @@ impl OwnerAnchor {
         }
         let pose = Pose {
             translation_m: reader.q32_array::<3>(POS_MM)?,
-            rotation_wxyz: normalize(reader.q16_array::<4>(QUAT_SCALE)?)?,
+            rotation_wxyz: reader.rotation()?,
         };
         let turret = Pose {
             translation_m: reader.q32_array::<3>(POS_MM)?,
-            rotation_wxyz: normalize(reader.q16_array::<4>(QUAT_SCALE)?)?,
+            rotation_wxyz: reader.rotation()?,
         };
         let velocity_m_s = reader.q16_array::<3>(VEL_SCALE)?;
         let angular_velocity_rad_s = reader.q16_array::<3>(RATE_SCALE)?;
@@ -325,15 +323,13 @@ impl OwnerAnchor {
         })
     }
 }
-/// Quantizer scales for the `RMO5` dynamic body, chosen to mirror the
-/// checkpoint precisions: millimetre positions, 1/32767 quaternions,
+/// Quantizer scales for the `RMO6` dynamic body, chosen to mirror the
+/// checkpoint precisions: millimetre positions, smallest-three quaternions,
 /// centimetre-per-second velocities, milliradian-per-second rates and
 /// 0.1 mrad aims. Wheel roll keeps 0.1 mrad in 32 bits because roll is
 /// unbounded; every other range fits 16 bits with room for violent motion
 /// (±327 m/s, ±32 rad/s, ±3.27 rad of aim).
 const POS_MM: f64 = 1000.;
-/// Quaternion component scale, matching the checkpoint wire grid.
-const QUAT_SCALE: f64 = 32767.;
 /// Body and wheel velocity scale, in units per m/s.
 const VEL_SCALE: f64 = 100.;
 /// Body, gimbal and yaw rate scale, in units per rad/s.
@@ -367,6 +363,13 @@ fn quantize_i32(value: f64, scale: f64) -> io::Result<i32> {
         return Err(invalid());
     }
     Ok(quantized as i32)
+}
+/// A quaternion as its six-byte little-endian smallest-three packing, refusing
+/// a non-finite or non-unit rotation.
+fn rotation(rotation_wxyz: [f64; 4]) -> io::Result<[u8; 6]> {
+    let packed =
+        crate::binary_snapshot::bitpack::smallest_three(rotation_wxyz).ok_or_else(invalid)?;
+    Ok(packed.to_le_bytes()[..6].try_into().expect("six bytes"))
 }
 /// Normalize a decoded quaternion, rejecting a zero or grossly non-unit norm
 /// the same way the checkpoint boundary does: integers always decode finite,
@@ -421,6 +424,15 @@ impl Reader<'_> {
     /// Read one little-endian i32 and return its value in source units.
     fn q32(&mut self, scale: f64) -> io::Result<f64> {
         Ok(i32::from_le_bytes(self.take()?) as f64 / scale)
+    }
+    /// Read one six-byte smallest-three quaternion, normalized.
+    fn rotation(&mut self) -> io::Result<[f64; 4]> {
+        let mut packed = [0; 8];
+        packed[..6].copy_from_slice(&self.take::<6>()?);
+        let rotation =
+            crate::binary_snapshot::bitpack::from_smallest_three(u64::from_le_bytes(packed))
+                .ok_or_else(invalid)?;
+        normalize(rotation)
     }
     /// Read `N` little-endian i32 values, each in source units.
     fn q32_array<const N: usize>(&mut self, scale: f64) -> io::Result<[f64; N]> {
@@ -492,7 +504,7 @@ mod tests {
     }
 
     /// Dynamics decode within their quantization steps: millimetre
-    /// positions, 1/32767 quaternions, 1 cm/s velocities, 1 mrad/s rates and
+    /// positions, smallest-three quaternions (within 2e-4 rad, either sign), 1 cm/s velocities, 1 mrad/s rates and
     /// 0.1 mrad aims. Wheel roll keeps 0.1 mrad in 32 bits.
     fn assert_quantized(expected: &OwnerAnchor, actual: &OwnerAnchor) {
         assert_eq!(expected.snapshot_id, actual.snapshot_id);
@@ -518,14 +530,17 @@ mod tests {
         {
             close(a, b, 0.001);
         }
-        for (a, b) in expected
-            .owner
-            .pose
-            .rotation_wxyz
-            .into_iter()
-            .zip(actual.owner.pose.rotation_wxyz)
-        {
-            close(a, b, 1. / 32767. + 1e-9);
+        for (a, b) in [
+            (expected.owner.pose, actual.owner.pose),
+            (expected.owner.turret, actual.owner.turret),
+        ] {
+            let dot: f64 = a
+                .rotation_wxyz
+                .iter()
+                .zip(b.rotation_wxyz)
+                .map(|(a, b)| a * b)
+                .sum();
+            close(2. * dot.abs().min(1.).acos(), 0., 2e-4);
         }
         for (a, b) in expected
             .owner

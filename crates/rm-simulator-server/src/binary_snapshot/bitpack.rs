@@ -13,10 +13,13 @@
 //! Deltas inherit shape from an explicitly named baseline tree, never the
 //! previous packet. Every value in a delta costs one "changed" bit; a changed
 //! sequence, map, option or enum adds one "same shape" bit and either recurses
-//! against the baseline or carries the new value in full. `f64` values on a
-//! fixed-point grid take a grid index and a narrow integer, as a small integer
-//! difference in a delta; others take 32 bits when `f32` holds them exactly and
-//! 64 bits otherwise.
+//! against the baseline or carries the new value in full. A [`Rounding`] rule
+//! chooses by field path how `f64` values pack, and the decoder walks the same
+//! path, so no grid index travels: a [`Fixed::Grid`] value is a flag bit and
+//! its step count, and in a delta an exponential-Golomb step difference; a
+//! [`Fixed::Rotation`] quaternion is smallest-three. Unrounded values keep the
+//! tagged form: a legacy grid search, then 32 bits when `f32` holds them
+//! exactly and 64 bits otherwise.
 //!
 //! Types that need a self-describing format (`#[serde(flatten)]`, untagged or
 //! internally tagged enums, `skip_serializing_if`) are refused rather than
@@ -60,6 +63,188 @@ fn grid(n: f64, index: usize) -> Option<i64> {
 fn fixed_pair(a: f64, b: f64) -> Option<(usize, i64, i64)> {
     (0..GRIDS.len()).find_map(|i| Some((i, grid(a, i)?, grid(b, i)?)))
 }
+/// A fixed-point grid selected by a [`Rounding`] rule: values round to
+/// `1 / scale` steps held in a signed integer of `width` bits, and a delta
+/// codes the step difference as an order-`k` exponential-Golomb number. The
+/// grid is a property of the field path, so neither end names it on the wire.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Grid {
+    /// Steps per unit.
+    pub scale: f64,
+    /// Signed integer width in bits the step count must fit.
+    pub width: u32,
+    /// Exponential-Golomb order for a delta's step difference; the typical
+    /// difference magnitude in bits.
+    pub k: u32,
+}
+impl Grid {
+    /// `value` rounded onto the grid, or `value` itself, exact, when the
+    /// rounded step count is nonfinite or outside `width` bits. A zero step is
+    /// positive zero. Idempotent: a rounded value rounds to itself.
+    ///
+    /// ```
+    /// use rm_simulator_server::binary_snapshot::bitpack::Grid;
+    /// let mm = Grid { scale: 1000., width: 18, k: 6 };
+    /// assert_eq!(mm.round(1.23456), 1.235);
+    /// assert_eq!(mm.round(200.), 200.);
+    /// assert_eq!(mm.round(-0.0001).to_bits(), 0.0_f64.to_bits());
+    /// ```
+    pub fn round(self, value: f64) -> f64 {
+        let q = (value * self.scale).round();
+        let bound = (1_u64 << (self.width - 1)) as f64;
+        if !q.is_finite() || q < -bound || q >= bound {
+            return value;
+        }
+        q / self.scale + 0.0
+    }
+    /// The step count of `value` when it is exactly on this grid.
+    fn steps(self, n: f64) -> Option<i64> {
+        if n.to_bits() == (-0.0_f64).to_bits() {
+            return None;
+        }
+        let q = (n * self.scale).round();
+        let bound = (1_i64 << (self.width - 1)) as f64;
+        (q >= -bound && q < bound && (q / self.scale).to_bits() == n.to_bits()).then_some(q as i64)
+    }
+}
+
+/// How a [`Rounding`] rule packs the `f64` values beneath it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Fixed {
+    /// Exact: a legacy grid search, then `f32` or `f64` bits.
+    Exact,
+    /// Rounded onto this grid, which the wire does not name.
+    Grid(Grid),
+    /// A four-element tuple is a unit quaternion sent smallest-three: the
+    /// index of its largest-magnitude component, then the other three,
+    /// sign-normalized so the largest is positive, on a
+    /// [`ROTATION_BITS`]-bit grid spanning ±1/√2. The largest is rebuilt as
+    /// `sqrt(1 - sum of squares)`. A non-unit or unstable quaternion keeps its
+    /// exact bits. Lone `f64` values beneath stay exact.
+    Rotation,
+}
+
+/// Signed bits per smallest-three quaternion component. Application choice,
+/// not a rule constant: over 200,000 random unit quaternions 15 bits measure a
+/// 1.3e-4 rad worst and 4.7e-5 rad mean rotation error, against 5.8e-5 and
+/// 2.9e-5 rad for the earlier four 16-bit components (51 bits against 84).
+pub const ROTATION_BITS: u32 = 15;
+/// Steps per unit for smallest-three components: the largest scale whose
+/// ±1/√2 range fits [`ROTATION_BITS`] signed bits.
+const ROTATION_SCALE: f64 = ((1_u64 << (ROTATION_BITS - 1)) - 1) as f64 * std::f64::consts::SQRT_2;
+/// Exponential-Golomb order for smallest-three component step differences,
+/// the smallest measured over the dictionary training workloads.
+const ROTATION_K: u32 = 7;
+/// Largest accepted |norm² - 1| for a smallest-three quaternion. It must admit
+/// a tie-raised reconstruction (about 1e-4 off unit at most); physics
+/// quaternions are unit far more closely.
+const ROTATION_NORM_TOLERANCE: f64 = 1e-3;
+
+/// A smallest-three code: largest-component index and the other three steps.
+type RotationCode = (u8, [i64; 3]);
+
+fn rotation_quantize(x: [f64; 4]) -> Option<RotationCode> {
+    if !x.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let norm = x.iter().map(|v| v * v).sum::<f64>();
+    if (norm - 1.).abs() > ROTATION_NORM_TOLERANCE {
+        return None;
+    }
+    let mut index = 0;
+    for i in 1..4 {
+        if x[i].abs() > x[index].abs() {
+            index = i;
+        }
+    }
+    let sign = if x[index] < 0. { -1. } else { 1. };
+    let bound = (1_i64 << (ROTATION_BITS - 1)) as f64;
+    let mut steps = [0; 3];
+    for (slot, i) in (0..4).filter(|&i| i != index).enumerate() {
+        let q = (sign * x[i] * ROTATION_SCALE).round();
+        if q < -bound || q >= bound {
+            return None;
+        }
+        steps[slot] = q as i64;
+    }
+    Some((index as u8, steps))
+}
+fn rotation_value((index, steps): RotationCode) -> [f64; 4] {
+    let others = steps.map(|q| q as f64 / ROTATION_SCALE + 0.0);
+    let sum = others.iter().map(|v| v * v).sum::<f64>();
+    // Near a tie the rounded others can exceed the rebuilt largest. Raising it
+    // to an exact tie makes the lower index win when the value is quantized
+    // again, which then reproduces itself instead of flipping back and forth.
+    let largest = others
+        .iter()
+        .fold((1. - sum).max(0.).sqrt(), |m, v| m.max(v.abs()));
+    let mut x = [0.; 4];
+    let mut rest = others.into_iter();
+    for (i, slot) in x.iter_mut().enumerate() {
+        *slot = if i == usize::from(index) {
+            largest
+        } else {
+            rest.next().unwrap_or(0.)
+        };
+    }
+    x
+}
+/// The code a quaternion packs as, when there is one both ends reproduce: the
+/// code must quantize its own reconstruction back to itself, so a decoder that
+/// rebuilds its baseline from the decoded value lands on the same code. A
+/// near-tie between the two largest components can move the index once; a
+/// value with no fixed point within three steps keeps its exact bits, which
+/// the decoder's rebuild reproduces because this is a pure function.
+fn rotation_code(x: [f64; 4]) -> Option<RotationCode> {
+    let mut code = rotation_quantize(x)?;
+    for _ in 0..3 {
+        let again = rotation_quantize(rotation_value(code))?;
+        if again == code {
+            return Some(code);
+        }
+        code = again;
+    }
+    None
+}
+
+/// Bits in one [`smallest_three`] packing: a 2-bit index and three
+/// [`ROTATION_BITS`]-bit components.
+pub const SMALLEST_THREE_BITS: u32 = 2 + 3 * ROTATION_BITS;
+
+/// A near-unit quaternion packed smallest-three into the low
+/// [`SMALLEST_THREE_BITS`] bits, for fixed layouts with no baseline such as the
+/// owner anchor. `None` for a non-finite or non-unit quaternion.
+///
+/// ```
+/// use rm_simulator_server::binary_snapshot::bitpack::{from_smallest_three, smallest_three};
+/// let yaw = [0.8_f64.sqrt(), 0., 0., -0.2_f64.sqrt()];
+/// let back = from_smallest_three(smallest_three(yaw).unwrap()).unwrap();
+/// assert!(yaw.iter().zip(back).all(|(a, b)| (a - b).abs() < 1e-4));
+/// assert_eq!(smallest_three([2., 0., 0., 0.]), None);
+/// ```
+pub fn smallest_three(x: [f64; 4]) -> Option<u64> {
+    let (index, steps) = rotation_quantize(x)?;
+    let mask = (1_u64 << ROTATION_BITS) - 1;
+    Some(
+        steps
+            .iter()
+            .enumerate()
+            .fold(u64::from(index), |packed, (i, q)| {
+                packed | ((*q as u64 & mask) << (2 + ROTATION_BITS * i as u32))
+            }),
+    )
+}
+/// The quaternion a [`smallest_three`] packing rebuilds, its largest component
+/// positive; `None` when bits above [`SMALLEST_THREE_BITS`] are set.
+pub fn from_smallest_three(packed: u64) -> Option<[f64; 4]> {
+    if packed >> SMALLEST_THREE_BITS != 0 {
+        return None;
+    }
+    let shift = 64 - ROTATION_BITS;
+    let steps = [0, 1, 2].map(|i| ((packed >> (2 + ROTATION_BITS * i) << shift) as i64) >> shift);
+    Some(rotation_value(((packed & 3) as u8, steps)))
+}
+
 fn zigzag(n: i64) -> u64 {
     ((n << 1) ^ (n >> 63)) as u64
 }
@@ -120,8 +305,14 @@ pub enum Node {
     Int(i64),
     /// 32 raw bits.
     F32(f32),
-    /// Fixed-point grid, exact `f32` or 64 raw bits.
+    /// An unrounded `f64`: legacy grid search, exact `f32` or 64 raw bits.
     F64(f64),
+    /// An `f64` under a [`Fixed::Grid`] rule, already rounded: a flag bit and
+    /// `width` bits on the grid, otherwise its exact bits.
+    Fixed(Grid, f64),
+    /// A quaternion under [`Fixed::Rotation`]: its smallest-three code when it
+    /// has one, and the value that code rebuilds (or the exact value).
+    Rotation(Option<RotationCode>, [f64; 4]),
     /// Length-prefixed UTF-8, byte-aligned.
     Text(String),
     /// Length-prefixed bytes, byte-aligned.
@@ -149,7 +340,10 @@ impl PartialEq for Node {
             (Uint(a), Uint(b)) => a == b,
             (Int(a), Int(b)) => a == b,
             (F32(a), F32(b)) => a.to_bits() == b.to_bits(),
-            (F64(a), F64(b)) => a.to_bits() == b.to_bits(),
+            (F64(a), F64(b)) | (Fixed(_, a), Fixed(_, b)) => a.to_bits() == b.to_bits(),
+            (Rotation(i, a), Rotation(j, b)) => {
+                i == j && a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits())
+            }
             (Text(a), Text(b)) => a == b,
             (Bytes(a), Bytes(b)) => a == b,
             (Some(a), Some(b)) => a == b,
@@ -166,8 +360,9 @@ impl PartialEq for Node {
 pub trait Rounding: Copy {
     /// The rule for field `key` of a struct under this rule.
     fn field(self, key: &'static str) -> Self;
-    /// The value to encode for `value` under this rule.
-    fn round(self, value: f64) -> f64;
+    /// How `f64` values directly under this rule pack. The decoder asks the
+    /// same rule along the same path, so nothing about it travels.
+    fn fixed(self) -> Fixed;
 }
 /// Encode every value exactly.
 #[derive(Clone, Copy)]
@@ -176,8 +371,8 @@ impl Rounding for Exact {
     fn field(self, _: &'static str) -> Self {
         self
     }
-    fn round(self, value: f64) -> f64 {
-        value
+    fn fixed(self) -> Fixed {
+        Fixed::Exact
     }
 }
 
@@ -189,7 +384,7 @@ pub fn to_node<T: Serialize + ?Sized>(value: &T) -> Result<Node> {
 pub fn to_node_with<T: Serialize + ?Sized, R: Rounding>(value: &T, rule: R) -> Result<Node> {
     value.serialize(NodeSerializer(rule))
 }
-/// Decodes a tree produced by [`to_node`] into `T`.
+/// Decodes a tree produced by [`to_node`] or [`to_node_with`] into `T`.
 pub fn from_node<T: DeserializeOwned>(node: &Node) -> Result<T> {
     T::deserialize(NodeDe(node))
 }
@@ -218,6 +413,7 @@ pub fn from_bytes<T: DeserializeOwned>(bytes: &[u8]) -> io::Result<T> {
         r: &mut r,
         base: None,
         depth: 0,
+        rule: Exact,
     })?;
     r.finish()?;
     Ok(value)
@@ -271,12 +467,43 @@ pub fn header(bytes: &[u8]) -> io::Result<(bool, u64, u64)> {
     Ok((r.bit1()?, r.var()?, r.var()?))
 }
 
-/// Decode against only the named retained baseline. The decoder limits bytes,
-/// depth, value count, lengths, variant indexes and trailing padding.
+/// Decode against only the named retained baseline, with every number exact.
+/// The decoder limits bytes, depth, value count, lengths, variant indexes and
+/// trailing padding.
 pub fn decode<T: DeserializeOwned>(
     bytes: &[u8],
     baseline: Option<(&Node, u64)>,
     epoch: u64,
+) -> io::Result<(T, u64)> {
+    decode_with(bytes, baseline, epoch, Exact)
+}
+
+/// [`decode`] for a frame whose tree was built by [`to_node_with`] under
+/// `rule`: the rule supplies every grid and quaternion form the wire omits.
+/// Rebuilding a baseline from the decoded value with the same rule gives the
+/// encoder's tree bit for bit.
+///
+/// ```
+/// use rm_simulator_server::binary_snapshot::bitpack::{
+///     Fixed, Grid, Rounding, decode_with, encode, to_node_with,
+/// };
+/// #[derive(Clone, Copy)]
+/// struct Millimetres;
+/// impl Rounding for Millimetres {
+///     fn field(self, _: &'static str) -> Self { self }
+///     fn fixed(self) -> Fixed { Fixed::Grid(Grid { scale: 1000., width: 18, k: 6 }) }
+/// }
+/// let node = to_node_with(&[1.23456_f64, -2.0], Millimetres).unwrap();
+/// let bytes = encode(&node, None, 0, 0).unwrap();
+/// let (value, _) = decode_with::<[f64; 2], _>(&bytes, None, 0, Millimetres).unwrap();
+/// assert_eq!(value, [1.235, -2.0]);
+/// assert_eq!(to_node_with(&value, Millimetres).unwrap(), node);
+/// ```
+pub fn decode_with<T: DeserializeOwned, R: Rounding>(
+    bytes: &[u8],
+    baseline: Option<(&Node, u64)>,
+    epoch: u64,
+    rule: R,
 ) -> io::Result<(T, u64)> {
     let (delta, frame_epoch, id) = header(bytes)?;
     if frame_epoch != epoch {
@@ -299,6 +526,7 @@ pub fn decode<T: DeserializeOwned>(
         r: &mut r,
         base,
         depth: 0,
+        rule,
     })?;
     r.finish()?;
     Ok((value, id))
@@ -312,6 +540,8 @@ struct NodeSerializer<R>(R);
 enum Kind {
     Seq,
     Tuple,
+    /// A four-element tuple under [`Fixed::Rotation`].
+    Rotation,
     Variant(u32),
 }
 #[doc(hidden)]
@@ -321,12 +551,25 @@ pub struct Items<R> {
     kind: Kind,
 }
 impl<R> Items<R> {
-    fn finish(self) -> Node {
-        match self.kind {
+    fn finish(self) -> Result<Node> {
+        Ok(match self.kind {
             Kind::Seq => Node::Seq(self.items),
             Kind::Tuple => Node::Tuple(self.items),
+            Kind::Rotation => {
+                let mut x = [0.; 4];
+                for (slot, item) in x.iter_mut().zip(&self.items) {
+                    let Node::F64(v) = item else {
+                        return Err(Error::new("a rotation rule needs four f64 values"));
+                    };
+                    *slot = *v;
+                }
+                match rotation_code(x) {
+                    Some(code) => Node::Rotation(Some(code), rotation_value(code)),
+                    None => Node::Rotation(None, x),
+                }
+            }
             Kind::Variant(index) => Node::Variant(index, Box::new(Node::Tuple(self.items))),
-        }
+        })
     }
 }
 #[doc(hidden)]
@@ -381,7 +624,10 @@ impl<R: Rounding> ser::Serializer for NodeSerializer<R> {
         Ok(Node::F32(v))
     }
     fn serialize_f64(self, v: f64) -> Result<Node> {
-        Ok(Node::F64(self.0.round(v)))
+        Ok(match self.0.fixed() {
+            Fixed::Grid(grid) => Node::Fixed(grid, grid.round(v)),
+            Fixed::Exact | Fixed::Rotation => Node::F64(v),
+        })
     }
     fn serialize_char(self, v: char) -> Result<Node> {
         Ok(Node::Uint(v.into()))
@@ -427,7 +673,12 @@ impl<R: Rounding> ser::Serializer for NodeSerializer<R> {
         Ok(self.items(len.unwrap_or(0), Kind::Seq))
     }
     fn serialize_tuple(self, len: usize) -> Result<Items<R>> {
-        Ok(self.items(len, Kind::Tuple))
+        let kind = if len == 4 && self.0.fixed() == Fixed::Rotation {
+            Kind::Rotation
+        } else {
+            Kind::Tuple
+        };
+        Ok(self.items(len, kind))
     }
     fn serialize_tuple_struct(self, _: &'static str, len: usize) -> Result<Items<R>> {
         Ok(self.items(len, Kind::Tuple))
@@ -478,7 +729,7 @@ impl<R: Rounding> ser::SerializeSeq for Items<R> {
         Ok(())
     }
     fn end(self) -> Result<Node> {
-        Ok(self.finish())
+        self.finish()
     }
 }
 impl<R: Rounding> ser::SerializeTuple for Items<R> {
@@ -488,7 +739,7 @@ impl<R: Rounding> ser::SerializeTuple for Items<R> {
         ser::SerializeSeq::serialize_element(self, value)
     }
     fn end(self) -> Result<Node> {
-        Ok(self.finish())
+        self.finish()
     }
 }
 impl<R: Rounding> ser::SerializeTupleStruct for Items<R> {
@@ -498,7 +749,7 @@ impl<R: Rounding> ser::SerializeTupleStruct for Items<R> {
         ser::SerializeSeq::serialize_element(self, value)
     }
     fn end(self) -> Result<Node> {
-        Ok(self.finish())
+        self.finish()
     }
 }
 impl<R: Rounding> ser::SerializeTupleVariant for Items<R> {
@@ -508,7 +759,7 @@ impl<R: Rounding> ser::SerializeTupleVariant for Items<R> {
         ser::SerializeSeq::serialize_element(self, value)
     }
     fn end(self) -> Result<Node> {
-        Ok(self.finish())
+        self.finish()
     }
 }
 impl<R: Rounding> ser::SerializeStruct for Items<R> {
@@ -529,7 +780,7 @@ impl<R: Rounding> ser::SerializeStruct for Items<R> {
         )))
     }
     fn end(self) -> Result<Node> {
-        Ok(self.finish())
+        self.finish()
     }
 }
 impl<R: Rounding> ser::SerializeStructVariant for Items<R> {
@@ -546,7 +797,7 @@ impl<R: Rounding> ser::SerializeStructVariant for Items<R> {
         ser::SerializeStruct::skip_field(self, key)
     }
     fn end(self) -> Result<Node> {
-        Ok(self.finish())
+        self.finish()
     }
 }
 impl<R: Rounding> ser::SerializeMap for Entries<R> {
@@ -591,7 +842,10 @@ impl<'de> de::Deserializer<'de> for NodeDe<'_> {
             Node::Uint(v) => visitor.visit_u64(*v),
             Node::Int(v) => visitor.visit_i64(*v),
             Node::F32(v) => visitor.visit_f32(*v),
-            Node::F64(v) => visitor.visit_f64(*v),
+            Node::F64(v) | Node::Fixed(_, v) => visitor.visit_f64(*v),
+            Node::Rotation(_, x) => visitor.visit_seq(de::value::SeqDeserializer::<_, Error>::new(
+                x.iter().copied(),
+            )),
             Node::Text(v) => visitor.visit_str(v),
             Node::Bytes(v) => visitor.visit_bytes(v),
             Node::None => visitor.visit_none(),
@@ -772,6 +1026,55 @@ impl Writer {
         self.bits(0, 1);
         self.bits(n, width);
     }
+    /// Order-`k` exponential-Golomb: the gamma code of `(value >> k) + 1`,
+    /// then the low `k` bits. Zero costs `k + 1` bits.
+    fn golomb(&mut self, value: u64, k: u32) {
+        let n = (value >> k) + 1;
+        let width = 63 - n.leading_zeros();
+        self.bits((1 << width) - 1, width);
+        self.bits(0, 1);
+        self.bits(n, width);
+        self.bits(value, k);
+    }
+    /// An exact float: one bit for `f32`-exact, then 32 or 64 bits.
+    fn exact(&mut self, n: f64) {
+        if exact_f32(n) {
+            self.bits(1, 1);
+            self.bits(u64::from((n as f32).to_bits()), 32);
+        } else {
+            self.bits(0, 1);
+            self.bits(n.to_bits(), 64);
+        }
+    }
+    fn fixed(&mut self, grid: Grid, n: f64) {
+        match grid.steps(n) {
+            Some(q) => {
+                self.bits(1, 1);
+                self.bits(q as u64, grid.width);
+            }
+            None => {
+                self.bits(0, 1);
+                self.exact(n);
+            }
+        }
+    }
+    fn rotation(&mut self, code: Option<RotationCode>, x: &[f64; 4]) {
+        match code {
+            Some((index, steps)) => {
+                self.bits(1, 1);
+                self.bits(u64::from(index), 2);
+                for q in steps {
+                    self.bits(q as u64, ROTATION_BITS);
+                }
+            }
+            None => {
+                self.bits(0, 1);
+                for v in x {
+                    self.exact(*v);
+                }
+            }
+        }
+    }
     fn align(&mut self) {
         if !self.bit.is_multiple_of(8) {
             self.bits(0, 8 - (self.bit % 8) as u32);
@@ -820,6 +1123,8 @@ impl Writer {
             Node::Int(v) => self.var(zigzag(*v)),
             Node::F32(v) => self.bits(u64::from(v.to_bits()), 32),
             Node::F64(v) => self.float(*v),
+            Node::Fixed(grid, v) => self.fixed(*grid, *v),
+            Node::Rotation(code, x) => self.rotation(*code, x),
             Node::Text(v) => self.blob(v.as_bytes()),
             Node::Bytes(v) => self.blob(v),
             Node::None => self.bits(0, 1),
@@ -860,6 +1165,27 @@ impl Writer {
             return Ok(());
         }
         match (before, after) {
+            (Node::Fixed(grid, a), Node::Fixed(_, b)) => {
+                // A changed on-grid pair differs by at least one step, so zero
+                // marks the exact escape.
+                match (grid.steps(*a), grid.steps(*b)) {
+                    (Some(a), Some(b)) => self.golomb(zigzag(b - a), grid.k),
+                    _ => {
+                        self.golomb(0, grid.k);
+                        self.exact(*b);
+                    }
+                }
+            }
+            (Node::Rotation(Some((i, a)), _), Node::Rotation(Some((j, b)), _)) if i == j => {
+                self.bits(1, 1);
+                for (a, b) in a.iter().zip(b) {
+                    self.golomb(zigzag(b - a), ROTATION_K);
+                }
+            }
+            (Node::Rotation(..), Node::Rotation(code, x)) => {
+                self.bits(0, 1);
+                self.rotation(*code, x);
+            }
             (Node::F64(a), Node::F64(b)) => {
                 if let Some((i, a, b)) = fixed_pair(*a, *b) {
                     let difference = zigzag(b - a);
@@ -1004,6 +1330,101 @@ impl<'a> Reader<'a> {
         let n = (1_u64 << width) | self.bits(width)?;
         u32::try_from(n - 1).map_err(|_| invalid())
     }
+    fn golomb(&mut self, k: u32) -> Result<u64> {
+        let mut width = 0;
+        while self.bit1()? {
+            width += 1;
+            if width + k > 63 {
+                return Err(invalid());
+            }
+        }
+        let n = (1_u64 << width) | self.bits(width)?;
+        Ok(((n - 1) << k) | self.bits(k)?)
+    }
+    fn exact(&mut self) -> Result<f64> {
+        Ok(if self.bit1()? {
+            f64::from(f32::from_bits(self.bits(32)? as u32))
+        } else {
+            f64::from_bits(self.bits(64)?)
+        })
+    }
+    /// An escaped value must be one rounding leaves alone, so the decoder's
+    /// rebuilt baseline equals the encoder's. A delta escapes an on-grid value
+    /// whose baseline was off the grid.
+    fn escaped(&mut self, grid: Grid) -> Result<f64> {
+        let n = self.exact()?;
+        if grid.round(n).to_bits() != n.to_bits() {
+            return Err(invalid());
+        }
+        Ok(n)
+    }
+    fn on_grid(grid: Grid, q: i64) -> Result<f64> {
+        let value = q as f64 / grid.scale + 0.0;
+        if grid.steps(value) != Some(q) {
+            return Err(invalid());
+        }
+        Ok(value)
+    }
+    fn fixed(&mut self, grid: Grid) -> Result<f64> {
+        if !self.bit1()? {
+            return self.escaped(grid);
+        }
+        let width = grid.width;
+        let raw = self.bits(width)?;
+        Self::on_grid(grid, ((raw << (64 - width)) as i64) >> (64 - width))
+    }
+    fn fixed_delta(&mut self, grid: Grid, before: f64) -> Result<f64> {
+        let difference = self.golomb(grid.k)?;
+        if difference == 0 {
+            return self.escaped(grid);
+        }
+        let b = grid
+            .steps(before)
+            .ok_or_else(invalid)?
+            .checked_add(unzigzag(difference))
+            .ok_or_else(invalid)?;
+        Self::on_grid(grid, b)
+    }
+    /// A smallest-three code must be the one its own value quantizes to, and an
+    /// exact quaternion one with no such code; see [`rotation_code`].
+    fn checked_rotation(code: Option<RotationCode>, x: [f64; 4]) -> Result<[f64; 4]> {
+        let x = match code {
+            Some(code) => rotation_value(code),
+            None => x,
+        };
+        if rotation_code(x) != code {
+            return Err(invalid());
+        }
+        Ok(x)
+    }
+    fn rotation(&mut self) -> Result<[f64; 4]> {
+        if !self.bit1()? {
+            let mut x = [0.; 4];
+            for v in &mut x {
+                *v = self.exact()?;
+            }
+            return Self::checked_rotation(None, x);
+        }
+        let index = self.bits(2)? as u8;
+        let mut steps = [0; 3];
+        for q in &mut steps {
+            let raw = self.bits(ROTATION_BITS)?;
+            *q = ((raw << (64 - ROTATION_BITS)) as i64) >> (64 - ROTATION_BITS);
+        }
+        Self::checked_rotation(Some((index, steps)), [0.; 4])
+    }
+    fn rotation_delta(&mut self, before: Option<RotationCode>) -> Result<[f64; 4]> {
+        if !self.bit1()? {
+            return self.rotation();
+        }
+        let (index, mut steps) = before.ok_or_else(invalid)?;
+        for q in &mut steps {
+            *q = q
+                .checked_add(unzigzag(self.golomb(ROTATION_K)?))
+                .ok_or_else(invalid)?;
+        }
+        Self::checked_rotation(Some((index, steps)), [0.; 4])
+    }
     fn blob(&mut self) -> Result<Vec<u8>> {
         if !self.bit.is_multiple_of(8) && self.bits(8 - (self.bit % 8) as u32)? != 0 {
             return Err(invalid());
@@ -1079,10 +1500,12 @@ impl<'a> Reader<'a> {
 // ---------------------------------------------------------------------------
 // Type-driven decoding from bits, optionally against a baseline tree.
 
-struct BitDe<'r, 'x, 'b> {
+struct BitDe<'r, 'x, 'b, R> {
     r: &'r mut Reader<'x>,
     base: Option<&'b Node>,
     depth: usize,
+    /// The rounding rule on this value's path, mirroring the serializer's.
+    rule: R,
 }
 /// How one value arrives: in full, unchanged from the baseline, or changed
 /// relative to it.
@@ -1091,7 +1514,7 @@ enum Entry<'b> {
     Same(&'b Node),
     Changed(&'b Node),
 }
-impl<'x, 'b> BitDe<'_, 'x, 'b> {
+impl<'x, 'b, R: Rounding> BitDe<'_, 'x, 'b, R> {
     fn enter(&mut self) -> Result<Entry<'b>> {
         self.r.visit(self.depth)?;
         Ok(match self.base {
@@ -1108,12 +1531,38 @@ impl<'x, 'b> BitDe<'_, 'x, 'b> {
             _ => Ok(None),
         }
     }
-    fn child<'s>(&'s mut self, base: Option<&'b Node>) -> BitDe<'s, 'x, 'b> {
+    fn child<'s>(&'s mut self, base: Option<&'b Node>) -> BitDe<'s, 'x, 'b, R> {
         BitDe {
             r: self.r,
             base,
             depth: self.depth + 1,
+            rule: self.rule,
         }
+    }
+    /// A struct (with its field names, for the rule) or a tuple.
+    fn positional<'de, V: de::Visitor<'de>>(
+        mut self,
+        len: usize,
+        fields: Option<&'static [&'static str]>,
+        visitor: V,
+    ) -> Result<V::Value> {
+        match self.enter()? {
+            Entry::Same(base) => de::Deserializer::deserialize_any(NodeDe(base), visitor),
+            Entry::Changed(Node::Tuple(items)) if items.len() == len => {
+                self.items(Some(items), len, fields, visitor)
+            }
+            Entry::Changed(_) => Err(mismatch()),
+            Entry::Full => self.items(None, len, fields, visitor),
+        }
+    }
+    fn rotation<'de, V: de::Visitor<'de>>(mut self, visitor: V) -> Result<V::Value> {
+        let x = match self.enter()? {
+            Entry::Same(base) => return de::Deserializer::deserialize_any(NodeDe(base), visitor),
+            Entry::Full => self.r.rotation()?,
+            Entry::Changed(Node::Rotation(code, _)) => self.r.rotation_delta(*code)?,
+            Entry::Changed(_) => return Err(mismatch()),
+        };
+        visitor.visit_seq(de::value::SeqDeserializer::<_, Error>::new(x.into_iter()))
     }
     fn scalar<'de, V: de::Visitor<'de>>(
         mut self,
@@ -1129,12 +1578,14 @@ impl<'x, 'b> BitDe<'_, 'x, 'b> {
         &mut self,
         bases: Option<&'b [Node]>,
         len: usize,
+        fields: Option<&'static [&'static str]>,
         visitor: V,
     ) -> Result<V::Value> {
         let mut seq = BitSeq {
             de: self.child(None),
             bases: bases.map(|b| b.iter()),
             remaining: len,
+            fields: fields.map(|f| f.iter()),
         };
         let value = visitor.visit_seq(&mut seq)?;
         if seq.remaining != 0 {
@@ -1144,7 +1595,7 @@ impl<'x, 'b> BitDe<'_, 'x, 'b> {
     }
 }
 
-impl<'de> de::Deserializer<'de> for BitDe<'_, '_, '_> {
+impl<'de, R: Rounding> de::Deserializer<'de> for BitDe<'_, '_, '_, R> {
     type Error = Error;
     fn is_human_readable(&self) -> bool {
         false
@@ -1187,6 +1638,16 @@ impl<'de> de::Deserializer<'de> for BitDe<'_, '_, '_> {
         })
     }
     fn deserialize_f64<V: de::Visitor<'de>>(mut self, visitor: V) -> Result<V::Value> {
+        if let Fixed::Grid(grid) = self.rule.fixed() {
+            return match self.enter()? {
+                Entry::Full => visitor.visit_f64(self.r.fixed(grid)?),
+                Entry::Same(base) => de::Deserializer::deserialize_any(NodeDe(base), visitor),
+                Entry::Changed(Node::Fixed(_, before)) => {
+                    visitor.visit_f64(self.r.fixed_delta(grid, *before)?)
+                }
+                Entry::Changed(_) => Err(mismatch()),
+            };
+        }
         match self.enter()? {
             Entry::Full => visitor.visit_f64(self.r.float()?),
             Entry::Same(base) => de::Deserializer::deserialize_any(NodeDe(base), visitor),
@@ -1254,27 +1715,19 @@ impl<'de> de::Deserializer<'de> for BitDe<'_, '_, '_> {
             return de::Deserializer::deserialize_any(NodeDe(base), visitor);
         }
         match self.shape(entry)? {
-            Some(Node::Seq(items)) => self.items(Some(items), items.len(), visitor),
+            Some(Node::Seq(items)) => self.items(Some(items), items.len(), None, visitor),
             Some(_) => Err(invalid()),
             None => {
                 let len = self.r.length()?;
-                self.items(None, len, visitor)
+                self.items(None, len, None, visitor)
             }
         }
     }
-    fn deserialize_tuple<V: de::Visitor<'de>>(
-        mut self,
-        len: usize,
-        visitor: V,
-    ) -> Result<V::Value> {
-        match self.enter()? {
-            Entry::Same(base) => de::Deserializer::deserialize_any(NodeDe(base), visitor),
-            Entry::Changed(Node::Tuple(items)) if items.len() == len => {
-                self.items(Some(items), len, visitor)
-            }
-            Entry::Changed(_) => Err(mismatch()),
-            Entry::Full => self.items(None, len, visitor),
+    fn deserialize_tuple<V: de::Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value> {
+        if len == 4 && self.rule.fixed() == Fixed::Rotation {
+            return self.rotation(visitor);
         }
+        self.positional(len, None, visitor)
     }
     fn deserialize_tuple_struct<V: de::Visitor<'de>>(
         self,
@@ -1282,7 +1735,7 @@ impl<'de> de::Deserializer<'de> for BitDe<'_, '_, '_> {
         len: usize,
         visitor: V,
     ) -> Result<V::Value> {
-        self.deserialize_tuple(len, visitor)
+        self.positional(len, None, visitor)
     }
     fn deserialize_struct<V: de::Visitor<'de>>(
         self,
@@ -1290,7 +1743,7 @@ impl<'de> de::Deserializer<'de> for BitDe<'_, '_, '_> {
         fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value> {
-        self.deserialize_tuple(fields.len(), visitor)
+        self.positional(fields.len(), Some(fields), visitor)
     }
     fn deserialize_map<V: de::Visitor<'de>>(mut self, visitor: V) -> Result<V::Value> {
         let entry = self.enter()?;
@@ -1351,12 +1804,15 @@ impl<'de> de::Deserializer<'de> for BitDe<'_, '_, '_> {
     }
 }
 
-struct BitSeq<'s, 'x, 'b> {
-    de: BitDe<'s, 'x, 'b>,
+struct BitSeq<'s, 'x, 'b, R> {
+    de: BitDe<'s, 'x, 'b, R>,
     bases: Option<std::slice::Iter<'b, Node>>,
     remaining: usize,
+    /// A struct's field names in declaration order, which select each field's
+    /// rule as the serializer's names did.
+    fields: Option<std::slice::Iter<'static, &'static str>>,
 }
-impl<'de> de::SeqAccess<'de> for BitSeq<'_, '_, '_> {
+impl<'de, R: Rounding> de::SeqAccess<'de> for BitSeq<'_, '_, '_, R> {
     type Error = Error;
     fn next_element_seed<T: de::DeserializeSeed<'de>>(
         &mut self,
@@ -1370,10 +1826,15 @@ impl<'de> de::SeqAccess<'de> for BitSeq<'_, '_, '_> {
             Some(bases) => Some(bases.next().ok_or_else(mismatch)?),
             None => None,
         };
+        let rule = match &mut self.fields {
+            Some(fields) => self.de.rule.field(fields.next().ok_or_else(mismatch)?),
+            None => self.de.rule,
+        };
         seed.deserialize(BitDe {
             r: self.de.r,
             base,
             depth: self.de.depth,
+            rule,
         })
         .map(Some)
     }
@@ -1381,13 +1842,13 @@ impl<'de> de::SeqAccess<'de> for BitSeq<'_, '_, '_> {
         Some(self.remaining.min(4096))
     }
 }
-struct BitMap<'s, 'x, 'b> {
-    de: BitDe<'s, 'x, 'b>,
+struct BitMap<'s, 'x, 'b, R> {
+    de: BitDe<'s, 'x, 'b, R>,
     bases: Option<std::slice::Iter<'b, (Node, Node)>>,
     value: Option<&'b Node>,
     remaining: usize,
 }
-impl<'de> de::MapAccess<'de> for BitMap<'_, '_, '_> {
+impl<'de, R: Rounding> de::MapAccess<'de> for BitMap<'_, '_, '_, R> {
     type Error = Error;
     fn next_key_seed<K: de::DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>> {
         if self.remaining == 0 {
@@ -1406,6 +1867,7 @@ impl<'de> de::MapAccess<'de> for BitMap<'_, '_, '_> {
             r: self.de.r,
             base: key,
             depth: self.de.depth,
+            rule: Exact,
         })
         .map(Some)
     }
@@ -1414,19 +1876,20 @@ impl<'de> de::MapAccess<'de> for BitMap<'_, '_, '_> {
             r: self.de.r,
             base: self.value.take(),
             depth: self.de.depth,
+            rule: self.de.rule,
         })
     }
     fn size_hint(&self) -> Option<usize> {
         Some(self.remaining.min(4096))
     }
 }
-struct BitEnum<'s, 'x, 'b> {
-    de: BitDe<'s, 'x, 'b>,
+struct BitEnum<'s, 'x, 'b, R> {
+    de: BitDe<'s, 'x, 'b, R>,
     index: u32,
 }
-impl<'de, 's, 'x, 'b> de::EnumAccess<'de> for BitEnum<'s, 'x, 'b> {
+impl<'de, 's, 'x, 'b, R: Rounding> de::EnumAccess<'de> for BitEnum<'s, 'x, 'b, R> {
     type Error = Error;
-    type Variant = BitDe<'s, 'x, 'b>;
+    type Variant = BitDe<'s, 'x, 'b, R>;
     fn variant_seed<V: de::DeserializeSeed<'de>>(
         self,
         seed: V,
@@ -1435,7 +1898,7 @@ impl<'de, 's, 'x, 'b> de::EnumAccess<'de> for BitEnum<'s, 'x, 'b> {
         Ok((seed.deserialize(index)?, self.de))
     }
 }
-impl<'de> de::VariantAccess<'de> for BitDe<'_, '_, '_> {
+impl<'de, R: Rounding> de::VariantAccess<'de> for BitDe<'_, '_, '_, R> {
     type Error = Error;
     fn unit_variant(self) -> Result<()> {
         de::Deserializer::deserialize_unit(self, de::IgnoredAny).map(|_| ())
@@ -1444,14 +1907,14 @@ impl<'de> de::VariantAccess<'de> for BitDe<'_, '_, '_> {
         seed.deserialize(self)
     }
     fn tuple_variant<V: de::Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value> {
-        de::Deserializer::deserialize_tuple(self, len, visitor)
+        self.positional(len, None, visitor)
     }
     fn struct_variant<V: de::Visitor<'de>>(
         self,
         fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value> {
-        de::Deserializer::deserialize_tuple(self, fields.len(), visitor)
+        self.positional(fields.len(), Some(fields), visitor)
     }
 }
 
@@ -1545,6 +2008,232 @@ mod tests {
                 .to_bits(),
             (-0.0_f64).to_bits()
         );
+    }
+
+    /// A rule shaped like the checkpoint's: `position` on the millimetre grid,
+    /// `rotation` smallest-three, everything else exact.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Rule {
+        Root,
+        Millimetres,
+        Rotation,
+        Exact,
+    }
+    impl Rounding for Rule {
+        fn field(self, key: &'static str) -> Self {
+            match (self, key) {
+                (Rule::Root, "position") => Rule::Millimetres,
+                (Rule::Root, "rotation") => Rule::Rotation,
+                (Rule::Root, "nested") => Rule::Root,
+                (Rule::Millimetres, _) => self,
+                _ => Rule::Exact,
+            }
+        }
+        fn fixed(self) -> Fixed {
+            match self {
+                Rule::Millimetres => Fixed::Grid(Grid {
+                    scale: 1000.,
+                    width: 18,
+                    k: 8,
+                }),
+                Rule::Rotation => Fixed::Rotation,
+                _ => Fixed::Exact,
+            }
+        }
+    }
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct Rounded {
+        position: [f64; 3],
+        rotation: [f64; 4],
+        exact: f64,
+        nested: Option<Box<Rounded>>,
+    }
+
+    /// Full frames and deltas between every pair decode to values whose rebuilt
+    /// tree is bit-identical to the encoder's, and hostile truncations fail.
+    fn assert_rule_baselines_are_exact(values: &[Rounded]) {
+        let nodes: Vec<Node> = values
+            .iter()
+            .map(|v| to_node_with(v, Rule::Root).unwrap())
+            .collect();
+        for node in &nodes {
+            let bytes = encode(node, None, 3, 0).unwrap();
+            let (value, _) = decode_with::<Rounded, _>(&bytes, None, 3, Rule::Root).unwrap();
+            assert_eq!(&to_node_with(&value, Rule::Root).unwrap(), node);
+            for base in &nodes {
+                let bytes = encode(node, Some(base), 3, 5).unwrap();
+                let (value, _) =
+                    decode_with::<Rounded, _>(&bytes, Some((base, 5)), 3, Rule::Root).unwrap();
+                assert_eq!(&to_node_with(&value, Rule::Root).unwrap(), node);
+                for len in 0..bytes.len() {
+                    assert!(
+                        decode_with::<Rounded, _>(&bytes[..len], Some((base, 5)), 3, Rule::Root)
+                            .is_err()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn grid_rules_send_no_grid_index_and_rebuild_exact_baselines() {
+        let rounded = |position: [f64; 3], exact: f64| Rounded {
+            position,
+            rotation: [1., 0., 0., 0.],
+            exact,
+            nested: None,
+        };
+        let values = [
+            rounded([1.23456, -2.0, 0.0], 0.123456789),
+            rounded([1.2351, -2.0004, -0.0001], 0.123456789),
+            // Out of range, negative zero and NaN keep their exact bits.
+            rounded([200., -0.0, f64::NAN], 1e300),
+            rounded([-131.072, 131.0709, f64::INFINITY], -0.0),
+        ];
+        let node = to_node_with(&values[0], Rule::Root).unwrap();
+        let Node::Tuple(fields) = &node else {
+            panic!("a struct is a tuple");
+        };
+        assert_eq!(
+            fields[0],
+            Node::Tuple(vec![
+                Node::Fixed(
+                    Grid {
+                        scale: 1000.,
+                        width: 18,
+                        k: 8
+                    },
+                    1.235
+                ),
+                Node::Fixed(
+                    Grid {
+                        scale: 1000.,
+                        width: 18,
+                        k: 8
+                    },
+                    -2.0
+                ),
+                Node::Fixed(
+                    Grid {
+                        scale: 1000.,
+                        width: 18,
+                        k: 8
+                    },
+                    0.0
+                ),
+            ])
+        );
+        // A 49-bit header, three 1 + 18 bit positions, a 1 + 2 + 3 × 15 bit
+        // identity, the 2 + 64 bit tagged exact value and an absent option.
+        let bits: usize = 49 + 3 * 19 + 48 + 66 + 1;
+        assert_eq!(to_bytes_with(&values[0]), bits.div_ceil(8));
+        assert_rule_baselines_are_exact(&values);
+    }
+
+    fn to_bytes_with(value: &Rounded) -> usize {
+        encode(&to_node_with(value, Rule::Root).unwrap(), None, 0, 0)
+            .unwrap()
+            .len()
+    }
+
+    #[test]
+    fn smallest_three_rotations_rebuild_exact_baselines_near_ties_and_sign_flips() {
+        let unit = |q: [f64; 4]| {
+            let norm = q.iter().map(|v| v * v).sum::<f64>().sqrt();
+            q.map(|v| v / norm)
+        };
+        let half = std::f64::consts::FRAC_1_SQRT_2;
+        let mut rotations = vec![
+            [1., 0., 0., 0.],
+            [-1., 0., 0., 0.],
+            [0., 0., 0., 1.],
+            [0.5, -0.5, 0.5, -0.5],
+            [-0.5, 0.5, -0.5, 0.5],
+        ];
+        // Two largest components within a few steps of each other, both
+        // orderings and both signs, straddling the index switch.
+        for step in -6..=6 {
+            let e = f64::from(step) * 1e-5;
+            for q in [
+                [half + e, half - e, 0., 0.],
+                [half - e, -(half + e), 1e-3, 0.],
+                [0.3, -(0.6 + e), 0.6 - e, 0.43],
+            ] {
+                let q = unit(q);
+                rotations.push(q);
+                rotations.push(q.map(|v| -v));
+            }
+        }
+        let values: Vec<Rounded> = rotations
+            .iter()
+            .map(|&rotation| Rounded {
+                position: [0.; 3],
+                rotation,
+                exact: 0.,
+                nested: None,
+            })
+            .collect();
+        for value in &values {
+            let Node::Tuple(fields) = to_node_with(value, Rule::Root).unwrap() else {
+                panic!("a struct is a tuple");
+            };
+            let Node::Rotation(Some((index, _)), x) = &fields[1] else {
+                panic!("{:?} has no smallest-three code", value.rotation);
+            };
+            // Sign-normalized onto q or -q, within the grid's error.
+            let dot: f64 = x.iter().zip(value.rotation).map(|(a, b)| a * b).sum();
+            assert!(dot.abs() > 1. - 1e-8, "{:?} -> {x:?}", value.rotation);
+            assert!(x[usize::from(*index)] > 0.);
+        }
+        // Every unit quaternion near a two-way tie, at any tilt, has a code
+        // that reproduces itself.
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut uniform = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (seed >> 11) as f64 / (1_u64 << 53) as f64 - 0.5
+        };
+        for _ in 0..20_000 {
+            let q = unit([
+                half + uniform() * 1e-4,
+                half + uniform() * 1e-4,
+                uniform() * 0.4,
+                uniform() * 0.1,
+            ]);
+            let code = rotation_code(q).expect("a near-tie quaternion has a code");
+            assert_eq!(rotation_code(rotation_value(code)), Some(code));
+        }
+        // q and -q share one code.
+        assert_eq!(
+            to_node_with(&values[0], Rule::Root).unwrap(),
+            to_node_with(&values[1], Rule::Root).unwrap()
+        );
+        // A non-unit quaternion keeps its exact bits.
+        let mut scaled = values[3].clone();
+        scaled.rotation = [1., 1., 0., 0.];
+        let Node::Tuple(fields) = to_node_with(&scaled, Rule::Root).unwrap() else {
+            panic!("a struct is a tuple");
+        };
+        assert_eq!(fields[1], Node::Rotation(None, [1., 1., 0., 0.]));
+        let mut all = values;
+        all.push(scaled);
+        assert_rule_baselines_are_exact(&all);
+    }
+
+    #[test]
+    fn exponential_golomb_codes_round_trip() {
+        for k in [0, 1, 7, 12] {
+            for value in [0, 1, 2, 127, 128, 4095, 1 << 40, u64::MAX >> 13] {
+                let mut w = Writer::default();
+                w.golomb(value, k);
+                let len = w.bit;
+                let mut r = Reader::new(&w.bytes, 0);
+                assert_eq!(r.golomb(k).unwrap(), value);
+                assert_eq!(r.bit, len);
+            }
+        }
+        let mut w = Writer::default();
+        w.golomb(0, 8);
+        assert_eq!(w.bit, 9);
     }
 
     #[test]

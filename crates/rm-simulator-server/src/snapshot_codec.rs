@@ -640,8 +640,11 @@ pub fn decode_checkpoint(
     epoch: u64,
     keep_node: bool,
 ) -> io::Result<(ServerMessage, Option<Node>)> {
-    let (snapshot, _) = bitpack::decode::<PlayerSnapshot>(bytes, baseline, epoch)?;
-    let node = keep_node.then(|| bitpack::to_node(&snapshot)).transpose()?;
+    let (snapshot, _) =
+        bitpack::decode_with::<PlayerSnapshot, _>(bytes, baseline, epoch, fixed_point::Fine::Root)?;
+    let node = keep_node
+        .then(|| bitpack::to_node_with(&snapshot, fixed_point::Fine::Root))
+        .transpose()?;
     if snapshot.state.input_epoch != epoch {
         return Err(io::Error::other("invalid baseline state/epoch"));
     }
