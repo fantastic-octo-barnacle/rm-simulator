@@ -12,7 +12,9 @@
   explicitly. Hosts no longer accept the older `RMI2` input batch, and JSON
   decoding no longer fills in fields that predate protocol 38. Network traces
   now classify the current `RMO6` owner anchors and `RMA2` baseline feedback,
-  which were counted as control. The protocol 41 dictionary is kept; in
+  which were counted as control. Owner anchor command and tyre speeds now use the documented 1 cm/s
+  velocity scale (±327 m/s) instead of millimetre steps, which limited them to
+  ±32.767 m/s and silently dropped anchors beyond that. The protocol 41 dictionary is kept; in
   `network_bandwidth` sent bytes change by under 0.2% with players (+44 bytes
   over four seconds with two) and +1.2% idle.
 

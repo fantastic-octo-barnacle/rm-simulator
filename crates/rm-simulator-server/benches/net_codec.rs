@@ -65,6 +65,7 @@ fn samples(name: &'static str, players: usize, drive: bool, fire: bool) -> Sampl
     let (mut simulation, chassis) = workload::simulation(players);
     let driver = chassis[0];
     let mut states = Vec::with_capacity(FRAMES);
+    let mut schedule = rm_simulator_server::simulation::TickSchedule::default();
     for frame in 0..FRAMES as u64 {
         if drive {
             simulation
@@ -77,7 +78,10 @@ fn samples(name: &'static str, players: usize, drive: bool, fire: bool) -> Sampl
         if fire && frame.is_multiple_of(4) {
             let _ = simulation.apply(&Command::Fire { shooter: driver });
         }
-        simulation.step(32).unwrap();
+        let ticks = schedule.advance(32_000_000);
+        if ticks > 0 {
+            simulation.step(ticks).unwrap();
+        }
         let mut state = simulation.state();
         state.snapshot_id = frame + 1;
         states.push(state);

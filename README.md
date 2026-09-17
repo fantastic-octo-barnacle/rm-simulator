@@ -443,8 +443,15 @@ does not acknowledge its execution by the host.
 | 34 | Removes the `ShotFinished` message, which no host ever produced: a shot's end was only ever reported as a `ShotResult`. |
 | 35 | Makes packed checkpoints the only periodic snapshot encoding and ZSTD the only wire codec, removing the JSON checkpoint path and the DEFLATE codec. |
 | 36 | Freezes the simulation at the 128 Hz tick and drops the rate from the handshake. Every build, host and client now runs the fixed 128 Hz tick; `Hello` and `Welcome` no longer carry a tick length. |
+| 37 | Carries projectile timestamps as checkpoint-relative ages and quantizes the `RMO5` owner anchor. |
+| 38 | Removes JSON from the gameplay wire: checkpoints (`RMB1`) and every other message use a positional, type-driven bitpack. |
+| 39 | Drops derived checkpoint data (field clock, rune/outpost/referee views, wheel hubs and tyre targets) and sends timestamps as tick codes; runes, including Big Runes, travel as their full restore state. |
+| 40 | Implies fixed-point grids by field path, codes delta differences as exponential-Golomb and sends rotations smallest-three, including the `RMO6` owner anchor. |
+| 41 | Lays checkpoints out by change rate with chassis configuration presets; deltas under 128 bytes skip compression. |
+| 42 | Dead-reckons delta baselines to the frame's tick, realigns changed sequences by id and rotates baselines after 12 frames. |
+| 43 | Removes client fire timing, `ShotScheduled`'s intended time, the explicit-rules checkpoint fallback and `RMI2` input batches; `RMO6` command and tyre speeds use the 1 cm/s velocity scale. |
 
-The current protocol version is 36, defined by `PROTOCOL_VERSION` in
+The current protocol version is 43, defined by `PROTOCOL_VERSION` in
 `crates/rm-simulator-server/src/protocol.rs`. GNS sends redundant controls
 and retried shot intents unreliably; scheduling receipts and terminal shot results
 remain reliable. There is no shooter-view fire path or input-acknowledgement
@@ -454,8 +461,10 @@ matching protocol versions.
 ### Compression and environment variables
 
 The UDP transport sends independent owner corrections and uses acknowledged
-baselines for world deltas. Owner and input numeric state retains f64
-precision, while shot intents use bounded compression. RMO4 owner anchors reference
+baselines for world deltas. Owner anchors (`RMO6`) are quantized to
+millimetre positions, 1 cm/s velocities, 1 mrad/s rates, 0.1 mrad aims and
+smallest-three rotations; input state keeps f64 precision, while shot intents
+use bounded compression. Owner anchors reference
 a configuration delivered reliably and explicitly acknowledged by the client.
 World and owner publication cadence is unchanged.
 
@@ -472,8 +481,8 @@ reference.
 Measure snapshot bytes and codec CPU with
 `cargo run -p rm-simulator-server --example network_bandwidth --locked`.
 Periodic checkpoints are packed fine fixed point compressed with the embedded
-checkpoint dictionary at ZSTD level 3; every other wire message is plain ZSTD at
-level 3. There is no codec selector and no dictionaryless or DEFLATE path.
+checkpoint dictionary at ZSTD level 6, except deltas under 128 bytes, which
+travel uncompressed; every other wire message is plain ZSTD at level 3. There is no codec selector and no dictionaryless or DEFLATE path.
 
 ### Diagnostics
 
