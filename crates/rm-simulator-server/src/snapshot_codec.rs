@@ -21,6 +21,14 @@ struct PlayerSnapshot {
 /// ball a client can see. The first-contact time and the open low-speed dwell
 /// window are carried so a predicting client retires the same ball on the same
 /// tick as the host does.
+///
+/// Timestamps ride as checkpoint-relative ages in nanoseconds — launch age
+/// against the checkpoint time, contact age against the launch, dwell age
+/// against the contact (or the launch when no contact is recorded) — instead
+/// of absolute simulation times. A four-second ball keeps every age under
+/// 2^33, where an absolute time costs a 9–10 byte varint. Reconstruction is
+/// exact whenever launch precedes contact precedes dwell; `saturating`
+/// arithmetic only clips states that ordering already rules out.
 #[derive(Serialize, Deserialize)]
 struct ProjectileWire(
     u64,
@@ -35,18 +43,27 @@ struct ProjectileWire(
 impl PlayerSnapshot {
     fn from_state(state: &SimulationState) -> Self {
         let mut state = state.clone();
+        let time_ns = state.field.time_ns;
         let projectiles = std::mem::take(&mut state.field.projectiles)
             .into_iter()
             .map(|ball| {
+                let launched_age_ns = time_ns.saturating_sub(ball.launched_ns);
+                let first_contact_age_ns = ball
+                    .first_contact_ns
+                    .map(|contact_ns| contact_ns.saturating_sub(ball.launched_ns));
+                let dwell_base_ns = ball.first_contact_ns.unwrap_or(ball.launched_ns);
+                let dwell_age_ns = ball
+                    .dwell_since_ns
+                    .map(|dwell_ns| dwell_ns.saturating_sub(dwell_base_ns));
                 ProjectileWire(
                     ball.id,
                     ball.caliber,
-                    ball.launched_ns,
+                    launched_age_ns,
                     ball.position_m.map(|x| x as f32),
                     ball.velocity_m_s.map(|x| x as f32),
                     ball.shooter,
-                    ball.first_contact_ns,
-                    ball.dwell_since_ns,
+                    first_contact_age_ns,
+                    dwell_age_ns,
                 )
             })
             .collect();
@@ -67,6 +84,7 @@ impl PlayerSnapshot {
         Self { state, projectiles }
     }
     fn into_state(mut self) -> SimulationState {
+        let time_ns = self.state.field.time_ns;
         self.state.field.projectiles = self
             .projectiles
             .into_iter()
@@ -74,13 +92,19 @@ impl PlayerSnapshot {
                 |ProjectileWire(
                     id,
                     caliber,
-                    launched_ns,
+                    launched_age_ns,
                     position,
                     velocity,
                     shooter,
-                    first_contact_ns,
-                    dwell_since_ns,
+                    first_contact_age_ns,
+                    dwell_age_ns,
                 )| {
+                    let launched_ns = time_ns.saturating_sub(launched_age_ns);
+                    let first_contact_ns =
+                        first_contact_age_ns.map(|age_ns| launched_ns.saturating_add(age_ns));
+                    let dwell_base_ns = first_contact_ns.unwrap_or(launched_ns);
+                    let dwell_since_ns =
+                        dwell_age_ns.map(|age_ns| dwell_base_ns.saturating_add(age_ns));
                     rm_simulator_world::ProjectileSnapshot {
                         id,
                         caliber,
@@ -325,6 +349,48 @@ mod tests {
             compact_bytes * 4 < full_bytes * 3,
             "expect at least 25% less compressed traffic"
         );
+    }
+
+    #[test]
+    fn projectile_timestamp_ages_reconstruct_exactly() {
+        use rm_simulator_world::{Caliber, ProjectileSnapshot};
+        fn ball(
+            id: u64,
+            launched_ns: u64,
+            first_contact_ns: Option<u64>,
+            dwell_since_ns: Option<u64>,
+        ) -> ProjectileSnapshot {
+            ProjectileSnapshot {
+                id,
+                caliber: Caliber::Mm17,
+                launched_ns,
+                position_m: [1., 2., 3.],
+                velocity_m_s: [25., 0., 0.],
+                angular_velocity_rad_s: [0.; 3],
+                shooter: Some(7),
+                first_contact_ns,
+                dwell_since_ns,
+            }
+        }
+        let mut state = simulation();
+        state.field.time_ns = 90_000_000_000;
+        state.field.projectiles = vec![
+            ball(1, 89_000_000_000, None, None),
+            ball(2, 88_000_000_000, Some(88_500_000_000), None),
+            ball(
+                3,
+                87_000_000_000,
+                Some(87_100_000_000),
+                Some(87_150_000_000),
+            ),
+        ];
+        let message = ServerMessage::Snapshot(Box::new(state.clone()));
+        let ServerMessage::Snapshot(actual) =
+            decode_player_message(&encode_player_message(&message)).unwrap()
+        else {
+            panic!("a snapshot must decode to a snapshot");
+        };
+        assert_eq!(actual.field.projectiles, state.field.projectiles);
     }
 
     #[test]
