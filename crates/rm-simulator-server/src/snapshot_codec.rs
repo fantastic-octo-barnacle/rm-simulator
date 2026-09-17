@@ -1,16 +1,26 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
-//! Snapshot wire encodings. A compact independent player checkpoint, which the
-//! packed checkpoint codec bitpacks and both confirmation and control paths
-//! carry as JSON. No encoding here depends on an earlier transmitted frame.
-use crate::{protocol::ServerMessage, simulation::SimulationState};
+//! Binary message encodings. Every server message a peer receives and every
+//! client message a host receives is a magic-tagged value in the positional
+//! [`bitpack`] format; a snapshot travels as the compact independent player
+//! checkpoint. No encoding here depends on an earlier transmitted frame; the
+//! periodic delta lane in [`crate::udp_snapshot`] builds on
+//! [`checkpoint_node`] and [`decode_checkpoint`].
+use crate::binary_snapshot::{bitpack, bitpack::Node, fixed_point};
+use crate::protocol::{ClientMessage, ServerMessage};
+use crate::simulation::SimulationState;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::io;
 
-/// Independent UDP player checkpoint. Physics restore values remain f64 except
-/// ball position/velocity, whose f32 precision is well below 0.1 mm on this field.
-/// No earlier packet or acknowledgement is needed to decode it.
+/// First four bytes of every encoded [`ServerMessage`].
+pub const SERVER_MAGIC: &[u8; 4] = b"RMM1";
+/// First four bytes of every encoded [`ClientMessage`].
+pub const CLIENT_MAGIC: &[u8; 4] = b"RMQ1";
+
+/// Independent UDP player checkpoint. Physics restore values remain f64;
+/// ball position and velocity carry `f32` precision, well below 0.1 mm on this
+/// field, unless a value does not survive `f32`. No earlier packet or
+/// acknowledgement is needed to decode it.
 #[derive(Serialize, Deserialize)]
 struct PlayerSnapshot {
     state: SimulationState,
@@ -29,17 +39,21 @@ struct PlayerSnapshot {
 /// 2^33, where an absolute time costs a 9–10 byte varint. Reconstruction is
 /// exact whenever launch precedes contact precedes dwell; `saturating`
 /// arithmetic only clips states that ordering already rules out.
+///
+/// Field names never reach the wire; they select the fixed-point rounding in
+/// [`fixed_point::Fine`].
 #[derive(Serialize, Deserialize)]
-struct ProjectileWire(
-    u64,
-    CaliberBit,
-    u64,
-    [f32; 3],
-    [f32; 3],
-    Option<u32>,
-    Option<u64>,
-    Option<u64>,
-);
+struct ProjectileWire {
+    id: u64,
+    caliber: CaliberBit,
+    launched_age_ns: u64,
+    position_m: [f64; 3],
+    velocity_m_s: [f64; 3],
+    shooter: Option<u32>,
+    first_contact_age_ns: Option<u64>,
+    dwell_age_ns: Option<u64>,
+}
+
 /// Projectile caliber as one bit on the compact checkpoint: `false` is
 /// 17 mm, `true` is 42 mm (rulebook section 1.4 projectile sizes). A third
 /// caliber would need a protocol bump; the bit order is fixed on the wire.
@@ -65,146 +79,6 @@ impl From<CaliberBit> for rm_simulator_world::Caliber {
         if bit.0 { Self::Mm42 } else { Self::Mm17 }
     }
 }
-/// Two-variant rule enums ride the compact checkpoint as single bits and the
-/// rune/chassis kinds as two-bit indexes, scoped by field name so display
-/// text (refusal reasons) and unrelated booleans pass through untouched.
-/// Unknown strings stay strings, so a new variant costs bytes but still
-/// decodes. Control and confirmation JSON keeps the string forms.
-///
-/// Namespaces share the `kind`/`stage` keys between robot and rune enums,
-/// whose serialized names are disjoint; rune states and match phases take
-/// their own indexes under `state` and `phase`.
-fn compact_name(key: &str, name: &str) -> Option<u64> {
-    match (key, name) {
-        ("team", "Red") | ("caliber", "Mm17") | ("kind", "Infantry") => Some(0),
-        ("team", "Blue") | ("caliber", "Mm42") | ("kind", "Hero") => Some(1),
-        ("kind" | "stage", "Small") => Some(2),
-        ("kind" | "stage", "Big") => Some(3),
-        ("state", "Inactive") => Some(4),
-        ("state", "Activating") => Some(5),
-        ("state", "Activated") => Some(6),
-        ("phase", "Idle") => Some(7),
-        ("phase", "Countdown") => Some(8),
-        ("phase", "Running") => Some(9),
-        ("phase", "Finished") => Some(10),
-        _ => None,
-    }
-}
-/// Inverse of [`compact_name`]: only the indexes the encoder writes map back,
-/// everything else passes through to the typed deserializer.
-fn expand_name(key: &str, index: u64) -> Option<&'static str> {
-    match (key, index) {
-        ("team", 0) => Some("Red"),
-        ("team", 1) => Some("Blue"),
-        ("caliber", 0) => Some("Mm17"),
-        ("caliber", 1) => Some("Mm42"),
-        ("kind", 0) => Some("Infantry"),
-        ("kind", 1) => Some("Hero"),
-        ("kind" | "stage", 2) => Some("Small"),
-        ("kind" | "stage", 3) => Some("Big"),
-        ("state", 4) => Some("Inactive"),
-        ("state", 5) => Some("Activating"),
-        ("state", 6) => Some("Activated"),
-        ("phase", 7) => Some("Idle"),
-        ("phase", 8) => Some("Countdown"),
-        ("phase", 9) => Some("Running"),
-        ("phase", 10) => Some("Finished"),
-        _ => None,
-    }
-}
-/// Team and rune-kind arrays (referee config) carry the enums as bare array
-/// elements, so the parent key scopes them the same way.
-fn compact_element(key: &str, name: &str) -> Option<u64> {
-    match (key, name) {
-        ("outpost_teams" | "rune_teams", "Red") => Some(0),
-        ("outpost_teams" | "rune_teams", "Blue") => Some(1),
-        ("training_kinds", "Small") => Some(2),
-        ("training_kinds", "Big") => Some(3),
-        _ => None,
-    }
-}
-/// Inverse of [`compact_element`].
-fn expand_element(key: &str, index: u64) -> Option<&'static str> {
-    match (key, index) {
-        ("outpost_teams" | "rune_teams", 0) => Some("Red"),
-        ("outpost_teams" | "rune_teams", 1) => Some("Blue"),
-        ("training_kinds", 2) => Some("Small"),
-        ("training_kinds", 3) => Some("Big"),
-        _ => None,
-    }
-}
-fn compact_child(array_key: Option<&str>, value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            for (key, field) in map.iter_mut() {
-                if let Value::String(name) = &*field
-                    && let Some(index) = compact_name(key, name)
-                {
-                    *field = Value::from(index);
-                } else {
-                    compact_child(Some(key), field);
-                }
-            }
-        }
-        Value::Array(items) => {
-            for item in items.iter_mut() {
-                if let Value::String(name) = &*item
-                    && let Some(key) = array_key
-                    && let Some(index) = compact_element(key, name)
-                {
-                    *item = Value::from(index);
-                } else {
-                    compact_child(None, item);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-/// Map the compact checkpoint's rule enums to small indexes before bitpacking
-/// (teams, calibers, robot/rune kinds, rune stages/states and match phases).
-/// The packed checkpoint codec and the dictionary trainer share this so
-/// training corpora match live bytes. Unknown strings pass through, so a new
-/// variant costs bytes but still decodes; [`expand_checkpoint_enums`]
-/// reverses the mapping on decode.
-pub fn compact_checkpoint_enums(value: &mut Value) {
-    compact_child(None, value);
-}
-fn expand_child(array_key: Option<&str>, value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            for (key, field) in map.iter_mut() {
-                if let Value::Number(index) = &*field
-                    && let Some(index) = index.as_u64()
-                    && let Some(name) = expand_name(key, index)
-                {
-                    *field = Value::from(name);
-                } else {
-                    expand_child(Some(key), field);
-                }
-            }
-        }
-        Value::Array(items) => {
-            for item in items.iter_mut() {
-                if let Value::Number(index) = &*item
-                    && let Some(index) = index.as_u64()
-                    && let Some(key) = array_key
-                    && let Some(name) = expand_element(key, index)
-                {
-                    *item = Value::from(name);
-                } else {
-                    expand_child(None, item);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-/// Inverse of [`compact_checkpoint_enums`]: only the indexes the encoder
-/// writes map back, everything else passes through to the typed deserializer.
-pub fn expand_checkpoint_enums(value: &mut Value) {
-    expand_child(None, value);
-}
 impl PlayerSnapshot {
     fn from_state(state: &SimulationState) -> Self {
         let mut state = state.clone();
@@ -220,16 +94,16 @@ impl PlayerSnapshot {
                 let dwell_age_ns = ball
                     .dwell_since_ns
                     .map(|dwell_ns| dwell_ns.saturating_sub(dwell_base_ns));
-                ProjectileWire(
-                    ball.id,
-                    CaliberBit::from(ball.caliber),
+                ProjectileWire {
+                    id: ball.id,
+                    caliber: CaliberBit::from(ball.caliber),
                     launched_age_ns,
-                    ball.position_m.map(|x| x as f32),
-                    ball.velocity_m_s.map(|x| x as f32),
-                    ball.shooter,
+                    position_m: ball.position_m.map(single_precision),
+                    velocity_m_s: ball.velocity_m_s.map(single_precision),
+                    shooter: ball.shooter,
                     first_contact_age_ns,
                     dwell_age_ns,
-                )
+                }
             })
             .collect();
         for rune in &mut state.field.runes {
@@ -254,16 +128,16 @@ impl PlayerSnapshot {
             .projectiles
             .into_iter()
             .map(
-                |ProjectileWire(
-                    id,
-                    caliber_bit,
-                    launched_age_ns,
-                    position,
-                    velocity,
-                    shooter,
-                    first_contact_age_ns,
-                    dwell_age_ns,
-                )| {
+                |ProjectileWire {
+                     id,
+                     caliber,
+                     launched_age_ns,
+                     position_m,
+                     velocity_m_s,
+                     shooter,
+                     first_contact_age_ns,
+                     dwell_age_ns,
+                 }| {
                     let launched_ns = time_ns.saturating_sub(launched_age_ns);
                     let first_contact_ns =
                         first_contact_age_ns.map(|age_ns| launched_ns.saturating_add(age_ns));
@@ -272,10 +146,10 @@ impl PlayerSnapshot {
                         dwell_age_ns.map(|age_ns| dwell_base_ns.saturating_add(age_ns));
                     rm_simulator_world::ProjectileSnapshot {
                         id,
-                        caliber: rm_simulator_world::Caliber::from(caliber_bit),
+                        caliber: rm_simulator_world::Caliber::from(caliber),
                         launched_ns,
-                        position_m: position.map(f64::from),
-                        velocity_m_s: velocity.map(f64::from),
+                        position_m,
+                        velocity_m_s,
                         angular_velocity_rad_s: [0.; 3],
                         shooter,
                         first_contact_ns,
@@ -297,15 +171,32 @@ impl PlayerSnapshot {
         self.state
     }
 }
-#[derive(Serialize, Deserialize)]
-struct PlayerEnvelope {
-    #[serde(rename = "CompactSnapshot")]
-    snapshot: PlayerSnapshot,
+/// `x` at `f32` precision when `f32` holds it finitely, otherwise exact, so an
+/// extreme diagnostic coordinate is never turned into infinity.
+fn single_precision(x: f64) -> f64 {
+    let single = x as f32;
+    if single.is_finite() {
+        f64::from(single)
+    } else {
+        x
+    }
 }
-/// Encodes a server message for an unreliable peer: a snapshot becomes an
-/// independent compact checkpoint that needs no earlier frame, and every other
-/// message keeps its ordinary JSON form. A projectile position or velocity that
-/// cannot survive f32 is the one case that falls back to the full snapshot.
+/// Server message wire form; the snapshot arm carries its compact view.
+#[derive(Serialize)]
+enum WireRef<'a> {
+    Snapshot(Box<PlayerSnapshot>),
+    Message(&'a ServerMessage),
+}
+/// Decoded [`WireRef`]; boxing keeps the arms comparable in size.
+#[derive(Deserialize)]
+enum Wire {
+    Snapshot(Box<PlayerSnapshot>),
+    Message(ServerMessage),
+}
+
+/// Encodes a server message for a peer: a snapshot becomes an independent
+/// compact checkpoint that needs no earlier frame, and every other message its
+/// positional binary form, both behind [`SERVER_MAGIC`].
 ///
 /// ```
 /// use rm_simulator_server::protocol::ServerMessage;
@@ -326,48 +217,89 @@ struct PlayerEnvelope {
 /// assert_eq!(restored.field.tick, tick);
 /// ```
 pub fn encode_player_message(message: &ServerMessage) -> Vec<u8> {
-    match message {
-        ServerMessage::Snapshot(state)
-            if state.field.projectiles.iter().all(|ball| {
-                ball.position_m
-                    .into_iter()
-                    .chain(ball.velocity_m_s)
-                    .all(|x| (x as f32).is_finite())
-            }) =>
-        {
-            let mut envelope = serde_json::to_value(&PlayerEnvelope {
-                snapshot: PlayerSnapshot::from_state(state),
-            })
-            .expect("finite protocol message");
-            compact_checkpoint_enums(&mut envelope);
-            serde_json::to_vec(&envelope)
+    let wire = match message {
+        ServerMessage::Snapshot(state) => {
+            WireRef::Snapshot(Box::new(PlayerSnapshot::from_state(state)))
         }
-        _ => serde_json::to_vec(message),
-    }
-    .expect("finite protocol message")
+        other => WireRef::Message(other),
+    };
+    let mut bytes = SERVER_MAGIC.to_vec();
+    bytes.extend(bitpack::to_bytes(&wire).expect("protocol messages are positional"));
+    bytes
 }
-/// Decodes either a compact checkpoint or an ordinary message. Errors on
-/// malformed bytes rather than returning a partial state, because a decoder
-/// that drops rule state gives up restoring, not drawing.
+/// Decodes [`encode_player_message`] output. Errors on malformed bytes rather
+/// than returning a partial state, because a decoder that drops rule state
+/// gives up restoring, not drawing.
 pub fn decode_player_message(bytes: &[u8]) -> io::Result<ServerMessage> {
-    let mut value: Value =
-        serde_json::from_slice(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    if value.get("CompactSnapshot").is_some() {
-        expand_checkpoint_enums(&mut value);
-        let envelope: PlayerEnvelope = serde_json::from_value(value)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        Ok(ServerMessage::Snapshot(Box::new(
-            envelope.snapshot.into_state(),
-        )))
-    } else {
-        serde_json::from_value(value).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    let body = bytes
+        .strip_prefix(SERVER_MAGIC)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not a server message"))?;
+    Ok(match bitpack::from_bytes::<Wire>(body)? {
+        Wire::Snapshot(snapshot) => ServerMessage::Snapshot(Box::new(snapshot.into_state())),
+        Wire::Message(message) => message,
+    })
+}
+
+/// Encodes a client message behind [`CLIENT_MAGIC`].
+///
+/// ```
+/// use rm_simulator_server::protocol::ClientMessage;
+/// use rm_simulator_server::snapshot_codec::{decode_client_message, encode_client_message};
+///
+/// let ping = ClientMessage::Ping { nonce: 7 };
+/// let bytes = encode_client_message(&ping);
+/// assert_eq!(bytes.len(), 6);
+/// assert_eq!(decode_client_message(&bytes).unwrap(), ping);
+/// ```
+pub fn encode_client_message(message: &ClientMessage) -> Vec<u8> {
+    let mut bytes = CLIENT_MAGIC.to_vec();
+    bytes.extend(bitpack::to_bytes(message).expect("protocol messages are positional"));
+    bytes
+}
+/// Decodes [`encode_client_message`] output.
+pub fn decode_client_message(bytes: &[u8]) -> io::Result<ClientMessage> {
+    let body = bytes
+        .strip_prefix(CLIENT_MAGIC)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not a client message"))?;
+    bitpack::from_bytes(body)
+}
+
+/// The fine fixed-point checkpoint tree for `state`: the tree the periodic
+/// delta lane packs and pins as a baseline.
+pub fn checkpoint_node(state: &SimulationState) -> io::Result<Node> {
+    Ok(bitpack::to_node_with(
+        &PlayerSnapshot::from_state(state),
+        fixed_point::Fine::Root,
+    )?)
+}
+
+/// Decodes one packed checkpoint frame against its pinned baseline, checks its
+/// input epoch and normalizes its quantized rotations. With `keep_node` the
+/// decoded wire-grid tree comes back too, for pinning as a baseline; the
+/// delivered state is normalized, the tree is not, so later deltas use the
+/// exact values the encoder holds.
+pub fn decode_checkpoint(
+    bytes: &[u8],
+    baseline: Option<(&Node, u64)>,
+    epoch: u64,
+    keep_node: bool,
+) -> io::Result<(ServerMessage, Option<Node>)> {
+    let (snapshot, _) = bitpack::decode::<PlayerSnapshot>(bytes, baseline, epoch)?;
+    let node = keep_node.then(|| bitpack::to_node(&snapshot)).transpose()?;
+    if snapshot.state.input_epoch != epoch {
+        return Err(io::Error::other("invalid baseline state/epoch"));
     }
+    let mut message = ServerMessage::Snapshot(Box::new(snapshot.into_state()));
+    fixed_point::normalize(&mut message)?;
+    Ok((message, node))
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn outpost_motion_extraction_preserves_legacy_checkpoint_shape() {
+        // The JSON shape is the world crate's saved form; the binary form below
+        // must decode the same outpost positionally.
         use rm_simulator_world::{Outpost, Pose};
         let legacy = serde_json::json!({
             "pivot_cad_m": rm_simulator_world::outpost::PIVOT_CAD_M,
@@ -379,6 +311,11 @@ mod tests {
         let mut outpost: Outpost = serde_json::from_value(legacy.clone()).unwrap();
         outpost.validate().unwrap();
         assert_eq!(serde_json::to_value(&outpost).unwrap(), legacy);
+        let bytes = crate::binary_snapshot::bitpack::to_bytes(&outpost).unwrap();
+        assert_eq!(
+            crate::binary_snapshot::bitpack::from_bytes::<Outpost>(&bytes).unwrap(),
+            outpost
+        );
         assert_eq!(
             outpost.snapshot(123_000_000).armors,
             outpost.snapshot(900_000_000).armors
@@ -402,7 +339,8 @@ mod tests {
             field: Field::new(&FieldConfig::default()).unwrap().snapshot(),
         }
     }
-    fn equivalent(a: &Value, b: &Value) {
+    fn equivalent(a: &serde_json::Value, b: &serde_json::Value) {
+        use serde_json::Value;
         match (a, b) {
             (Value::Number(x), Value::Number(y)) if x.is_f64() || y.is_f64() => {
                 let (x, y) = (x.as_f64().unwrap(), y.as_f64().unwrap());
@@ -424,7 +362,7 @@ mod tests {
         }
     }
     #[test]
-    fn extreme_diagnostic_coordinates_fall_back_to_full_precision() {
+    fn extreme_diagnostic_coordinates_keep_full_precision() {
         let mut state = simulation();
         state
             .field
@@ -440,11 +378,11 @@ mod tests {
                 first_contact_ns: None,
                 dwell_since_ns: None,
             });
-        let message = ServerMessage::Snapshot(Box::new(state));
-        assert_eq!(
-            decode_player_message(&encode_player_message(&message)).unwrap(),
-            message
-        );
+        let message = ServerMessage::Snapshot(Box::new(state.clone()));
+        let decoded = decode_player_message(&encode_player_message(&message)).unwrap();
+        // Spin is never carried; the out-of-range coordinate stays exact.
+        state.field.projectiles[0].angular_velocity_rad_s = [0.; 3];
+        assert_eq!(decoded, ServerMessage::Snapshot(Box::new(state)));
     }
 
     #[test]
@@ -476,6 +414,7 @@ mod tests {
                 state.field.outposts[0].hp = 0;
             }
             let message = ServerMessage::Snapshot(Box::new(state.clone()));
+            // The JSON form is only a size reference here.
             let full = serde_json::to_vec(&message).unwrap();
             let compact = encode_player_message(&message);
             full_bytes += crate::compression::compress(&full).len();
@@ -518,41 +457,6 @@ mod tests {
             compact_bytes * 4 < full_bytes * 3,
             "expect at least 25% less compressed traffic"
         );
-    }
-
-    #[test]
-    fn compacted_enums_round_trip_and_leave_other_values_alone() {
-        let mut value = serde_json::json!({
-            "team": "Blue",
-            "caliber": "Mm42",
-            "kind": "Small",
-            "stage": "Big",
-            "state": "Activating",
-            "phase": "Countdown",
-            "paused": true,
-            "hp": 10, // small ints under other keys stay numbers
-            "reason": "Blue", // display text under another key stays a string
-            "future": {"team": "Green"}, // unknown variants stay strings
-            "outpost_teams": ["Red", "Blue"],
-            "training_kinds": ["Small"],
-            "chassis": [{"team": "Red", "kind": "Hero"}],
-        });
-        let original = value.clone();
-        compact_checkpoint_enums(&mut value);
-        assert_eq!(value["team"], serde_json::json!(1));
-        assert_eq!(value["caliber"], serde_json::json!(1));
-        assert_eq!(value["kind"], serde_json::json!(2));
-        assert_eq!(value["stage"], serde_json::json!(3));
-        assert_eq!(value["state"], serde_json::json!(5));
-        assert_eq!(value["phase"], serde_json::json!(8));
-        assert_eq!(value["paused"], serde_json::json!(true));
-        assert_eq!(value["hp"], serde_json::json!(10));
-        assert_eq!(value["reason"], serde_json::json!("Blue"));
-        assert_eq!(value["future"]["team"], serde_json::json!("Green"));
-        assert_eq!(value["outpost_teams"], serde_json::json!([0, 1]));
-        assert_eq!(value["training_kinds"], serde_json::json!([2]));
-        expand_checkpoint_enums(&mut value);
-        assert_eq!(value, original);
     }
 
     #[test]
@@ -621,9 +525,16 @@ mod tests {
             !state.field.projectiles.is_empty(),
             "the workload must hold balls in flight"
         );
-        let message = ServerMessage::Snapshot(Box::new(state.clone()));
-        let ServerMessage::Snapshot(decoded) =
-            decode_player_message(&encode_player_message(&message)).unwrap()
+        // The periodic lane's quantized checkpoint, not the f32 confirmation.
+        let bytes = crate::binary_snapshot::bitpack::encode(
+            &checkpoint_node(&state).unwrap(),
+            None,
+            state.input_epoch,
+            0,
+        )
+        .unwrap();
+        let (ServerMessage::Snapshot(decoded), _) =
+            decode_checkpoint(&bytes, None, state.input_epoch, false).unwrap()
         else {
             panic!("a snapshot must decode to a snapshot");
         };

@@ -17,8 +17,7 @@ pub struct Datagram {
 /// Queue occupancy and service for control, owner and world classes, in that order.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct QueueStats {
-    /// Optional host encoding counters; older senders omit them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional host encoding counters.
     pub encoding: Option<crate::network_stats::EncodingStats>,
     /// Bytes awaiting transport submission in each class, including pending world data.
     pub queued_bytes: [usize; 3],

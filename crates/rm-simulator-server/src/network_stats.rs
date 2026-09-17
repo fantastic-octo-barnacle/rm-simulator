@@ -55,7 +55,7 @@ pub struct EncodingStats {
     pub world_updates: u64,
     /// World snapshots skipped because the native transport was congested.
     pub skipped_world_updates: u64,
-    /// JSON checkpoint bytes before delta encoding/compression, when deltas are enabled.
+    /// Packed independent checkpoint bytes before delta encoding/compression.
     pub raw_world_bytes: u64,
     /// Encoded world bytes including application fragment headers, before pacing drops.
     pub framed_world_bytes: u64,

@@ -743,7 +743,7 @@ mod tests {
             send(
                 &socket,
                 connection,
-                serde_json::to_vec(&message).unwrap(),
+                crate::snapshot_codec::encode_client_message(&message),
                 true,
                 &crate::network_trace::Observer::new("test", crate::clock::TimeSource::system()),
                 None,

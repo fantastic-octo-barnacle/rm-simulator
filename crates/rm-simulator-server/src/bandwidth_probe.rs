@@ -182,7 +182,7 @@ pub(crate) struct Totals {
     /// Upstream datagrams that were not input batches.
     pub(crate) up_controls: u64,
     /// Raw JSON bytes of the newest checkpoint's whole state.
-    pub(crate) state_json: usize,
+    pub(crate) state_packed: usize,
     /// Encoded size of the newest owner anchor.
     pub(crate) owner_anchor_bytes: usize,
     /// Raw JSON bytes per `FieldSnapshot` section of the newest checkpoint.
@@ -219,9 +219,11 @@ pub(crate) struct Totals {
 }
 
 impl Totals {
-    /// Fold one JSON value's serialized size into a named section.
-    fn section(&mut self, name: &'static str, value: &serde_json::Value) {
-        *self.sections.entry(name).or_default() += serde_json::to_vec(value).unwrap().len();
+    /// Fold one value's standalone packed size into a named section.
+    fn section<T: serde::Serialize>(&mut self, name: &'static str, value: &T) {
+        *self.sections.entry(name).or_default() += crate::binary_snapshot::bitpack::to_bytes(value)
+            .expect("checkpoint sections are positional")
+            .len();
     }
 }
 
@@ -480,36 +482,29 @@ pub(crate) fn run_observed(
     }
     // Freeze the newest checkpoint's raw representation once, after the run.
     let state = simulation.state();
-    totals.state_json = serde_json::to_vec(&state).unwrap().len();
+    totals.state_packed = crate::binary_snapshot::bitpack::to_bytes(&state)
+        .expect("host state is positional")
+        .len();
     totals.owner_anchor_bytes = owner_anchor(&state).map_or(0, |bytes| bytes.len());
     totals.projectiles = state.field.projectiles.len();
     totals.chassis = state.field.chassis.len();
     totals.hits = state.field.hits.len();
     totals.shot_results = state.shot_results.len();
     totals.shots_fired = state.field.shots_fired;
-    let value = serde_json::to_value(&state.field).unwrap();
-    for (name, value) in value.as_object().unwrap() {
-        let name: &'static str = match name.as_str() {
-            "bases" => "bases",
-            "tick" => "tick",
-            "time_ns" => "time_ns",
-            "runes" => "runes",
-            "outposts" => "outposts",
-            "projectiles" => "projectiles",
-            "chassis" => "chassis",
-            "hits" => "hits",
-            "shots_fired" => "shots_fired",
-            "hits_detected" => "hits_detected",
-            "referee" => "referee",
-            "restore" => "restore",
-            _ => "other",
-        };
-        totals.section(name, value);
-    }
-    totals.section(
-        "shot_results",
-        &serde_json::to_value(&state.shot_results).unwrap(),
-    );
+    let field = &state.field;
+    totals.section("bases", &field.bases);
+    totals.section("tick", &field.tick);
+    totals.section("time_ns", &field.time_ns);
+    totals.section("runes", &field.runes);
+    totals.section("outposts", &field.outposts);
+    totals.section("projectiles", &field.projectiles);
+    totals.section("chassis", &field.chassis);
+    totals.section("hits", &field.hits);
+    totals.section("shots_fired", &field.shots_fired);
+    totals.section("hits_detected", &field.hits_detected);
+    totals.section("referee", &field.referee);
+    totals.section("restore", &field.restore);
+    totals.section("shot_results", &state.shot_results);
     totals
 }
 
@@ -525,23 +520,23 @@ pub(crate) struct Ablation {
     pub(crate) packed_bytes: i64,
 }
 
+/// One named ablation that empties a section of a copied state.
+type Candidate = (&'static str, fn(&mut SimulationState));
+
 /// Compressed contribution of each top-level checkpoint section on the live
 /// binary path.
 ///
 /// Removes one section at a time from the compact player checkpoint and runs
-/// the production pipeline — fine fixed-point quantization, `RMB0` bitpack
+/// the production pipeline — fine fixed-point quantization, positional bitpack
 /// and the embedded dictionary compressor with its no-bloat passthrough —
-///
-/// which is the only way to apportion a binary frame's bytes: raw JSON section
+/// which is the only way to apportion a binary frame's bytes: standalone section
 /// sizes do not add up to packed or compressed contributions. A section whose
 /// removal makes the frame larger reports a negative number, which means it
 /// was helping the compressor, not costing bytes.
 ///
-/// Paths are inside the compact `PlayerEnvelope`: `CompactSnapshot.state` is the
-/// `SimulationState` and `CompactSnapshot.projectiles` is the hoisted wire
-/// projectile array, while the state's own `field.projectiles` is emptied by
-/// `PlayerSnapshot::from_state`. So the `state.projectiles` row measures the
-/// hoisted array, which is where a checkpoint's projectile bytes actually live.
+/// Each row empties one section of the host state before the checkpoint is
+/// built. Emptying `field.projectiles` empties the checkpoint's hoisted wire
+/// projectile array, which is where a checkpoint's projectile bytes live.
 ///
 /// `state.restore` is reported for completeness but is never a removal
 /// candidate: it is hidden rule state that `Field::restore` needs, so a frame
@@ -550,95 +545,47 @@ pub(crate) fn ablation(
     compressor: &mut crate::binary_snapshot::Compressor,
     state: &SimulationState,
 ) -> Vec<Ablation> {
-    use crate::binary_snapshot::fixed_point::{Quantization, checkpoint};
-    let bytes = crate::snapshot_codec::encode_player_message(&ServerMessage::Snapshot(Box::new(
-        state.clone(),
-    )));
     // The production independent-frame pipeline from `udp_snapshot::Encoder`:
     // quantize, bitpack, then dictionary-compress with the no-bloat gate.
-    let frame = |compressor: &mut crate::binary_snapshot::Compressor, value: &serde_json::Value| {
-        let mut value = value.clone();
-        checkpoint(&mut value, &mut Default::default(), Quantization::Fine);
-        let packed = crate::binary_snapshot::bitpack::encode(&value, None, 0, 0, true, true)
+    let frame = |compressor: &mut crate::binary_snapshot::Compressor, state: &SimulationState| {
+        let node = crate::snapshot_codec::checkpoint_node(state)
+            .expect("an ablation checkpoint packs like the live one");
+        let packed = crate::binary_snapshot::bitpack::encode(&node, None, 0, 0)
             .expect("an ablation checkpoint packs like the live one");
         let packed_len = packed.len() as i64;
         (compressor.compress(&packed).len() as i64, packed_len)
     };
-    let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    let (total, total_packed) = frame(compressor, &value);
+    let (whole, whole_packed) = frame(compressor, state);
     let mut rows = vec![Ablation {
         name: "total",
-        bytes: total,
-        packed_bytes: total_packed,
+        bytes: whole,
+        packed_bytes: whole_packed,
     }];
-    if value.get("CompactSnapshot").is_none() {
-        return rows;
-    }
-    let (whole, whole_packed) = (total, total_packed);
-    // Every candidate is a path inside the compact envelope: the state's field
-    // sections, the hoisted projectile array, and the per-shooter result history.
-    let candidates: [(&'static str, &[&str]); 11] = [
-        (
-            "state.bases",
-            &["CompactSnapshot", "state", "field", "bases"],
-        ),
-        ("state.tick", &["CompactSnapshot", "state", "field", "tick"]),
-        (
-            "state.time_ns",
-            &["CompactSnapshot", "state", "field", "time_ns"],
-        ),
-        (
-            "state.runes",
-            &["CompactSnapshot", "state", "field", "runes"],
-        ),
-        (
-            "state.outposts",
-            &["CompactSnapshot", "state", "field", "outposts"],
-        ),
-        ("state.projectiles", &["CompactSnapshot", "projectiles"]),
-        (
-            "state.chassis",
-            &["CompactSnapshot", "state", "field", "chassis"],
-        ),
-        ("state.hits", &["CompactSnapshot", "state", "field", "hits"]),
-        (
-            "state.referee",
-            &["CompactSnapshot", "state", "field", "referee"],
-        ),
-        (
-            "state.restore",
-            &["CompactSnapshot", "state", "field", "restore"],
-        ),
-        (
-            "shot_results",
-            &["CompactSnapshot", "state", "shot_results"],
-        ),
+    // Each candidate empties one section of a fresh copy of the host state.
+    let candidates: [Candidate; 11] = [
+        ("state.bases", |s| s.field.bases.clear()),
+        ("state.tick", |s| s.field.tick = 0),
+        ("state.time_ns", |s| s.field.time_ns = 0),
+        ("state.runes", |s| s.field.runes.clear()),
+        ("state.outposts", |s| s.field.outposts.clear()),
+        ("state.projectiles", |s| s.field.projectiles.clear()),
+        ("state.chassis", |s| s.field.chassis.clear()),
+        ("state.hits", |s| s.field.hits.clear()),
+        ("state.referee", |s| s.field.referee = None),
+        ("state.restore", |s| s.field.restore = None),
+        ("shot_results", |s| s.shot_results.clear()),
     ];
-    for (name, path) in candidates {
-        let Some(slot) = at(&mut value, path) else {
-            continue;
-        };
-        // The decoded value is a local copy, so clearing a section in place
-        // needs no restore: the next candidate starts from a fresh copy anyway.
-        *slot = serde_json::Value::Null;
-        let (without, without_packed) = frame(compressor, &value);
+    for (name, clear) in candidates {
+        let mut without_section = state.clone();
+        clear(&mut without_section);
+        let (without, without_packed) = frame(compressor, &without_section);
         rows.push(Ablation {
             name,
             bytes: whole - without,
             packed_bytes: whole_packed - without_packed,
         });
-        value = serde_json::from_slice(&bytes).unwrap();
     }
     rows
-}
-
-/// The mutable value at `path` from `root`, or `None` when any step is missing.
-fn at<'a>(root: &'a mut serde_json::Value, path: &[&str]) -> Option<&'a mut serde_json::Value> {
-    let mut current = root;
-    for key in path {
-        current = current.get_mut(*key)?;
-    }
-    Some(current)
 }
 
 /// Print one measurement record.
@@ -702,8 +649,8 @@ pub(crate) fn report(
         per_s(totals.produced_owner_bytes)
     );
     println!(
-        "  state_json={} owner_anchor_bytes={} projectiles={} chassis={} hits={} shot_results={} fire_commands={} shots_fired={}",
-        totals.state_json,
+        "  state_packed={} owner_anchor_bytes={} projectiles={} chassis={} hits={} shot_results={} fire_commands={} shots_fired={}",
+        totals.state_packed,
         totals.owner_anchor_bytes,
         totals.projectiles,
         totals.chassis,

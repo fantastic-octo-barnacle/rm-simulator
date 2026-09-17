@@ -12,12 +12,12 @@
 //! and compressed with the checkpoint dictionary in
 //! [`crate::binary_snapshot`], whose frames carry their own
 //! [`crate::binary_snapshot::MAGIC`]. An *uncompressed* periodic checkpoint is
-//! simply the packed `RMB0` frame itself.
+//! simply the packed `RMB1` frame itself.
 //!
 //! Every frame this module writes is self-describing: [`compress`] and
 //! [`encode(false, _)`][encode] carry [`MAGIC`] in front of the ZSTD body, while
 //! [`encode(true, _)`][encode] carries [`RAW_MAGIC`] in front of the unchanged
-//! body. [`decompress`] auto-detects all of them plus a bare packed `RMB0`
+//! body. [`decompress`] auto-detects all of them plus a bare packed `RMB1`
 //! frame, which is what lets one decoder serve a whole connection without a
 //! decode-side flag: the loopback transport sets `raw` so a local session runs
 //! the same framing without paying for ZSTD.
@@ -68,7 +68,7 @@ impl Decompressor {
     /// decoder stops at the limit instead of allocating, so the bound protects
     /// the process from a hostile peer as well as from a decoding bug. The
     /// prefix picks the kind: a dictionary checkpoint, a plain ZSTD frame, an
-    /// uncompressed [`RAW_MAGIC`] body or a bare packed `RMB0` frame, which is
+    /// uncompressed [`RAW_MAGIC`] body or a bare packed `RMB1` frame, which is
     /// already the inflated checkpoint and passes through unchanged.
     fn decompress(&mut self, bytes: &[u8], limit: usize) -> io::Result<Vec<u8>> {
         if let Some(body) = bytes.strip_prefix(crate::binary_snapshot::MAGIC) {
@@ -136,7 +136,7 @@ pub fn compress(bytes: &[u8]) -> Vec<u8> {
 
 /// Decompresses one frame of any kind this module or the checkpoint codec
 /// writes, producing at most `limit` bytes: a dictionary checkpoint, a plain
-/// ZSTD frame, an uncompressed [`RAW_MAGIC`] body, or a bare packed `RMB0`
+/// ZSTD frame, an uncompressed [`RAW_MAGIC`] body, or a bare packed `RMB1`
 /// frame, which is returned unchanged because it is already inflated.
 ///
 /// ```
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn a_bare_packed_checkpoint_passes_through_unchanged() {
-        // A packed `RMB0` frame is already the inflated checkpoint, so the
+        // A packed checkpoint frame is already the inflated checkpoint, so the
         // decoder returns it whole for `udp_snapshot::parse` to inspect.
         let mut packed = crate::binary_snapshot::bitpack::MAGIC.to_vec();
         packed.extend_from_slice(&[1u8; 64]);
@@ -270,30 +270,22 @@ mod tests {
         // The checkpoint dictionary is trained on real checkpoints, so both
         // directions must work on one. A corrupt or stale asset that merely
         // round-trips a synthetic frame would otherwise go unnoticed.
-        use crate::protocol::ServerMessage;
-        use crate::snapshot_codec::encode_player_message;
         use rm_simulator_world::{Field, FieldConfig};
         let mut simulation =
             crate::simulation::Simulation::new(Field::new(&FieldConfig::default()).unwrap(), false);
         simulation.step(16).unwrap();
         let mut state = simulation.state();
         state.snapshot_id = 1;
-        let checkpoint = encode_player_message(&ServerMessage::Snapshot(Box::new(state)));
         let packed = crate::binary_snapshot::bitpack::encode(
-            &serde_json::from_slice(&checkpoint).unwrap(),
+            &crate::snapshot_codec::checkpoint_node(&state).unwrap(),
             None,
             0,
             0,
-            true,
-            true,
         )
         .unwrap();
         let mut encoder = crate::binary_snapshot::Compressor::new();
         let compressed = encoder.compress(&packed);
         assert!(compressed.starts_with(crate::binary_snapshot::MAGIC));
-        assert_eq!(
-            decompress(&compressed, checkpoint.len() + 1).unwrap(),
-            packed
-        );
+        assert_eq!(decompress(&compressed, packed.len() + 1).unwrap(), packed);
     }
 }

@@ -827,7 +827,7 @@ impl PeerCodec {
             payload.to_vec()
         };
         Ok(PeerRequest::Message(Box::new(
-            serde_json::from_slice(&payload).map_err(io_error)?,
+            crate::snapshot_codec::decode_client_message(&payload)?,
         )))
     }
     /// Queue one host frame. `pending_bytes` is the carrier's own backlog; a
@@ -871,9 +871,9 @@ impl PeerCodec {
         let compressed = if frame.periodic
             && let ServerMessage::Snapshot(state) = frame.message()
         {
-            let raw = crate::snapshot_codec::encode_player_message(frame.message());
-            self.encoding.raw_world_bytes += raw.len() as u64;
-            self.encoder.snapshot(state.input_epoch, &raw)?
+            let encoded = self.encoder.snapshot(state.input_epoch, state)?;
+            self.encoding.raw_world_bytes += self.encoder.last_packed_bytes as u64;
+            encoded
         } else {
             frame.body(self.raw).to_vec()
         };
@@ -1165,15 +1165,16 @@ impl ClientCodec {
         robot: Robot,
         password: &str,
     ) -> io::Result<Vec<u8>> {
-        serde_json::to_vec(&ClientMessage::Hello {
-            password: password.into(),
-            protocol: crate::protocol::PROTOCOL_VERSION,
-            name: name.to_string(),
-            team,
-            role,
-            robot,
-        })
-        .map_err(io_error)
+        Ok(crate::snapshot_codec::encode_client_message(
+            &ClientMessage::Hello {
+                password: password.into(),
+                protocol: crate::protocol::PROTOCOL_VERSION,
+                name: name.to_string(),
+                team,
+                role,
+                robot,
+            },
+        ))
     }
     fn elapsed(&self, now: Instant) -> Duration {
         now.saturating_duration_since(self.epoch)
@@ -1327,7 +1328,7 @@ impl ClientCodec {
             let mut bytes = COMMAND_MAGIC.to_vec();
             bytes.extend(crate::compression::encode(
                 self.raw,
-                &serde_json::to_vec(&ClientMessage::Command(command)).map_err(io_error)?,
+                &crate::snapshot_codec::encode_client_message(&ClientMessage::Command(command)),
             ));
             return self
                 .pacer
@@ -1352,7 +1353,7 @@ impl ClientCodec {
             self.pacer
                 .control(
                     self.elapsed(now),
-                    vec![serde_json::to_vec(&message).map_err(io_error)?],
+                    vec![crate::snapshot_codec::encode_client_message(&message)],
                 )
                 .map_err(io_error)?;
         }
@@ -1839,9 +1840,9 @@ mod tests {
         let packets = client_packets(&mut client, now + Duration::from_millis(64));
         assert_eq!(packets.len(), 1);
         let body = packets[0].strip_prefix(COMMAND_MAGIC).unwrap();
-        let expected = crate::compression::compress(
-            &serde_json::to_vec(&ClientMessage::Command(command)).unwrap(),
-        );
+        let expected = crate::compression::compress(&crate::snapshot_codec::encode_client_message(
+            &ClientMessage::Command(command),
+        ));
         assert_eq!(body, expected);
         let mut host = PeerCodec::new(now, 1 << 20, false);
         assert!(matches!(host.receive(&packets[0], now).unwrap(),
@@ -1916,9 +1917,7 @@ mod tests {
         let previous_bytes: usize = inputs
             .iter()
             .map(|input| {
-                serde_json::to_vec(&ClientMessage::Command(*input))
-                    .unwrap()
-                    .len()
+                crate::snapshot_codec::encode_client_message(&ClientMessage::Command(*input)).len()
             })
             .sum();
         assert_eq!(
@@ -1929,7 +1928,9 @@ mod tests {
             "input history separate/batched bytes: {previous_bytes}/{}",
             packet.len()
         );
-        assert!(packet.len() * 2 < previous_bytes);
+        // Against separately encoded binary commands, the batch still wins by
+        // sharing the chassis, epoch and timing fields.
+        assert!(packet.len() < previous_bytes);
         assert!(
             packet.len() < CHUNK,
             "normal batches should fit one datagram"
@@ -1987,8 +1988,10 @@ mod tests {
         let now = Instant::now();
         let mut frames = Frames::default();
         let mut encoder = crate::udp_snapshot::Encoder::default();
-        let bytes = crate::snapshot_codec::encode_player_message(&snapshot(1));
-        let full = encoder.snapshot(0, &bytes).unwrap();
+        let ServerMessage::Snapshot(state) = snapshot(1) else {
+            unreachable!()
+        };
+        let full = encoder.snapshot(0, &state).unwrap();
         // A retried bootstrap baseline has a newer transport ordinal but old host state.
         for packet in packets(100, false, &full).unwrap() {
             frames.receive(&packet, now).unwrap();

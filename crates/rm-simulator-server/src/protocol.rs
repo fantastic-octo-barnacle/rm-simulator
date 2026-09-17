@@ -42,7 +42,11 @@ use serde::{Deserialize, Serialize};
 /// owner anchor (`RMO5`): millimetre positions, 1/32767 quaternions,
 /// centimetre-per-second velocities, milliradian-per-second rates and
 /// 0.1 mrad aims cut the anchor from 444 bytes toward 202.
-pub const PROTOCOL_VERSION: u32 = 37;
+/// Version 38 removes JSON from the gameplay wire. Checkpoints (`RMB1`) are a
+/// positional, type-driven bitpack quantized while serializing, and every
+/// other server (`RMM1`) and client (`RMQ1`) message, acknowledgement (`RMA2`)
+/// and retirement (`RMR1`) uses the same codec.
+pub const PROTOCOL_VERSION: u32 = 38;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///

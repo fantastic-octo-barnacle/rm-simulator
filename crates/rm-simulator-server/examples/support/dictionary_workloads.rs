@@ -1,19 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
 //! Shared training workloads; kept separate from bandwidth evaluation runs.
-use rm_simulator_server::{
-    protocol::{Command, ServerMessage},
-    snapshot_codec::encode_player_message,
-    workload,
-};
+use rm_simulator_server::{protocol::Command, simulation::SimulationState, workload};
 use rm_simulator_world::{ChassisCommand, ChassisSnapshot, RefereeCommand, Team};
-use serde_json::Value;
 
 /// Production publication period in world time, in milliseconds. The run is
 /// scheduled in duration, not ticks: a 32 ms frame is four whole 128 Hz ticks
 /// plus a remainder, and the remainder accumulates.
 const STEP_MS: u64 = 32;
-/// Fixed command-jitter seed; identical to the original JSON dictionary trainer.
+/// Fixed command-jitter seed; unchanged since the original dictionary trainer.
 const SEED: u64 = 0x5eed_2026_0914;
 /// One deterministic synthetic gameplay run.
 pub struct Scenario {
@@ -77,8 +72,8 @@ pub const SCENARIOS: [Scenario; 5] = [
     },
 ];
 
-/// Independent compact values from one deterministic training run.
-pub fn checkpoints(scenario: &Scenario) -> Vec<Value> {
+/// Independent checkpoint states from one deterministic training run.
+pub fn checkpoints(scenario: &Scenario) -> Vec<SimulationState> {
     let (mut simulation, pilots) = workload::simulation(scenario.chassis);
     let mut bots = Vec::new();
     if scenario.match_running {
@@ -140,9 +135,7 @@ pub fn checkpoints(scenario: &Scenario) -> Vec<Value> {
         }
         let mut state = simulation.state();
         state.snapshot_id = frame + 1;
-        let compact = encode_player_message(&ServerMessage::Snapshot(Box::new(state)));
-        let value: Value = serde_json::from_slice(&compact).expect("checkpoint is JSON");
-        samples.push(value);
+        samples.push(state);
     }
     samples
 }

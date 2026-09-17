@@ -12,13 +12,8 @@ mod binary_dictionary;
 mod bitpack;
 #[path = "support/dictionary_workloads.rs"]
 mod dictionary_workloads;
-// Training rounds wire values but never applies them to a physics world.
-#[allow(dead_code)]
-#[path = "support/fixed_point.rs"]
-mod fixed_point;
 
-use fixed_point::Quantization;
-use serde_json::Value;
+use rm_simulator_server::snapshot_codec::{checkpoint_node, decode_checkpoint};
 use sha2::{Digest, Sha256};
 
 fn main() {
@@ -29,70 +24,41 @@ fn main() {
     let workloads: Vec<_> = dictionary_workloads::SCENARIOS
         .iter()
         .map(|scenario| {
-            let values = dictionary_workloads::checkpoints(scenario);
+            let states = dictionary_workloads::checkpoints(scenario);
             eprintln!(
                 "training scenario={} chassis={} frames={}",
                 scenario.name, scenario.chassis, scenario.frames
             );
-            values
+            states
         })
         .collect();
     println!("profile,samples,sample_bytes,samples_sha256,dictionary_bytes,dictionary_sha256");
-    for (packed, mode) in [
-        (false, Quantization::None),
-        (true, Quantization::None),
-        (true, Quantization::Coarse),
-        (true, Quantization::Fine),
-        (true, Quantization::Chassis),
-    ] {
+    {
         let mut samples = Vec::new();
         for workload in &workloads {
             let mut base = None;
             let mut id = 0;
-            for (frame, checkpoint) in workload.iter().enumerate() {
-                let mut value = checkpoint.clone();
-                rm_simulator_server::snapshot_codec::compact_checkpoint_enums(&mut value);
-                fixed_point::checkpoint(&mut value, &mut fixed_point::Errors::default(), mode);
-                let epoch = value["CompactSnapshot"]["state"]["input_epoch"]
-                    .as_u64()
-                    .unwrap();
+            for (frame, state) in workload.iter().enumerate() {
+                let node = checkpoint_node(state).unwrap();
+                let epoch = state.input_epoch;
                 let proposing = frame.is_multiple_of(32);
                 if proposing {
                     id += 1;
                 }
                 samples.push(
-                    bitpack::encode(
-                        &value,
-                        None,
-                        epoch,
-                        if proposing { id } else { 0 },
-                        packed,
-                        mode != Quantization::None,
-                    )
-                    .unwrap(),
+                    bitpack::encode(&node, None, epoch, if proposing { id } else { 0 }).unwrap(),
                 );
                 if proposing {
-                    base = Some(value.clone());
+                    base = Some(node.clone());
                 } else {
-                    samples.push(
-                        bitpack::encode(
-                            &value,
-                            base.as_ref(),
-                            epoch,
-                            id,
-                            packed,
-                            mode != Quantization::None,
-                        )
-                        .unwrap(),
-                    );
+                    samples.push(bitpack::encode(&node, base.as_ref(), epoch, id).unwrap());
                 }
                 // Verify full and delta samples against the same retained state.
                 for sample in samples.iter().rev().take(if proposing { 1 } else { 2 }) {
-                    let decoded =
-                        bitpack::decode(sample, base.as_ref().map(|b: &Value| (b, id)), epoch)
-                            .unwrap()
-                            .0;
-                    assert!(bitpack::exact(&decoded, &value));
+                    let (_, decoded) =
+                        decode_checkpoint(sample, base.as_ref().map(|b| (b, id)), epoch, true)
+                            .unwrap();
+                    assert!(decoded.unwrap() == node);
                 }
             }
         }
@@ -113,7 +79,7 @@ fn main() {
                 *sample
             );
         }
-        let name = binary_dictionary::name(packed, mode);
+        let name = "fixed-fine";
         let path = std::path::Path::new(&directory).join(format!("{name}.zstd"));
         std::fs::write(path, &dictionary).unwrap();
         println!(

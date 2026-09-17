@@ -413,14 +413,17 @@ fn record_loopback_frame(inbox: &ClientInbox, payload: &[u8]) {
         payload
     };
     let kind = match body.get(..4) {
-        Some(b"RMB0") => "RMB0",
+        Some(b"RMB1") => "RMB1",
         Some(b"RMRW") => "RMRW",
         Some(b"RMZ1") => "RMZ1",
         Some(b"RMBZ") => "RMBZ",
         Some(b"RMO5") => "RMO5",
         Some(b"RMI3") => "RMI3",
         Some(b"RMC1") => "RMC1",
-        Some(b"RMA1") => "RMA1",
+        Some(b"RMA2") => "RMA2",
+        Some(b"RMM1") => "RMM1",
+        Some(b"RMQ1") => "RMQ1",
+        Some(b"RMR1") => "RMR1",
         _ => "other",
     };
     inbox.observer.record(crate::network_trace::Event {
@@ -1320,13 +1323,13 @@ mod tests {
         let chassis = state.field.chassis.iter().find(|c| c.id == id).unwrap();
         assert!((chassis.pose.translation_m[0] - spawn[0]).abs() < 1e-6);
         assert!((chassis.pose.translation_m[1] - spawn[1]).abs() < 1e-6);
-        // The frames the embedded client received were raw: packed `RMB0`
+        // The frames the embedded client received were raw: packed `RMB1`
         // snapshots and `RMRW` control frames, never the ZSTD framings.
         let report = client.trace_report().unwrap();
         let wire = &report.stages["loopback_wire"];
         let kinds: Vec<_> = wire.keys().copied().collect();
         assert!(
-            wire.contains_key("RMB0"),
+            wire.contains_key("RMB1"),
             "raw checkpoint missing: {kinds:?}"
         );
         assert!(wire.contains_key("RMRW"), "raw control missing: {kinds:?}");
