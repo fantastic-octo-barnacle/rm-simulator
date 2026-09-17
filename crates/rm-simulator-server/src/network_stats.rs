@@ -67,6 +67,10 @@ pub struct EncodingStats {
     pub independent_bytes: u64,
     /// Compressed full/delta bytes selected by the baseline codec, before fragment headers.
     pub selected_bytes: u64,
+    /// Packed checkpoint frames sent uncompressed because dictionary
+    /// compression would have grown them. The bare `RMB0` framing decodes
+    /// without a dictionary, so these are measured savings, not errors.
+    pub raw_fallback_frames: u64,
 }
 
 /// One connection's diagnostics report, combining the client's own timing with

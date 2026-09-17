@@ -884,6 +884,7 @@ impl PeerCodec {
             self.encoding.framed_world_bytes += frames.iter().map(|p| p.len() as u64).sum::<u64>();
             self.encoding.independent_bytes = self.encoder.full_bytes;
             self.encoding.selected_bytes = self.encoder.sent_bytes;
+            self.encoding.raw_fallback_frames = self.encoder.raw_fallbacks();
             self.pacer.world(self.elapsed(now), frames);
         } else {
             self.pacer

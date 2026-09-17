@@ -207,6 +207,9 @@ pub(crate) struct Totals {
     pub(crate) independent_bytes: u64,
     /// Compressed full/delta bytes the baseline codec selected.
     pub(crate) selected_bytes: u64,
+    /// Packed checkpoint frames the wire sent uncompressed because
+    /// dictionary compression would have grown them.
+    pub(crate) raw_fallback_frames: u64,
     /// Whole-loop CPU in the probe, which includes stepping and encoding.
     pub(crate) loop_us: u128,
     /// CPU inside host frame production only.
@@ -421,6 +424,7 @@ pub(crate) fn run_observed(
             totals.framed_world_bytes = stats.framed_world_bytes;
             totals.independent_bytes = stats.independent_bytes;
             totals.selected_bytes = stats.selected_bytes;
+            totals.raw_fallback_frames = stats.raw_fallback_frames;
             totals.produced_world_updates = stats.world_updates;
             totals.skipped_world_updates = stats.skipped_world_updates;
             totals.produced_owner_updates = stats.owner_updates;
@@ -509,21 +513,29 @@ pub(crate) fn run_observed(
     totals
 }
 
-/// One ablation row: what a section costs once the frame is compressed.
+/// One ablation row: what a section costs once the frame is packed and
+/// dictionary-compressed on the live periodic path.
 pub(crate) struct Ablation {
     /// Section name, or `total` for the unmodified frame.
     pub(crate) name: &'static str,
     /// Compressed contribution: the whole frame minus the frame without it.
     pub(crate) bytes: i64,
+    /// Packed (pre-compression) contribution for the same difference, so the
+    /// report separates bitpack savings from dictionary savings.
+    pub(crate) packed_bytes: i64,
 }
 
-/// Compressed contribution of each top-level checkpoint section.
+/// Compressed contribution of each top-level checkpoint section on the live
+/// binary path.
 ///
-/// Removes one section at a time from the encoded independent player checkpoint
-/// and recompresses, which is the only way to apportion a compressed frame's
-/// bytes: raw JSON section sizes do not add up to compressed contributions. A
-/// section whose removal makes the frame larger reports a negative number, which
-/// means it was helping the compressor, not costing bytes.
+/// Removes one section at a time from the compact player checkpoint and runs
+/// the production pipeline — fine fixed-point quantization, `RMB0` bitpack
+/// and the embedded dictionary compressor with its no-bloat passthrough —
+///
+/// which is the only way to apportion a binary frame's bytes: raw JSON section
+/// sizes do not add up to packed or compressed contributions. A section whose
+/// removal makes the frame larger reports a negative number, which means it
+/// was helping the compressor, not costing bytes.
 ///
 /// Paths are inside the compact `PlayerEnvelope`: `CompactSnapshot.state` is the
 /// `SimulationState` and `CompactSnapshot.projectiles` is the hoisted wire
@@ -534,22 +546,35 @@ pub(crate) struct Ablation {
 /// `state.restore` is reported for completeness but is never a removal
 /// candidate: it is hidden rule state that `Field::restore` needs, so a frame
 /// without it is not a frame this protocol can send.
-pub(crate) fn ablation(state: &SimulationState) -> Vec<Ablation> {
+pub(crate) fn ablation(
+    compressor: &mut crate::binary_snapshot::Compressor,
+    state: &SimulationState,
+) -> Vec<Ablation> {
+    use crate::binary_snapshot::fixed_point::{Quantization, checkpoint};
     let bytes = crate::snapshot_codec::encode_player_message(&ServerMessage::Snapshot(Box::new(
         state.clone(),
     )));
-    let total = |value: &serde_json::Value| {
-        crate::compression::compress(&serde_json::to_vec(value).unwrap()).len() as i64
+    // The production independent-frame pipeline from `udp_snapshot::Encoder`:
+    // quantize, bitpack, then dictionary-compress with the no-bloat gate.
+    let frame = |compressor: &mut crate::binary_snapshot::Compressor, value: &serde_json::Value| {
+        let mut value = value.clone();
+        checkpoint(&mut value, &mut Default::default(), Quantization::Fine);
+        let packed = crate::binary_snapshot::bitpack::encode(&value, None, 0, 0, true, true)
+            .expect("an ablation checkpoint packs like the live one");
+        let packed_len = packed.len() as i64;
+        (compressor.compress(&packed).len() as i64, packed_len)
     };
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let (total, total_packed) = frame(compressor, &value);
     let mut rows = vec![Ablation {
         name: "total",
-        bytes: total(&value),
+        bytes: total,
+        packed_bytes: total_packed,
     }];
     if value.get("CompactSnapshot").is_none() {
         return rows;
     }
-    let whole = rows[0].bytes;
+    let (whole, whole_packed) = (total, total_packed);
     // Every candidate is a path inside the compact envelope: the state's field
     // sections, the hoisted projectile array, and the per-shooter result history.
     let candidates: [(&'static str, &[&str]); 11] = [
@@ -596,9 +621,11 @@ pub(crate) fn ablation(state: &SimulationState) -> Vec<Ablation> {
         // The decoded value is a local copy, so clearing a section in place
         // needs no restore: the next candidate starts from a fresh copy anyway.
         *slot = serde_json::Value::Null;
+        let (without, without_packed) = frame(compressor, &value);
         rows.push(Ablation {
             name,
-            bytes: whole - total(&value),
+            bytes: whole - without,
+            packed_bytes: whole_packed - without_packed,
         });
         value = serde_json::from_slice(&bytes).unwrap();
     }
@@ -665,11 +692,12 @@ pub(crate) fn report(
         totals.up_batch_bytes
     );
     println!(
-        "  raw_world_bytes={} framed_world_bytes={} independent_bytes={} selected_bytes={} produced_owner_bytes={} produced_owner_bytes_s={:.1}",
+        "  raw_world_bytes={} framed_world_bytes={} independent_bytes={} selected_bytes={} raw_fallback_frames={} produced_owner_bytes={} produced_owner_bytes_s={:.1}",
         totals.raw_world_bytes,
         totals.framed_world_bytes,
         totals.independent_bytes,
         totals.selected_bytes,
+        totals.raw_fallback_frames,
         totals.produced_owner_bytes,
         per_s(totals.produced_owner_bytes)
     );
@@ -725,14 +753,15 @@ mod tests {
         baseline_report(5, Cadence::EveryPublication);
     }
 
-    /// Run the ablated workloads and sum each section's compressed
+    /// Run the ablated workloads and sum each section's packed and compressed
     /// contribution over the run, so the shares are of produced frames rather
     /// than of one arbitrary state.
     #[test]
     fn bandwidth_attribution_sections() {
         for workload in [Workload::Fire, Workload::Twelve] {
-            let mut sums: BTreeMap<&'static str, i64> = BTreeMap::new();
+            let mut sums: BTreeMap<&'static str, (i64, i64)> = BTreeMap::new();
             let mut frames = 0_u64;
+            let mut compressor = crate::binary_snapshot::Compressor::new();
             let totals = run_observed(
                 workload,
                 3,
@@ -741,22 +770,31 @@ mod tests {
                 UNLIMITED,
                 &mut |state| {
                     frames += 1;
-                    for row in ablation(state) {
-                        *sums.entry(row.name).or_default() += row.bytes;
+                    for row in ablation(&mut compressor, state) {
+                        let entry = sums.entry(row.name).or_default();
+                        entry.0 += row.bytes;
+                        entry.1 += row.packed_bytes;
                     }
                 },
             );
             report(Cadence::Remote, workload, 3, UNLIMITED, UNLIMITED, &totals);
             let rows: Vec<String> = sums
                 .iter()
-                .map(|(name, bytes)| format!("{name}={}", bytes / frames as i64))
+                .map(|(name, (bytes, packed))| {
+                    format!(
+                        "{name}={} packed={}",
+                        bytes / frames as i64,
+                        packed / frames as i64
+                    )
+                })
                 .collect();
             println!(
-                "ablation cadence={} workload={} frames={} bytes_per_frame {}",
+                "ablation cadence={} workload={} frames={} bytes_per_frame {} raw_fallbacks={}",
                 Cadence::Remote.name(),
                 workload.name(),
                 frames,
-                rows.join(" ")
+                rows.join(" "),
+                compressor.raw_fallbacks()
             );
         }
     }

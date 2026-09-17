@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+- Send small checkpoint frames uncompressed. The binary checkpoint compressor
+  now returns a packed `RMB0` frame unchanged when dictionary compression
+  would not shrink it, instead of emitting a larger `RMBZ` frame; the decoder
+  already treats a bare `RMB0` frame as inflated, so the wire format is
+  unchanged. The bandwidth probe reports these as `raw_fallback_frames`, and
+  its section ablation now measures the live binary pipeline (fine fixed
+  point, bitpack, dictionary) with packed and compressed shares per section.
+
 - Log per-peer network health on the server. The GNS host prints one `net
   peer=ID world=N skipped_congested=N replaced_unsent=N ...` line per admitted
   peer every 10 s, and appends snapshot totals to the disconnect line, so a

@@ -231,6 +231,12 @@ impl Encoder {
             deltas: 0,
         }
     }
+    /// Packed frames the checkpoint compressor returned uncompressed because
+    /// dictionary compression would not have shrunk them. Both framings stay
+    /// decodable, so this only measures the gate, never a fallback path.
+    pub fn raw_fallbacks(&self) -> u64 {
+        self.compressor.raw_fallbacks()
+    }
     /// The `Retire` to resend, if its `Retired` answer has not arrived in time.
     /// Callers send it on the same reliable lane as the original.
     pub fn resend_retire(&mut self) -> Option<Wire> {
@@ -573,7 +579,13 @@ mod tests {
             .unwrap();
             fixed_point::normalize(&mut expected).unwrap();
             let bytes = encoder.snapshot(epoch, &source).unwrap();
-            assert!(bytes.starts_with(crate::binary_snapshot::MAGIC));
+            // The no-bloat gate may return a small delta as a bare `RMB0`
+            // frame instead of dictionary-compressing it; both framings
+            // decode through the same path the `wire` helper exercises.
+            assert!(
+                bytes.starts_with(crate::binary_snapshot::MAGIC)
+                    || bytes.starts_with(crate::binary_snapshot::bitpack::MAGIC)
+            );
             let (actual, feedback) = decoder.receive(wire(&bytes)).unwrap();
             assert_eq!(actual.as_ref(), Some(&expected));
             let ServerMessage::Snapshot(actual) = actual.unwrap() else {
