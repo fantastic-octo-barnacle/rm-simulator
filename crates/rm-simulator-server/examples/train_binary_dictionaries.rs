@@ -51,6 +51,7 @@ fn main() {
             let mut id = 0;
             for (frame, checkpoint) in workload.iter().enumerate() {
                 let mut value = checkpoint.clone();
+                rm_simulator_server::snapshot_codec::compact_checkpoint_enums(&mut value);
                 fixed_point::checkpoint(&mut value, &mut fixed_point::Errors::default(), mode);
                 let epoch = value["CompactSnapshot"]["state"]["input_epoch"]
                     .as_u64()
