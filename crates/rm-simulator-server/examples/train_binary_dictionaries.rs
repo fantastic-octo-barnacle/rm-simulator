@@ -5,8 +5,9 @@
 //! train_binary_dictionaries -- OUTPUT_DIRECTORY > training.csv`.
 //! Training uses independent synthetic scenarios, never evaluation checkpoints.
 //! Each candidate contributes its full frame and, when it is at least
-//! `DELTA_COMPRESSION_MIN_BYTES`, its delta against a 32-frame retained
-//! baseline: smaller deltas are never compressed, so they would only dilute the
+//! `DELTA_COMPRESSION_MIN_BYTES`, its delta against a 12-frame retained
+//! baseline dead-reckoned to the frame's tick, as the live lane codes it:
+//! smaller deltas are never compressed, so they would only dilute the
 //! dictionary. It serves both forms, including recovery full frames.
 #[path = "support/binary_dictionary.rs"]
 mod binary_dictionary;
@@ -15,7 +16,9 @@ mod bitpack;
 #[path = "support/dictionary_workloads.rs"]
 mod dictionary_workloads;
 
-use rm_simulator_server::snapshot_codec::{checkpoint_node, decode_checkpoint};
+use rm_simulator_server::snapshot_codec::{
+    Prediction, checkpoint_node, decode_checkpoint, encode_checkpoint,
+};
 use sha2::{Digest, Sha256};
 
 fn main() {
@@ -40,10 +43,11 @@ fn main() {
         for workload in &workloads {
             let mut base = None;
             let mut id = 0;
+            let mut prediction = Prediction::default();
             for (frame, state) in workload.iter().enumerate() {
                 let node = checkpoint_node(state).unwrap();
                 let epoch = state.input_epoch;
-                let proposing = frame.is_multiple_of(32);
+                let proposing = frame.is_multiple_of(12);
                 if proposing {
                     id += 1;
                 }
@@ -54,7 +58,10 @@ fn main() {
                 if proposing {
                     base = Some(node.clone());
                 } else {
-                    let delta = bitpack::encode(&node, base.as_ref(), epoch, id).unwrap();
+                    let base = base.as_ref().map(|base| (base, id));
+                    let delta =
+                        encode_checkpoint(&node, state.field.tick, base, epoch, &mut prediction)
+                            .unwrap();
                     if delta.len()
                         >= rm_simulator_server::binary_snapshot::DELTA_COMPRESSION_MIN_BYTES
                     {

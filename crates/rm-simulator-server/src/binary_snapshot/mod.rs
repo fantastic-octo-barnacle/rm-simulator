@@ -12,8 +12,11 @@ pub mod fixed_point;
 /// Binary dictionary frame marker, distinct from plain ZSTD's [`crate::compression::MAGIC`].
 pub const MAGIC: &[u8; 4] = b"RMBZ";
 
-/// The fine fixed-point dictionary embedded in protocol 41. Replacing these
-/// bytes requires a protocol version bump and held-out bandwidth evaluation.
+/// The fine fixed-point dictionary trained for protocol 41 and kept for 42:
+/// protocol 42 leaves independent frames unchanged, and a dictionary retrained
+/// on its predicted deltas measured 0.4–1.3% larger sent bytes with two or
+/// more chassis in `network_bandwidth`. Replacing these bytes requires a
+/// protocol version bump and held-out bandwidth evaluation.
 pub fn dictionary() -> &'static [u8] {
     include_bytes!("../../assets/binary-fixed-fine.zstd")
 }

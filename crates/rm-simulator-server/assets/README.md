@@ -20,6 +20,12 @@ experiment recorded in Git history.
 | Compression frame | RMBZ + ZSTD level 6 |
 | Trainer | `train_binary_dictionaries`, separate training/evaluation scenarios |
 
+Protocol 42 kept these bytes. Its independent frames are unchanged; only
+deltas changed (dead-reckoned baselines, realigned sequences, 12-frame
+rotation), and the trainer now samples those deltas, but a dictionary retrained
+that way measured 0.4–1.3% larger sent bytes with two or more chassis in
+`network_bandwidth`, so the trainer no longer reproduces this artifact.
+
 The live encoder calls the same bitpack and quantization implementation as the
 trainer. The application frame format is unchanged from the measured artifact,
 so its dictionary was copied byte-for-byte. Tests check the hash of the embedded

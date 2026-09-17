@@ -63,7 +63,12 @@ use serde::{Deserialize, Serialize};
 /// projectiles; chassis configurations and the projectile policy travel as a
 /// preset index when they equal one, exactly otherwise. Deltas under 128
 /// bytes skip compression, and the dictionary is retrained.
-pub const PROTOCOL_VERSION: u32 = 41;
+/// Version 42 differences each delta against its baseline dead-reckoned to the
+/// frame's tick, carrying the tick lead in the delta header; a changed sequence
+/// realigns on its elements' first field, so retired and spawned projectiles
+/// no longer resend the whole array; delta Golomb orders are retuned for the
+/// residuals and a baseline may rotate after 12 frames instead of 32.
+pub const PROTOCOL_VERSION: u32 = 42;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///

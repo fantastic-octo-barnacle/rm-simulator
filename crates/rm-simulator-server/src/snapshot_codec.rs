@@ -202,6 +202,13 @@ impl ConfigWire {
             Self::Exact(Box::new(config.clone()))
         }
     }
+    fn to_config(&self) -> rm_simulator_world::ChassisConfig {
+        match self {
+            Self::Infantry => rm_simulator_world::ChassisConfig::default(),
+            Self::Hero => rm_simulator_world::ChassisConfig::hero(),
+            Self::Exact(config) => (**config).clone(),
+        }
+    }
     fn into_config(self) -> rm_simulator_world::ChassisConfig {
         match self {
             Self::Infantry => rm_simulator_world::ChassisConfig::default(),
@@ -756,6 +763,372 @@ pub fn checkpoint_node(state: &SimulationState) -> io::Result<Node> {
     )?)
 }
 
+// Dead reckoning of delta baselines (protocol 42).
+//
+// A delta checkpoint is differenced against its pinned baseline carried forward
+// to the frame's tick, so a steadily moving chassis or a ball in flight costs
+// the residual of a prediction instead of its whole displacement. Both ends
+// compute the prediction from the baseline tree alone.
+
+/// Nanoseconds per second, for integer dead reckoning on grid steps.
+const NS_PER_S: i128 = 1_000_000_000;
+/// The largest baseline age, in ticks either way, whose motion is predicted:
+/// 32 s at 128 Hz. An older baseline is differenced as it is, which also
+/// bounds the integer arithmetic below for a hostile lead.
+const MAX_PREDICTED_TICKS: u64 = 1 << 12;
+/// Rotation integration substeps at most; one per tick for a shorter lead.
+const MAX_ROTATION_SUBSTEPS: u64 = 32;
+/// Positions of the fast and tick fields in the packed [`PlayerSnapshot`]
+/// tuple and its header, checked by `baseline_prediction_patches_the_typed_tree`.
+const HEADER_FIELD: usize = 0;
+const HEADER_TICK_FIELD: usize = 2;
+const CHASSIS_FIELD: usize = 5;
+const MOTION_FIELD: usize = 6;
+const PROJECTILES_FIELD: usize = 7;
+
+/// `n / d` rounded half away from zero, for `d > 0`.
+fn div_round(n: i128, d: i128) -> i128 {
+    if n >= 0 {
+        (n + d / 2) / d
+    } else {
+        -((-n + d / 2) / d)
+    }
+}
+/// The step count of `value` on a `scale` grid, when it lies exactly on it.
+fn grid_steps(value: f64, scale: f64) -> Option<i128> {
+    let q = (value * scale).round();
+    (q.abs() < (1_u64 << 52) as f64 && (q / scale).to_bits() == value.to_bits())
+        .then_some(q as i128)
+}
+/// `value` advanced by `rate` for `dt_ns`, in whole steps of `scale`, both
+/// inputs on their grids. Off-grid inputs leave the value unchanged.
+fn advance(value: &mut f64, scale: f64, rate: f64, rate_scale: f64, dt_ns: i128) {
+    let (Some(steps), Some(rate)) = (grid_steps(*value, scale), grid_steps(rate, rate_scale))
+    else {
+        return;
+    };
+    let per_rate_step = (scale / rate_scale) as i128;
+    *value = (steps + div_round(rate * per_rate_step * dt_ns, NS_PER_S)) as f64 / scale + 0.0;
+}
+fn quat_mul(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
+    [
+        a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
+        a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
+        a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
+        a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0],
+    ]
+}
+fn quat_normalize(q: [f64; 4]) -> [f64; 4] {
+    let norm = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+    if norm.is_finite() && norm > 0. {
+        q.map(|v| v / norm)
+    } else {
+        q
+    }
+}
+/// The rotation by half-angle vector `half`, first order and normalized. Only
+/// `+ - * / sqrt` are used, which IEEE 754 rounds the same on every platform;
+/// `sin` and `cos` are not guaranteed to.
+fn small_rotation(half: [f64; 3]) -> [f64; 4] {
+    quat_normalize([1., half[0], half[1], half[2]])
+}
+fn wrap_angle(angle: f64) -> f64 {
+    use std::f64::consts::{PI, TAU};
+    (angle + PI).rem_euclid(TAU) - PI
+}
+/// A value rounded onto the 0.1 mrad angle grid, as the serializer would.
+fn angle_grid(angle: f64) -> f64 {
+    bitpack::Grid {
+        scale: fixed_point::ANGLE_SCALE,
+        width: 24,
+        k: 0,
+    }
+    .round(angle)
+}
+
+/// Carries chassis motion `lead_ticks` forward. See [`predict_baseline`].
+fn predict_motion(records: &[Aligned<ChassisRecord>], motion: &mut [ChassisMotion], lead: i64) {
+    use fixed_point::{ANGLE_SCALE, RATE_SCALE, TRANSLATION_SCALE, VELOCITY_SCALE};
+    let dt_ns = i128::from(lead) * i128::from(rm_simulator_world::tick_ns());
+    let dt_s = dt_ns as f64 / NS_PER_S as f64;
+    let substeps = lead.unsigned_abs().min(MAX_ROTATION_SUBSTEPS);
+    let h = dt_s / substeps as f64;
+    for (record, motion) in records.iter().zip(motion) {
+        for axis in 0..3 {
+            let v = motion.velocity_m_s[axis];
+            for translation in [&mut motion.pose, &mut motion.turret].map(|p| &mut p.translation_m)
+            {
+                advance(
+                    &mut translation[axis],
+                    TRANSLATION_SCALE,
+                    v,
+                    VELOCITY_SCALE,
+                    dt_ns,
+                );
+            }
+        }
+        let w = motion.angular_velocity_rad_s;
+        if w != [0.; 3] && w.iter().all(|v| grid_steps(*v, RATE_SCALE).is_some()) {
+            let step = small_rotation(w.map(|v| v * h * 0.5));
+            for _ in 0..substeps {
+                motion.pose.rotation_wxyz =
+                    quat_normalize(quat_mul(step, motion.pose.rotation_wxyz));
+            }
+        }
+        // The turret is world-stabilised: yaw turns it about world up, pitch
+        // about its own left axis (negative pitch about +y, as the physics aim
+        // rotation builds it).
+        let [yaw_rate, pitch_rate] = motion.gimbal_velocity_rad_s;
+        if grid_steps(yaw_rate, RATE_SCALE).is_some()
+            && grid_steps(pitch_rate, RATE_SCALE).is_some()
+        {
+            if (yaw_rate, pitch_rate) != (0., 0.) {
+                let yaw = small_rotation([0., 0., yaw_rate * h * 0.5]);
+                let pitch = small_rotation([0., -pitch_rate * h * 0.5, 0.]);
+                for _ in 0..substeps {
+                    motion.turret.rotation_wxyz =
+                        quat_normalize(quat_mul(quat_mul(yaw, motion.turret.rotation_wxyz), pitch));
+                }
+            }
+            let [held_yaw, held_pitch] = &mut motion.held_aim_rad;
+            if grid_steps(*held_yaw, ANGLE_SCALE).is_some() {
+                advance(held_yaw, ANGLE_SCALE, yaw_rate, RATE_SCALE, dt_ns);
+                *held_yaw = angle_grid(wrap_angle(*held_yaw));
+            }
+            advance(held_pitch, ANGLE_SCALE, pitch_rate, RATE_SCALE, dt_ns);
+        }
+        // Wheels roll at the surface speed the command asks of them, the rate
+        // the physics integrates while a wheel is off the ground.
+        let config = record.config.to_config();
+        if motion.wheel_spin_rad.len() != config.wheel_hubs_m.len() {
+            continue;
+        }
+        let mut probe = rm_simulator_world::ChassisSnapshot {
+            placement_revision: record.placement_revision,
+            id: record.id,
+            team: record.team,
+            config,
+            pose: motion.pose,
+            turret: motion.turret,
+            velocity_m_s: [0.; 3],
+            angular_velocity_rad_s: [0.; 3],
+            command: record.command,
+            held_aim_rad: [0.; 2],
+            gimbal_velocity_rad_s: [0.; 2],
+            wheels: vec![Default::default(); motion.wheel_spin_rad.len()],
+            defeated: record.defeated,
+        };
+        probe.derive_wheel_kinematics();
+        let factor = if probe.config.mecanum {
+            std::f64::consts::SQRT_2
+        } else {
+            1.
+        };
+        for (spin, wheel) in motion.wheel_spin_rad.iter_mut().zip(&probe.wheels) {
+            let next =
+                wrap_angle(*spin + wheel.target_m_s / probe.config.wheel_radius_m * factor * dt_s);
+            if grid_steps(*spin, ANGLE_SCALE).is_some() && next.is_finite() {
+                *spin = angle_grid(next);
+            }
+        }
+    }
+}
+
+/// Carries projectiles `lead` ticks forward ballistically. See
+/// [`predict_baseline`].
+fn predict_projectiles(projectiles: &mut [ProjectileWire], lead: i64) {
+    use fixed_point::PROJECTILE_SCALE;
+    let dt_ns = i128::from(lead) * i128::from(rm_simulator_world::tick_ns());
+    let g = (rm_simulator_world::projectile::GRAVITY_M_S2 * PROJECTILE_SCALE).round() as i128;
+    for ball in projectiles {
+        // A ball that has touched something is usually rolling or resting,
+        // where free fall predicts worse than no acceleration at all.
+        let g = if ball.first_contact_ns.is_none() {
+            g
+        } else {
+            0
+        };
+        for axis in 0..3 {
+            let (Some(p), Some(v)) = (
+                grid_steps(ball.position_m[axis], PROJECTILE_SCALE),
+                grid_steps(ball.velocity_m_s[axis], PROJECTILE_SCALE),
+            ) else {
+                continue;
+            };
+            let g = if axis == 2 { g } else { 0 };
+            // p + v dt - g dt^2 / 2 and v - g dt, in whole steps.
+            let p = p + div_round(
+                2 * v * dt_ns * NS_PER_S - g * dt_ns * dt_ns,
+                2 * NS_PER_S * NS_PER_S,
+            );
+            let v = v - div_round(g * dt_ns, NS_PER_S);
+            ball.position_m[axis] = p as f64 / PROJECTILE_SCALE + 0.0;
+            ball.velocity_m_s[axis] = v as f64 / PROJECTILE_SCALE + 0.0;
+        }
+    }
+}
+
+fn not_checkpoint() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "not a checkpoint tree")
+}
+/// The field at `index` of a checkpoint tree's top-level tuple.
+fn field(node: &Node, index: usize) -> io::Result<&Node> {
+    match node {
+        Node::Tuple(fields) => fields.get(index).ok_or_else(not_checkpoint),
+        _ => Err(not_checkpoint()),
+    }
+}
+fn field_mut(node: &mut Node, index: usize) -> io::Result<&mut Node> {
+    match node {
+        Node::Tuple(fields) => fields.get_mut(index).ok_or_else(not_checkpoint),
+        _ => Err(not_checkpoint()),
+    }
+}
+/// The tick in a checkpoint tree's header.
+fn tick(node: &Node) -> io::Result<u64> {
+    let Node::Aligned(header) = field(node, HEADER_FIELD)? else {
+        return Err(not_checkpoint());
+    };
+    match field(header, HEADER_TICK_FIELD)? {
+        Node::Uint(tick) => Ok(*tick),
+        _ => Err(not_checkpoint()),
+    }
+}
+fn tick_mut(node: &mut Node) -> io::Result<&mut u64> {
+    let Node::Aligned(header) = field_mut(node, HEADER_FIELD)? else {
+        return Err(not_checkpoint());
+    };
+    match field_mut(header, HEADER_TICK_FIELD)? {
+        Node::Uint(tick) => Ok(tick),
+        _ => Err(not_checkpoint()),
+    }
+}
+
+/// The baseline tree `baseline` dead-reckoned `lead` ticks forward (backward
+/// when negative): the tree a delta checkpoint is differenced against.
+///
+/// Only the tick and the fast section change; the slow records are kept as
+/// they are. The tick advances by `lead`. Each chassis and turret translation
+/// advances by the body velocity; the body rotation integrates its angular
+/// velocity; the turret rotation and held aim integrate the gimbal rates; each
+/// wheel spins at its commanded surface speed. A projectile moves at its
+/// velocity, falling under [`rm_simulator_world::projectile::GRAVITY_M_S2`]
+/// until its first contact. Velocities, drag, contacts, spawns and retirement
+/// are not predicted: this is only a predictor, and a wrong guess costs bits,
+/// never correctness.
+///
+/// Translations, velocities, aims and projectiles use integer arithmetic on
+/// grid steps, rotations and wheel spin only IEEE 754 basic operations, and
+/// every result is re-quantized onto its grid, so an encoder and a decoder
+/// holding the same tree get the same prediction bit for bit on every
+/// platform. A value off its grid is not predicted. Past
+/// `MAX_PREDICTED_TICKS` only the tick moves. Errors when the tree is not a
+/// checkpoint.
+///
+/// ```
+/// use rm_simulator_server::simulation::Simulation;
+/// use rm_simulator_server::snapshot_codec::{checkpoint_node, predict_baseline};
+/// use rm_simulator_world::{Field, FieldConfig};
+///
+/// let simulation = Simulation::new(Field::new(&FieldConfig::default()).unwrap(), false);
+/// let baseline = checkpoint_node(&simulation.state()).unwrap();
+/// // No lead predicts nothing; a lead moves at least the tick.
+/// assert_eq!(predict_baseline(&baseline, 0).unwrap(), baseline);
+/// assert_ne!(predict_baseline(&baseline, 4).unwrap(), baseline);
+/// ```
+pub fn predict_baseline(baseline: &Node, lead: i64) -> io::Result<Node> {
+    let mut prediction = Prediction::default();
+    prediction.predict(baseline, (0, 0), lead)?;
+    Ok(prediction.tree)
+}
+
+/// A reusable dead-reckoned copy of one pinned baseline. The slow records of a
+/// baseline never change, so they are cloned once per baseline and only the
+/// tick, chassis motion and projectiles are rewritten for each frame; that
+/// halves the prediction cost at twelve chassis.
+#[derive(Default)]
+pub struct Prediction {
+    /// Epoch and id of the baseline `tree` was cloned from.
+    key: Option<(u64, u64)>,
+    tree: Node,
+}
+impl Prediction {
+    /// `baseline`, pinned as `key` (epoch and id), dead-reckoned `lead` ticks;
+    /// see [`predict_baseline`]. A key is never reused for a different
+    /// baseline, which the delta lane guarantees.
+    fn predict(&mut self, baseline: &Node, key: (u64, u64), lead: i64) -> io::Result<&Node> {
+        if self.key != Some(key) {
+            self.key = None;
+            self.tree = baseline.clone();
+            self.key = Some(key);
+        }
+        let result = self.rewrite(baseline, lead);
+        if result.is_err() {
+            self.key = None;
+        }
+        result?;
+        Ok(&self.tree)
+    }
+    fn rewrite(&mut self, baseline: &Node, lead: i64) -> io::Result<()> {
+        let base_tick = tick(baseline)?;
+        *tick_mut(&mut self.tree)? = base_tick.checked_add_signed(lead).unwrap_or(base_tick);
+        let predicted = lead != 0 && lead.unsigned_abs() <= MAX_PREDICTED_TICKS;
+        let motion = field(baseline, MOTION_FIELD)?;
+        *field_mut(&mut self.tree, MOTION_FIELD)? = if predicted && !is_empty_seq(motion) {
+            let Node::Aligned(records) = field(baseline, CHASSIS_FIELD)? else {
+                return Err(not_checkpoint());
+            };
+            let records: Vec<Aligned<ChassisRecord>> = bitpack::from_node(records)?;
+            let mut typed: Vec<ChassisMotion> = bitpack::from_node(motion)?;
+            predict_motion(&records, &mut typed, lead);
+            bitpack::to_node_with(&typed, fixed_point::Fine::Chassis)?
+        } else {
+            motion.clone()
+        };
+        let projectiles = field(baseline, PROJECTILES_FIELD)?;
+        *field_mut(&mut self.tree, PROJECTILES_FIELD)? = if predicted && !is_empty_seq(projectiles)
+        {
+            let mut typed: Vec<ProjectileWire> = bitpack::from_node(projectiles)?;
+            predict_projectiles(&mut typed, lead);
+            bitpack::to_node_with(&typed, fixed_point::Fine::Projectiles)?
+        } else {
+            projectiles.clone()
+        };
+        Ok(())
+    }
+}
+fn is_empty_seq(node: &Node) -> bool {
+    matches!(node, Node::Seq(items) if items.is_empty())
+}
+
+fn zigzag(n: i64) -> u64 {
+    ((n << 1) ^ (n >> 63)) as u64
+}
+fn unzigzag(n: u64) -> i64 {
+    ((n >> 1) as i64) ^ -((n & 1) as i64)
+}
+
+/// Packs checkpoint tree `node`, whose tick is `tick`, for the periodic lane:
+/// independent without a baseline, otherwise a delta against the pinned
+/// `baseline` (with its epoch-unique id) dead-reckoned to `tick` by
+/// [`predict_baseline`], reusing `prediction` across frames. The tick lead
+/// travels zigzag-coded as the frame's [`bitpack::encode_hinted`] hint, so
+/// [`decode_checkpoint`] rebuilds the same prediction before it reads the body.
+pub fn encode_checkpoint(
+    node: &Node,
+    tick: u64,
+    baseline: Option<(&Node, u64)>,
+    epoch: u64,
+    prediction: &mut Prediction,
+) -> io::Result<Vec<u8>> {
+    let Some((base, id)) = baseline else {
+        return bitpack::encode(node, None, epoch, 0);
+    };
+    let lead = tick.wrapping_sub(self::tick(base)?) as i64;
+    let predicted = prediction.predict(base, (epoch, id), lead)?;
+    bitpack::encode_hinted(node, Some(predicted), epoch, id, zigzag(lead))
+}
+
 /// Decodes one packed checkpoint frame against its pinned baseline, checks its
 /// input epoch and normalizes its quantized rotations. With `keep_node` the
 /// decoded wire-grid tree comes back too, for pinning as a baseline; the
@@ -767,8 +1140,38 @@ pub fn decode_checkpoint(
     epoch: u64,
     keep_node: bool,
 ) -> io::Result<(ServerMessage, Option<Node>)> {
-    let (snapshot, _) =
-        bitpack::decode_with::<PlayerSnapshot, _>(bytes, baseline, epoch, fixed_point::Fine::Root)?;
+    decode_checkpoint_with(
+        bytes,
+        baseline,
+        epoch,
+        keep_node,
+        &mut Prediction::default(),
+    )
+}
+
+/// [`decode_checkpoint`] reusing `prediction` for a delta's dead-reckoned
+/// baseline, as a decoder that receives many deltas against one pinned
+/// baseline should.
+pub fn decode_checkpoint_with(
+    bytes: &[u8],
+    baseline: Option<(&Node, u64)>,
+    epoch: u64,
+    keep_node: bool,
+    prediction: &mut Prediction,
+) -> io::Result<(ServerMessage, Option<Node>)> {
+    let predicted = match baseline {
+        Some((base, id)) if bitpack::header(bytes)?.0 => {
+            let lead = unzigzag(bitpack::hint(bytes)?);
+            Some((prediction.predict(base, (epoch, id), lead)?, id))
+        }
+        _ => None,
+    };
+    let (snapshot, _) = bitpack::decode_with::<PlayerSnapshot, _>(
+        bytes,
+        predicted,
+        epoch,
+        fixed_point::Fine::Root,
+    )?;
     let node = keep_node
         .then(|| bitpack::to_node_with(&snapshot, fixed_point::Fine::Root))
         .transpose()?;
@@ -914,6 +1317,239 @@ mod tests {
             .expect("an activating Big Rune lights a pair") as u32;
         let outcome = field.rune_mut(index).unwrap().hit(now, blade).unwrap();
         assert!(matches!(outcome, HitOutcome::GroupHit { bonus: false, .. }));
+    }
+
+    /// A small deterministic stream for the property tests.
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            self.0 >> 11
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+        /// A grid value: usually small, sometimes at the edge of `width` bits,
+        /// sometimes off the grid or past its range so it escapes exactly.
+        fn value(&mut self, scale: f64, width: u32) -> f64 {
+            let edge = (1_i64 << (width - 1)) as f64;
+            match self.below(8) {
+                0 => (edge - 1. - self.below(3) as f64) / scale,
+                1 => -(edge - self.below(3) as f64) / scale,
+                2 => (edge + self.below(4) as f64) / scale,
+                3 => 0.123_456_789_123 + self.below(100) as f64,
+                _ => (self.below(20_000) as f64 - 10_000.) / scale,
+            }
+        }
+    }
+
+    /// A checkpoint with `chassis` moving robots and `balls` projectiles, their
+    /// fast values randomized, as the typed snapshot the serializer packs.
+    fn random_snapshot(rng: &mut Lcg, chassis: usize, balls: usize) -> PlayerSnapshot {
+        use crate::binary_snapshot::fixed_point::{
+            ANGLE_SCALE, PROJECTILE_SCALE, RATE_SCALE, TRANSLATION_SCALE, VELOCITY_SCALE,
+        };
+        let (mut simulation, _) = crate::workload::simulation(chassis);
+        simulation.step(3).unwrap();
+        let mut snapshot = PlayerSnapshot::from_state(&simulation.state());
+        let unit = |rng: &mut Lcg| {
+            let q = [0; 4].map(|_| rng.below(2001) as f64 / 1000. - 1.);
+            super::quat_normalize(q)
+        };
+        for (record, motion) in snapshot.chassis.iter_mut().zip(&mut snapshot.motion) {
+            record.command.forward_m_s = rng.below(40) as f64 / 10. - 2.;
+            record.command.yaw_rate_rad_s = rng.below(40) as f64 / 10. - 2.;
+            record.defeated = rng.below(4) == 0;
+            if rng.below(3) == 0 {
+                record.config = ConfigWire::Hero;
+                motion.wheel_spin_rad.truncate(4);
+            }
+            for v in motion
+                .pose
+                .translation_m
+                .iter_mut()
+                .chain(&mut motion.turret.translation_m)
+            {
+                *v = rng.value(TRANSLATION_SCALE, 18);
+            }
+            for v in &mut motion.velocity_m_s {
+                *v = rng.value(VELOCITY_SCALE, 16);
+            }
+            for v in motion
+                .angular_velocity_rad_s
+                .iter_mut()
+                .chain(&mut motion.gimbal_velocity_rad_s)
+            {
+                *v = rng.value(RATE_SCALE, 18);
+            }
+            for v in motion
+                .held_aim_rad
+                .iter_mut()
+                .chain(&mut motion.wheel_spin_rad)
+            {
+                *v = rng.value(ANGLE_SCALE, 24);
+            }
+            motion.pose.rotation_wxyz = unit(rng);
+            motion.turret.rotation_wxyz = if rng.below(8) == 0 {
+                [0.5, 0.5, 0.5, 0.500_000_1]
+            } else {
+                unit(rng)
+            };
+        }
+        snapshot.projectiles = (0..balls)
+            .map(|index| ProjectileWire {
+                id: 100 + rng.below(4) + index as u64,
+                caliber: CaliberBit(rng.below(2) == 0),
+                launched_ns: 1,
+                position_m: [0; 3].map(|_| rng.value(PROJECTILE_SCALE, 18)),
+                velocity_m_s: [0; 3].map(|_| rng.value(PROJECTILE_SCALE, 18)),
+                shooter: None,
+                first_contact_ns: (rng.below(2) == 0).then_some(1),
+                dwell_since_ns: None,
+            })
+            .collect();
+        snapshot
+    }
+
+    /// The encoder predicts from the tree it built and the decoder from the
+    /// tree it rebuilt from the wire; the two predictions must agree bit for
+    /// bit for any baseline, any lead and any later frame, including values at
+    /// grid edges, escaped values, chassis joining or leaving and projectiles
+    /// spawning or retiring between the baseline and the frame.
+    #[test]
+    fn baseline_prediction_is_bit_exact_between_encoder_and_decoder() {
+        use crate::binary_snapshot::bitpack;
+        let mut rng = Lcg(42);
+        let mut encoder_prediction = Prediction::default();
+        let mut decoder_prediction = Prediction::default();
+        for case in 0..120_u64 {
+            let epoch = case / 40;
+            let chassis = rng.below(4) as usize;
+            let balls = rng.below(6) as usize;
+            let mut base = random_snapshot(&mut rng, chassis, balls);
+            base.header.input_epoch = epoch;
+            base.header.tick = 10_000 + rng.below(1000);
+            let base_node = bitpack::to_node_with(&base, fixed_point::Fine::Root).unwrap();
+            // The decoder pins what a proposal frame decodes to.
+            let proposal = bitpack::encode(&base_node, None, epoch, case + 1).unwrap();
+            let (_, pinned) = decode_checkpoint(&proposal, None, epoch, true).unwrap();
+            let pinned = pinned.unwrap();
+            assert_eq!(pinned, base_node);
+            for _ in 0..3 {
+                let lead = match rng.below(6) {
+                    0 => 0,
+                    1 => -(rng.below(64) as i64),
+                    2 => MAX_PREDICTED_TICKS as i64 + rng.below(3) as i64,
+                    _ => rng.below(300) as i64,
+                };
+                let chassis = (chassis + rng.below(3) as usize).saturating_sub(1);
+                let balls = rng.below(6) as usize;
+                let mut next = random_snapshot(&mut rng, chassis, balls);
+                next.header.input_epoch = epoch;
+                next.header.tick = base.header.tick.wrapping_add_signed(lead);
+                let node = bitpack::to_node_with(&next, fixed_point::Fine::Root).unwrap();
+                let key = (epoch, case + 1);
+                let encoded = encoder_prediction
+                    .predict(&base_node, key, lead)
+                    .unwrap()
+                    .clone();
+                let decoded = decoder_prediction.predict(&pinned, key, lead).unwrap();
+                assert_eq!(&encoded, decoded, "case {case} lead {lead}");
+                assert_eq!(encoded, predict_baseline(&pinned, lead).unwrap());
+                let bytes = encode_checkpoint(
+                    &node,
+                    next.header.tick,
+                    Some((&base_node, case + 1)),
+                    epoch,
+                    &mut encoder_prediction,
+                )
+                .unwrap();
+                let (_, delivered) = decode_checkpoint_with(
+                    &bytes,
+                    Some((&pinned, case + 1)),
+                    epoch,
+                    true,
+                    &mut decoder_prediction,
+                )
+                .unwrap();
+                assert_eq!(delivered.unwrap(), node, "case {case} lead {lead}");
+            }
+        }
+    }
+
+    /// The tree patch follows the typed layout: predicting the typed snapshot
+    /// and packing it gives the patched tree.
+    #[test]
+    fn baseline_prediction_patches_the_typed_tree() {
+        use crate::binary_snapshot::bitpack;
+        let mut rng = Lcg(7);
+        for _ in 0..20 {
+            let snapshot = random_snapshot(&mut rng, 3, 4);
+            let node = bitpack::to_node_with(&snapshot, fixed_point::Fine::Root).unwrap();
+            let lead = rng.below(40) as i64 + 1;
+            let mut typed: PlayerSnapshot = bitpack::from_node(&node).unwrap();
+            typed.header.tick += lead as u64;
+            predict_motion(&typed.chassis, &mut typed.motion, lead);
+            predict_projectiles(&mut typed.projectiles, lead);
+            assert_eq!(
+                predict_baseline(&node, lead).unwrap(),
+                bitpack::to_node_with(&typed, fixed_point::Fine::Root).unwrap()
+            );
+        }
+    }
+
+    /// A chassis driving straight is predicted to within a few steps and a ball
+    /// in flight far closer than its baseline position, so residuals are small.
+    #[test]
+    fn dead_reckoning_tracks_steady_motion() {
+        let (mut simulation, chassis) = crate::workload::simulation(1);
+        simulation
+            .apply(&crate::protocol::Command::Chassis {
+                chassis: chassis[0],
+                command: rm_simulator_world::ChassisCommand {
+                    forward_m_s: 1.0,
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        simulation.step(400).unwrap();
+        simulation
+            .apply(&crate::protocol::Command::Fire {
+                shooter: chassis[0],
+                timing: None,
+            })
+            .unwrap();
+        simulation.step(2).unwrap();
+        let before = checkpoint_node(&simulation.state()).unwrap();
+        simulation.step(8).unwrap();
+        let after = PlayerSnapshot::from_state(&simulation.state());
+        let predicted: PlayerSnapshot =
+            crate::binary_snapshot::bitpack::from_node(&predict_baseline(&before, 8).unwrap())
+                .unwrap();
+        let unpredicted: PlayerSnapshot =
+            crate::binary_snapshot::bitpack::from_node(&before).unwrap();
+        let error = |a: [f64; 3], b: [f64; 3]| {
+            a.iter()
+                .zip(b)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0., f64::max)
+        };
+        let (m, p, u) = (
+            &after.motion[0],
+            &predicted.motion[0],
+            &unpredicted.motion[0],
+        );
+        assert!(error(m.pose.translation_m, p.pose.translation_m) < 0.003);
+        assert!(error(m.pose.translation_m, u.pose.translation_m) > 0.05);
+        let ball = after.projectiles.first().expect("a ball in flight");
+        let guess = &predicted.projectiles[0];
+        // Drag is not modelled, so the ball runs a little ahead of its guess.
+        let guessed = error(ball.position_m, guess.position_m);
+        let held = error(ball.position_m, unpredicted.projectiles[0].position_m);
+        assert!(guessed * 20. < held, "{guessed} m against {held} m");
     }
 
     #[test]

@@ -37,15 +37,17 @@ impl Rounding for Fine {
         match (self, key) {
             (Fine::Root, "motion") => Fine::Chassis,
             (Fine::Root, "projectiles") => Fine::Projectiles,
-            (Fine::Chassis, "translation_m") => round(1000., 18, K_TRANSLATION),
-            (Fine::Chassis, "velocity_m_s") => round(100., 16, K_VELOCITY),
+            (Fine::Chassis, "translation_m") => round(TRANSLATION_SCALE, 18, K_TRANSLATION),
+            (Fine::Chassis, "velocity_m_s") => round(VELOCITY_SCALE, 16, K_VELOCITY),
             (Fine::Chassis, "angular_velocity_rad_s" | "gimbal_velocity_rad_s") => {
-                round(1000., 18, K_RATE)
+                round(RATE_SCALE, 18, K_RATE)
             }
-            (Fine::Chassis, "held_aim_rad" | "wheel_spin_rad") => round(10000., 24, K_ANGLE),
+            (Fine::Chassis, "held_aim_rad" | "wheel_spin_rad") => round(ANGLE_SCALE, 24, K_ANGLE),
             (Fine::Chassis, "rotation_wxyz") => Fine::Rotation,
             (Fine::Chassis, _) => Fine::Chassis,
-            (Fine::Projectiles, "position_m" | "velocity_m_s") => round(1000., 18, K_PROJECTILE),
+            (Fine::Projectiles, "position_m" | "velocity_m_s") => {
+                round(PROJECTILE_SCALE, 18, K_PROJECTILE)
+            }
             (Fine::Projectiles, _) => Fine::Projectiles,
             (Fine::Round(_), _) => self,
             _ => Fine::Exact,
@@ -59,19 +61,31 @@ impl Rounding for Fine {
         }
     }
 }
-// Exponential-Golomb orders for delta step differences, each the smallest
-// measured over the dictionary training workloads (deltas against 32-frame
-// retained baselines); application choices, not rule constants.
+/// Chassis and turret translation steps per metre (millimetres).
+pub const TRANSLATION_SCALE: f64 = 1000.;
+/// Chassis linear velocity steps per metre per second (cm/s).
+pub const VELOCITY_SCALE: f64 = 100.;
+/// Chassis angular and gimbal rate steps per radian per second (mrad/s).
+pub const RATE_SCALE: f64 = 1000.;
+/// Held aim and wheel spin steps per radian (0.1 mrad).
+pub const ANGLE_SCALE: f64 = 10000.;
+/// Projectile position and velocity steps per metre and per metre per second.
+pub const PROJECTILE_SCALE: f64 = 1000.;
+// Exponential-Golomb orders for delta step residuals against a dead-reckoned
+// baseline (protocol 42); application choices, not rule constants. Each was
+// swept one at a time on raw deltas in `network_bandwidth` and on the
+// remote-cadence bandwidth probe; the two disagree (short 16 ms leads favour
+// smaller orders), and these orders are within 2% of the best in both.
 /// Chassis translation, millimetre steps.
-const K_TRANSLATION: u32 = 8;
+const K_TRANSLATION: u32 = 6;
 /// Chassis linear velocity, centimetre-per-second steps.
-const K_VELOCITY: u32 = 6;
+const K_VELOCITY: u32 = 4;
 /// Chassis and gimbal rates, milliradian-per-second steps.
 const K_RATE: u32 = 7;
 /// Held aim and unbounded wheel spin, 0.1 mrad steps.
-const K_ANGLE: u32 = 12;
+const K_ANGLE: u32 = 11;
 /// Projectile position and velocity, millimetre steps.
-const K_PROJECTILE: u32 = 10;
+const K_PROJECTILE: u32 = 7;
 
 /// Normalize quantized rotations at the physics adapter boundary. Wire values
 /// stay on their grid so the binary codec and retained baselines remain exact.
