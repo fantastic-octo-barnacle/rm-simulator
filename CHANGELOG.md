@@ -4,6 +4,9 @@
 
 ## Unreleased
 
+- Auto-aim skips a base's three lower plates until its protective armor is
+  fully open, since the closed shields cover them.
+
 - Base Dart Detection Modules rest at the start of their rails by default;
   the referee panel's Sweep dart targets and Rest dart targets toggle the
   four-second sweep (`SetDartTargetMoving`, protocol 46).

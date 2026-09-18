@@ -298,6 +298,14 @@ fn view_targets<'a>(targets: &[Target<'a>], displayed: &'a [ChassisSnapshot]) ->
         .collect()
 }
 
+/// Base plates auto-aim may pick. The closed protective armor covers the three
+/// lower modules (plates 0 to 2), so they count only once it is fully open;
+/// the upper plates and the dart detector are always exposed.
+fn base_faces(open_fraction: f64) -> Vec<usize> {
+    let first = if open_fraction >= 1. { 0 } else { 3 };
+    (first..7).collect()
+}
+
 fn targets(session: &Session, caliber: Caliber) -> Vec<Target<'_>> {
     let now = session.fire_time_ns();
     let age = now.saturating_sub(session.snapshot.time_ns) as f64 * 1e-9;
@@ -357,7 +365,11 @@ fn targets(session: &Session, caliber: Caliber) -> Vec<Target<'_>> {
                 session.referee().and_then(|r| r.dart_target_since_ns),
                 now,
             ),
-            faces: (0..7).collect(),
+            faces: base_faces(
+                session
+                    .referee()
+                    .map_or(0., |r| r.base_open_fraction(base.config.team.index(), now)),
+            ),
         });
     }
     if caliber == Caliber::Mm17 {
@@ -1308,6 +1320,12 @@ mod tests {
                     .all(|t| !matches!(t.id, TargetId::Rune(_)))
             );
         }
+    }
+    #[test]
+    fn closed_base_offers_only_its_upper_plates() {
+        assert_eq!(base_faces(0.), vec![3, 4, 5, 6]);
+        assert_eq!(base_faces(0.6), vec![3, 4, 5, 6]);
+        assert_eq!(base_faces(1.), (0..7).collect::<Vec<_>>());
     }
     #[test]
     fn auto_fire_stops_at_the_heat_limit() {
