@@ -8,6 +8,7 @@ use bevy::prelude::*;
 use bevy_flair::prelude::{ClassList, Styled};
 
 mod controls_menu;
+mod heat_ring;
 mod menus;
 mod team_status;
 /// The HUD plugin and the two input systems, re-exported from `menus` so
@@ -226,6 +227,9 @@ pub enum Hud {
     Clock,
     /// Auto-aim status line.
     AutoAim,
+    /// Section 5.5.3.9 Fortress banner: when an opponent's Fortress opens
+    /// and each capture's countdown; empty while neither applies.
+    Fortress,
     /// Local robot card: kind, HP, speed and drive mode.
     Robot,
     /// Shot speed, caliber and remaining ammo.
@@ -245,6 +249,13 @@ pub struct HealthBar;
 /// Aiming reticle root, hidden while a panel owns the input.
 #[derive(Component)]
 pub struct Reticle;
+/// Barrel heat ring around the reticle, drawn by [`heat_ring::HeatRingMaterial`].
+#[derive(Component)]
+pub struct HeatRing;
+/// Outer diameter of the heat ring, in logical pixels.
+const HEAT_RING_SIZE_PX: f32 = 72.;
+/// Unfilled heat ring track, the colour of the plain ring it replaces.
+const HEAT_EMPTY: Color = Color::srgba(0.8, 0.9, 1., 0.25);
 /// Field map frame, which also carries the minimap artwork image once loaded.
 #[derive(Component)]
 pub struct FieldMap;
@@ -269,6 +280,7 @@ enum MapItem {
 pub(crate) struct HudRoot;
 
 fn register_styles(app: &mut App) {
+    heat_ring::register(app);
     bevy::asset::embedded_asset!(app, "hud.css");
 }
 
@@ -282,11 +294,13 @@ fn label(commands: &mut Commands, parent: Entity, kind: Hud, class: &str) {
     let mut entity = commands.spawn((
         kind,
         Text::new(""),
-        TextLayout::justify(if matches!(kind, Hud::Clock | Hud::Hint | Hud::AutoAim) {
-            Justify::Center
-        } else {
-            Justify::Left
-        }),
+        TextLayout::justify(
+            if matches!(kind, Hud::Clock | Hud::Hint | Hud::AutoAim | Hud::Fortress) {
+                Justify::Center
+            } else {
+                Justify::Left
+            },
+        ),
         Node::default(),
         TextColor(WHITE),
         text_style(16.),
@@ -364,6 +378,7 @@ pub fn spawn_hud(commands: &mut Commands) {
     bar(commands, bottom, HealthBar, GREEN);
     label(commands, root, Hud::Ammo, "ammo");
     label(commands, root, Hud::AutoAim, "auto-aim");
+    label(commands, root, Hud::Fortress, "fortress");
     label(commands, root, Hud::Notice, "notices");
     label(commands, root, Hud::Connection, "connection-toast");
     label(commands, root, Hud::Hint, "hint");
@@ -378,7 +393,7 @@ pub fn spawn_hud(commands: &mut Commands) {
     label(commands, panel, Hud::Panel, "panel-title");
     let rows = container(commands, panel, "panel-rows");
     commands.entity(rows).insert(PanelRows::default());
-    commands
+    let reticle = commands
         .spawn((
             Reticle,
             ChildOf(root),
@@ -411,20 +426,33 @@ pub fn spawn_hud(commands: &mut Commands) {
                     BackgroundColor(WHITE),
                 ));
             }
-            p.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(-34),
-                    top: px(-34),
-                    width: px(68),
-                    height: px(68),
-                    border: UiRect::all(px(1)),
-                    border_radius: BorderRadius::all(px(34)),
-                    ..default()
-                },
-                BorderColor::all(Color::srgba(0.8, 0.9, 1., 0.25)),
-            ));
-        });
+        })
+        .id();
+    let ring = commands
+        .spawn((
+            HeatRing,
+            ChildOf(reticle),
+            Pickable::IGNORE,
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(-HEAT_RING_SIZE_PX / 2.),
+                top: px(-HEAT_RING_SIZE_PX / 2.),
+                width: px(HEAT_RING_SIZE_PX),
+                height: px(HEAT_RING_SIZE_PX),
+                ..default()
+            },
+        ))
+        .id();
+    // Headless tests run without the material's assets and draw no ring.
+    commands.queue(move |world: &mut World| {
+        if let Some(mut materials) = world.get_resource_mut::<Assets<heat_ring::HeatRingMaterial>>()
+        {
+            let material = materials.add(heat_ring::HeatRingMaterial {
+                ring: heat_ring_uniform(None),
+            });
+            world.entity_mut(ring).insert(MaterialNode(material));
+        }
+    });
     commands
         .spawn((
             FieldMap,
@@ -607,6 +635,76 @@ fn zone_status(state: &rm_simulator_world::gameplay::RobotState, round_ticks: u6
     }
 }
 
+/// Heat ring uniforms for `heat`, the predicted heat in tenths and the
+/// limit: the arc fills to the heat fraction in green, amber past 60 % and
+/// red past 85 % or once overheated; no heat record leaves only the track.
+fn heat_ring_uniform(heat: Option<(u64, u32)>) -> heat_ring::HeatRingUniform {
+    let fraction = heat.map_or(0., |(tenths, limit)| {
+        tenths as f32 / (limit.max(1) as f32 * 10.)
+    });
+    let fill = if fraction > 0.85 {
+        team_color(Team::Red)
+    } else if fraction > 0.6 {
+        Color::srgb(1., 0.72, 0.2)
+    } else {
+        GREEN
+    };
+    heat_ring::HeatRingUniform {
+        fill: fill.to_linear().to_vec4(),
+        track: HEAT_EMPTY.to_linear().to_vec4(),
+        fraction,
+        thickness_px: 3.,
+    }
+}
+
+/// Section 5.5.3.9 Fortress banner for a running round: each team whose
+/// outpost is down shows when its Fortress opens to the opponent (3:00) or
+/// that it is open, and each capture in progress counts down to the Base
+/// Protective Armor expanding, noting a paused capture's reset.
+fn fortress_text(referee: &rm_simulator_world::RefereeSnapshot) -> String {
+    use rm_simulator_world::gameplay::{SECOND_TICKS, zones};
+    if referee.phase != MatchPhase::Running {
+        return String::new();
+    }
+    let game = &referee.game;
+    let now = game.round_elapsed_ticks;
+    let mut lines = Vec::new();
+    for owner in &game.teams {
+        if owner.outpost_hp > 0 || owner.base_armor_expanded {
+            continue;
+        }
+        let name = format!("{:?}", owner.team).to_uppercase();
+        let capture = game
+            .robots
+            .iter()
+            .filter(|r| r.config.team != owner.team && r.fortress_capture_ticks > 0)
+            .max_by_key(|r| r.fortress_capture_ticks);
+        if let Some(r) = capture {
+            let left = zones::FORTRESS_CAPTURE_TICKS
+                .saturating_sub(r.fortress_capture_ticks)
+                .div_ceil(SECOND_TICKS);
+            let by = format!("{:?}", r.config.team).to_uppercase();
+            lines.push(match r.fortress_capture_retained_until_ticks {
+                Some(until) => format!(
+                    "{name} FORTRESS  {by} CAPTURE PAUSED  {left}s LEFT  (RESETS IN {}s)",
+                    until.saturating_sub(now).div_ceil(SECOND_TICKS)
+                ),
+                None => format!("{name} FORTRESS  {by} CAPTURING  BASE OPENS IN {left}s"),
+            });
+        } else if now < zones::OPPONENT_FORTRESS_FROM_TICKS {
+            let left = (zones::OPPONENT_FORTRESS_FROM_TICKS - now).div_ceil(SECOND_TICKS);
+            lines.push(format!(
+                "{name} FORTRESS OPENS IN {}:{:02}",
+                left / 60,
+                left % 60
+            ));
+        } else {
+            lines.push(format!("{name} FORTRESS OPEN"));
+        }
+    }
+    lines.join("\n")
+}
+
 fn team_text(session: &Session, team: Team) -> String {
     let mut text = team.name().to_uppercase();
     if let Some(base) = session
@@ -616,6 +714,9 @@ fn team_text(session: &Session, team: Team) -> String {
         .find(|b| b.config.team == team)
     {
         text.push_str(&format!("   BASE {} +{}", base.hp, base.shield_hp));
+        if session.referee().is_some_and(|r| r.base_open[team.index()]) {
+            text.push_str(" OPEN");
+        }
     }
     if let Some(r) = session.referee() {
         let outpost: u32 = session
@@ -793,6 +894,8 @@ pub fn update_hud(
     mut texts: Query<(&Hud, &mut Text, &mut Node)>,
     mut health: Query<(&mut Node, &mut BackgroundColor), (With<HealthBar>, Without<Hud>)>,
     mut reticle: Query<&mut Visibility, With<Reticle>>,
+    heat_ring: Query<&MaterialNode<heat_ring::HeatRingMaterial>, With<HeatRing>>,
+    mut materials: Option<ResMut<Assets<heat_ring::HeatRingMaterial>>>,
     assist: Option<Res<crate::auto_aim::AutoAim>>,
 ) {
     let robot = session
@@ -815,6 +918,7 @@ pub fn update_hud(
                 }
             }),
             Hud::Team(team) => team_text(&session, *team),
+            Hud::Fortress => session.referee().map_or_else(String::new, fortress_text),
             Hud::Clock => clock_text(&session),
             Hud::Robot => {
                 let speed = session
@@ -952,6 +1056,16 @@ pub fn update_hud(
         } else {
             GREEN
         };
+    }
+    let ring = heat_ring_uniform(session.predicted_heat());
+    if let Some(materials) = materials.as_mut() {
+        for node in &heat_ring {
+            if materials.get(&node.0).is_some_and(|m| m.ring != ring)
+                && let Some(mut material) = materials.get_mut(&node.0)
+            {
+                material.ring = ring;
+            }
+        }
     }
     for mut visibility in &mut reticle {
         *visibility = if ui.show_reticle && !ui.blocks_input() {

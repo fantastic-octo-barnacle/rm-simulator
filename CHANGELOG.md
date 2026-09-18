@@ -4,6 +4,12 @@
 
 ## Unreleased
 
+- Draw barrel heat as a ring around the reticle, filled clockwise by a UI
+  shader, and stop Auto Fire before a shot would pass the heat limit (manual
+  fire can still overheat). A Fortress banner counts down to the Fortress
+  opening at 3:00 and to the base opening during a capture, and team cards
+  mark an expanded base `OPEN`.
+
 - Detect the section 5.5.3 buff points on the loaded arena (protocol 45).
   Card areas read off Figure 5-24 report occupation to the gameplay engine,
   which now applies base, trapezoid, central highland, outpost and Fortress

@@ -129,6 +129,17 @@ fn rune_shot(target: &Target<'_>, solution: Solution) -> Option<RuneShot> {
         flight_ns: (solution.flight_s * 1e9) as u64,
     })
 }
+/// Whether one more `caliber` launch keeps the barrel at or below its heat
+/// limit (section 5.1.3 overheats above it). Auto-fire never overheats;
+/// manual fire is not gated. `heat` is the predicted heat in tenths and the
+/// limit, and no referee record allows the shot.
+fn heat_allows(heat: Option<(u64, u32)>, caliber: rm_simulator_world::Caliber) -> bool {
+    heat.is_none_or(|(tenths, limit)| {
+        tenths + rm_simulator_world::referee::game_caliber(caliber).launch_heat_tenths()
+            <= u64::from(limit) * 10
+    })
+}
+
 fn rune_fire_allowed(previous: Option<RuneShot>, target: &Target<'_>, now_ns: u64) -> bool {
     let Motion::Rune(rune, _) = target.motion else {
         return true;
@@ -788,6 +799,8 @@ pub fn update(
         "stale target, tracking only"
     } else if session.presentation_time_ns() < gun.next_shot_ns {
         "weapon cadence"
+    } else if !heat_allows(session.predicted_heat(), gun.shot.caliber) {
+        "heat limit"
     } else if !rune_fire_allowed(state.last_rune, target, session.fire_time_ns()) {
         "rune confirmation"
     } else if geometry.is_none() {
@@ -1094,6 +1107,16 @@ mod tests {
                     .all(|t| !matches!(t.id, TargetId::Rune(_)))
             );
         }
+    }
+    #[test]
+    fn auto_fire_stops_at_the_heat_limit() {
+        use rm_simulator_world::Caliber;
+        assert!(heat_allows(None, Caliber::Mm17));
+        // 90 + 10 reaches the limit of 100 without passing it.
+        assert!(heat_allows(Some((900, 100)), Caliber::Mm17));
+        assert!(!heat_allows(Some((901, 100)), Caliber::Mm17));
+        assert!(!heat_allows(Some((100, 100)), Caliber::Mm42));
+        assert!(heat_allows(Some((0, 100)), Caliber::Mm42));
     }
     #[test]
     fn rune_fire_waits_for_confirmation_and_button_release_does_not_bypass_it() {

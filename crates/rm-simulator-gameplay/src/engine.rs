@@ -1625,9 +1625,7 @@ impl Game {
                 r.mm42_suspended = true;
             }
         }
-        r.heat_tenths =
-            r.heat_tenths
-                .saturating_add(if caliber == Caliber::Mm17 { 100 } else { 1000 });
+        r.heat_tenths = r.heat_tenths.saturating_add(caliber.launch_heat_tenths());
         let extra = if caliber == Caliber::Mm17 { 100 } else { 200 };
         // Figure 5-1 uses >= Q2, unlike the neighboring prose's > Q2.
         if r.heat_tenths >= (u64::from(heat_limit) + extra) * 10 {

@@ -92,6 +92,21 @@ impl Caliber {
             Self::Mm42 => 1,
         }
     }
+    /// Barrel heat one launch adds, in tenths of a heat unit (section
+    /// 5.1.3): 10 heat per 17 mm and 100 per 42 mm projectile.
+    ///
+    /// ```
+    /// use rm_simulator_gameplay::Caliber;
+    ///
+    /// assert_eq!(Caliber::Mm17.launch_heat_tenths(), 100);
+    /// assert_eq!(Caliber::Mm42.launch_heat_tenths(), 1_000);
+    /// ```
+    pub const fn launch_heat_tenths(self) -> u64 {
+        match self {
+            Self::Mm17 => 100,
+            Self::Mm42 => 1_000,
+        }
+    }
 }
 
 /// One roster entry. HP, heat limit and cooling come from `performance` at the

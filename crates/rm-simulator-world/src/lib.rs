@@ -2788,6 +2788,50 @@ mod tests {
             })
         )));
     }
+    /// Section 5.5.3.9: 20 s on the opponent's Fortress after 3:00, with
+    /// its outpost destroyed, expands that team's Base Protective Armor and
+    /// opens the base mechanism.
+    #[test]
+    fn fortress_capture_opens_the_owners_base() {
+        let (mut config, _) = stationary_outpost();
+        config.referee = Some(RefereeConfig::alternating(0, 1));
+        config.zones = zones::rmuc_2026();
+        let mut field = Field::new(&config).unwrap();
+        let fortress = config
+            .zones
+            .iter()
+            .find(|z| z.kind == rm_simulator_gameplay::ZoneKind::Fortress && z.owner == Team::Red)
+            .unwrap();
+        let n = fortress.polygon_m.len() as f64;
+        let x = fortress.polygon_m.iter().map(|p| p[0]).sum::<f64>() / n;
+        let y = fortress.polygon_m.iter().map(|p| p[1]).sum::<f64>() / n;
+        field
+            .add_chassis(&ChassisPlacement {
+                config: ChassisConfig::default(),
+                spawn: Pose::at([x, y, ChassisConfig::default().rest_height_m()]),
+                team: Team::Blue,
+                kind: RobotKind::Infantry,
+                performance: None,
+            })
+            .unwrap();
+        field.referee_command(RefereeCommand::StartMatch).unwrap();
+        field.step(ticks(referee::COUNTDOWN_NS)).unwrap();
+        field
+            .referee_command(RefereeCommand::SetOutpostHp { outpost: 0, hp: 0 })
+            .unwrap();
+        field
+            .referee_command(RefereeCommand::SkipTo {
+                match_time_ns: referee::OUTPOST_ROTOR_STOP_NS,
+            })
+            .unwrap();
+        field.step(ticks(19_000_000_000)).unwrap();
+        assert_eq!(field.snapshot().referee.unwrap().base_open, [false; 2]);
+        field.step(ticks(1_100_000_000)).unwrap();
+        assert_eq!(field.snapshot().referee.unwrap().base_open, [true, false]);
+        assert!(
+            referee_events(&field).contains(&RefereeEvent::BaseArmorExpanded { team: Team::Red })
+        );
+    }
     /// Driving armor into a wall during a round costs collision HP; idle
     /// practice and a slow approach do not.
     #[test]

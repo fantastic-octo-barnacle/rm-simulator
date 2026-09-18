@@ -111,7 +111,9 @@ last for the current session. The server binary accepts the same weapon flags.
 
 The HUD follows the July 2026 RMUC competitor client manual: red/blue team
 status and clock across the top, robot HP below left, ammunition beside the
-reticle, and a top-down teammate map below right. Green marks your robot;
+reticle, and a top-down teammate map below right. The ring around the
+reticle fills clockwise with barrel heat, including shots not yet confirmed
+by the host, turning amber past 60 % and red past 85 % of the heat limit. Green marks your robot;
 defeated robots fade. Referees see both teams on the map. The map uses optional
 CAD-derived artwork and live positions, without radar
 detection. The local status readout includes base HP and shield; ammunition and team gold
