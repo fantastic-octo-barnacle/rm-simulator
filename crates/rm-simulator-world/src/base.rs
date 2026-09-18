@@ -66,7 +66,7 @@ impl BaseSnapshot {
     }
     /// Scoring face pose of `plate` (0 to 6). Plate 6 is the dart detector,
     /// whose translation slides between the two rail stops: `dart_position`
-    /// runs from 0 at rest to 1 (see [`crate::referee::dart_target_position`]).
+    /// runs from 0 to 1 and rests in the middle (see [`crate::referee::dart_target_position`]).
     pub fn pose(&self, plate: usize, dart_position: f64) -> Pose {
         let mut pose = self.config.plates[plate];
         if plate == 6 {
@@ -154,7 +154,9 @@ mod tests {
                 plate,
                 field
                     .referee()
-                    .map_or(0., |r| r.snapshot().dart_target_position(field.time_ns())),
+                    .map_or(crate::referee::DART_TARGET_REST, |r| {
+                        r.snapshot().dart_target_position(field.time_ns())
+                    }),
             )
             .translation_m;
         field
@@ -262,11 +264,14 @@ mod tests {
         let mut f = field();
         f.referee_command(RefereeCommand::SetOutpostHp { outpost: 0, hp: 0 })
             .ok();
-        let rest = f.snapshot().bases[0].pose(6, 0.);
+        let rest = f.snapshot().bases[0].pose(6, crate::referee::DART_TARGET_REST);
         f.step(256).unwrap();
         let referee = f.referee().unwrap().snapshot();
         assert_eq!(referee.dart_target_since_ns, None);
-        assert_eq!(referee.dart_target_position(f.time_ns()), 0.);
+        assert_eq!(
+            referee.dart_target_position(f.time_ns()),
+            crate::referee::DART_TARGET_REST
+        );
         // A resting detector takes projectile hits, as a training override.
         let hits = f.snapshot().hits_detected;
         shoot(&mut f, 6);
@@ -281,12 +286,15 @@ mod tests {
             .unwrap()
             .snapshot()
             .dart_target_position(f.time_ns());
-        assert!(position > 0.3 && position < 0.7, "{position}");
+        assert!(position > 0.9, "{position}");
         assert_eq!(f.referee().unwrap().dart_target_since_ns(), Some(started));
         f.referee_command(RefereeCommand::SetDartTargetMoving { moving: false })
             .unwrap();
         let referee = f.referee().unwrap().snapshot();
-        assert_eq!(referee.dart_target_position(f.time_ns()), 0.);
+        assert_eq!(
+            referee.dart_target_position(f.time_ns()),
+            crate::referee::DART_TARGET_REST
+        );
         assert_eq!(f.snapshot().bases[0].pose(6, 0.), rest);
     }
 }
