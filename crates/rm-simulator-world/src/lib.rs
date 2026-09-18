@@ -14,6 +14,7 @@ pub mod projectile;
 pub mod referee;
 pub mod rune;
 mod scoring;
+pub mod zones;
 pub use chassis::{ChassisCommand, ChassisConfig, ChassisSnapshot, WheelContact, WheelSnapshot};
 pub use outpost::{Outpost, OutpostSnapshot};
 pub use projectile::{
@@ -141,11 +142,16 @@ pub struct FieldConfig {
     /// snapshot's [`FieldRestore`] as well.
     #[serde(default)]
     pub projectile_policy: projectile::ProjectilePolicy,
+    /// Buff point footprints a running match reports robot contacts for;
+    /// empty reports none. [`zones::rmuc_2026`] is the full field's set.
+    #[serde(default)]
+    pub zones: Vec<zones::ZoneArea>,
 }
 
 impl Default for FieldConfig {
     fn default() -> Self {
         Self {
+            zones: Vec::new(),
             bases: Vec::new(),
             floor_height_m: 0.0,
             chassis: Vec::new(),
@@ -286,6 +292,7 @@ pub struct Field {
     hits_detected: u64,
     last_detection_ns: std::collections::HashMap<ArmorTarget, u64>,
     referee: Option<Referee>,
+    zones: Vec<zones::ZoneArea>,
 }
 impl Field {
     /// Build a field from a layout, validating every rune, outpost and base.
@@ -387,6 +394,7 @@ impl Field {
             hits_detected: 0,
             last_detection_ns: std::collections::HashMap::new(),
             referee,
+            zones: config.zones.clone(),
         };
         for outpost in &field.outposts {
             let (pose, size) = outpost.body_proxy();
@@ -948,12 +956,18 @@ impl Field {
                 for rune in &mut self.runes {
                     rune.advance_to(next_ns)?;
                 }
-                // Section 5.5.1: the middle armor stops for the round at 3:00.
-                if referee.phase() == MatchPhase::Running
-                    && referee.match_time_ns() >= referee::OUTPOST_ROTOR_STOP_NS
-                {
-                    for outpost in &mut self.outposts {
-                        outpost.stop(next_ns);
+                // Section 5.5.1: the middle armor stops for the round at 3:00,
+                // and a team's once the other team's base armor expands.
+                if referee.phase() == MatchPhase::Running {
+                    let teams = &referee.game().snapshot().teams;
+                    let late = referee.match_time_ns() >= referee::OUTPOST_ROTOR_STOP_NS;
+                    for team in Team::BOTH {
+                        let expanded = teams[team.other().index()].base_armor_expanded;
+                        if (late || expanded)
+                            && let Some(index) = referee.outpost_of(team)
+                        {
+                            self.outposts[index].stop(next_ns);
+                        }
                     }
                 }
                 self.sync_structures(next_ns);
@@ -1031,28 +1045,33 @@ impl Field {
             );
         }
     }
-    /// Report each robot's presence in its own outpost zone, within
-    /// [`referee::OUTPOST_ZONE_RADIUS_M`] of the outpost's origin, so a
-    /// running round can clear weakness and rebuild a destroyed outpost.
+    /// Report each robot's contact with every buff point footprint, so a
+    /// running round applies the section 5.5.3 occupation effects.
     fn observe_zones(&mut self) {
         let Some(referee) = &mut self.referee else {
             return;
         };
-        if referee.phase() != MatchPhase::Running {
+        if self.zones.is_empty() || referee.phase() != MatchPhase::Running {
             return;
         }
-        let robots: Vec<(u32, Team)> = referee.robots().map(|r| (r.id, r.team)).collect();
-        for (id, team) in robots {
+        let robots: Vec<u32> = referee.robots().map(|r| r.id).collect();
+        for id in robots {
             let Some(position) = self.physics.chassis_position_m(id) else {
                 continue;
             };
-            let detected = referee.outpost_of(team).is_some_and(|index| {
-                let origin = self.outposts[index].origin().translation_m;
-                (position[0] - origin[0]).hypot(position[1] - origin[1])
-                    <= referee::OUTPOST_ZONE_RADIUS_M
-            });
-            referee.observe_outpost_zone(id, detected);
+            for area in &self.zones {
+                referee.observe_zone(id, area.zone(), area.contains(position));
+            }
         }
+    }
+    /// Buff point footprints this field reports contacts for.
+    pub fn zones(&self) -> &[zones::ZoneArea] {
+        &self.zones
+    }
+    /// Replace the buff point footprints, for a field rebuilt by
+    /// [`Field::restore`], which carries none.
+    pub fn set_zones(&mut self, zones: Vec<zones::ZoneArea>) {
+        self.zones = zones;
     }
     /// Resolve match state only when articulated scenery actually needs it.
     fn sync_mechanisms(&mut self) {
@@ -1232,6 +1251,7 @@ impl Field {
             hits_detected: snapshot.hits_detected,
             last_detection_ns: rules.last_detection_ns.iter().copied().collect(),
             referee: rules.referee.clone(),
+            zones: Vec::new(),
         };
         for chassis in &snapshot.chassis {
             field
@@ -2069,6 +2089,7 @@ mod tests {
             floor_height_m: 0.0,
             referee: None,
             projectile_policy: Default::default(),
+            zones: Vec::new(),
             chassis: vec![ChassisPlacement {
                 config: ChassisConfig::default(),
                 spawn: Pose::at([0.0, 0.0, ChassisConfig::default().rest_height_m()]),
@@ -2699,6 +2720,13 @@ mod tests {
         let (mut config, _) = stationary_outpost();
         config.outposts[0].speed_rad_s = 0.8;
         config.referee = Some(RefereeConfig::alternating(0, 1));
+        config.zones = vec![zones::ZoneArea {
+            kind: rm_simulator_gameplay::ZoneKind::Outpost,
+            owner: Team::Red,
+            pad: 0,
+            floor_m: 0.0,
+            polygon_m: vec![[3.0, 0.5], [5.0, 0.5], [5.0, 1.5], [3.0, 1.5]],
+        }];
         let mut field = Field::new(&config).unwrap();
         let red = field
             .add_chassis(&ChassisPlacement {

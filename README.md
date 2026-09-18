@@ -451,8 +451,9 @@ does not acknowledge its execution by the host.
 | 42 | Dead-reckons delta baselines to the frame's tick, realigns changed sequences by id and rotates baselines after 12 frames. |
 | 43 | Removes client fire timing, `ShotScheduled`'s intended time, the explicit-rules checkpoint fallback and `RMI2` input batches; `RMO6` command and tyre speeds use the 1 cm/s velocity scale. |
 | 44 | Carries the gameplay engine's state as the referee's `game`, outpost rotor start and homing, the match rule commands and `SetPerformance`. |
+| 45 | Adds buff point contacts, terrain crossing and Fortress state, the `TerrainCrossing` and `BaseArmorExpanded` events and the field's `zones`. |
 
-The current protocol version is 44, defined by `PROTOCOL_VERSION` in
+The current protocol version is 45, defined by `PROTOCOL_VERSION` in
 `crates/rm-simulator-server/src/protocol.rs`. GNS sends redundant controls
 and retried shot intents unreliably; scheduling receipts and terminal shot results
 remain reliable. There is no shooter-view fire path or input-acknowledgement
@@ -596,9 +597,18 @@ Destroyed outposts stop rotating and use disabled armor: light bars are
 fully off while the printed pattern stays white, and further contacts cannot score or trigger flashes. The housing
 still collides. Restoring HP enables the armor again. In a match the rotor
 rests until the round starts, spins up, and stops for good at its first
-destruction or at 3:00. A robot that stands 10 s within 1.5 m of its team's
-destroyed outpost rebuilds it at 750 HP when the team has a rebuild
-opportunity (one per 1000 base HP lost, before 5:00).
+destruction, at 3:00 or when the other team's base armor expands. A robot
+that stands 10 s on its team's destroyed Outpost Buff Point rebuilds it at
+750 HP when the team has a rebuild opportunity (one per 1000 base HP lost,
+before 5:00).
+
+On the loaded arena the section 5.5.3 buff points are live: base, trapezoid,
+central highland, outpost and Fortress defense; resupply healing; the Road,
+Elevated Ground, Launch Ramp and Tunnel crossings; and the Fortress capture
+that expands the opponent's base armor. Their areas were read off Figure 5-24;
+see `docs/referee-rules.md`. The HUD's ZONE line shows the points a pilot
+occupies, a crossing in progress, crossing defense, tunnel cooling and
+Fortress capture time.
 
 The HTTP panel also sets the rule policy (allowance enforcement, off by
 default; zone-only exchanges, off), team gold, a robot's allowance and

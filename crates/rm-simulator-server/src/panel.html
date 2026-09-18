@@ -266,6 +266,8 @@ function describe(ev) {
     case 'RobotRespawned': return `robot ${v.robot} respawned`;
     case 'WeaknessCleared': return `robot ${v.robot} no longer weakened`;
     case 'LevelUp': return `robot ${v.robot} reached level ${v.level}`;
+    case 'TerrainCrossing': return `robot ${v.robot} crossed the ${v.kind}`;
+    case 'BaseArmorExpanded': return `${v.team} base armor expanded`;
     case 'RoundResult': return resultText(v);
     default: return JSON.stringify(ev);
   }

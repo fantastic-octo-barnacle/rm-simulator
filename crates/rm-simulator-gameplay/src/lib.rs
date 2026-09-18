@@ -13,6 +13,7 @@ mod engine;
 mod performance;
 mod policy;
 mod state;
+pub mod zones;
 pub use engine::*;
 pub use performance::*;
 pub use state::*;

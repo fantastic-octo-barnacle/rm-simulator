@@ -551,7 +551,60 @@ fn robot_status(state: &rm_simulator_world::gameplay::RobotState, round_ticks: u
                 .div_ceil(rm_simulator_world::gameplay::SECOND_TICKS)
         ));
     }
+    text.push_str(&zone_status(state, round_ticks));
     text
+}
+
+/// The section 5.5.3 buff points a robot occupies and its timed terrain
+/// crossing and Fortress progress; empty when there is none.
+fn zone_status(state: &rm_simulator_world::gameplay::RobotState, round_ticks: u64) -> String {
+    use rm_simulator_world::gameplay::{SECOND_TICKS, ZoneKind};
+    let seconds = |until: u64| (until - round_ticks).div_ceil(SECOND_TICKS);
+    let mut parts: Vec<String> = Vec::new();
+    for contact in &state.zones {
+        let name = match contact.zone.kind {
+            ZoneKind::Base => "BASE",
+            ZoneKind::Resupply => "SUPPLY",
+            ZoneKind::Outpost => "OUTPOST PT",
+            ZoneKind::CentralHighland => "HIGHLAND",
+            ZoneKind::TrapezoidHighland => "TRAPEZOID",
+            ZoneKind::Fortress => "FORTRESS",
+            // Crossing pads show as the crossing's progress below.
+            _ => continue,
+        };
+        let name = format!("{name}/{:?}", contact.zone.owner).to_uppercase();
+        if !parts.contains(&name) {
+            parts.push(name);
+        }
+    }
+    if let Some(crossing) = &state.crossing {
+        parts.push(format!("{:?} {}", crossing.zone.kind, crossing.done).to_uppercase());
+    }
+    if state.crossing_defense_until_ticks > round_ticks {
+        parts.push(format!(
+            "CROSS DEF +{}% {}s",
+            state.crossing_defense_pct,
+            seconds(state.crossing_defense_until_ticks)
+        ));
+    }
+    if state.tunnel_cooling_until_ticks > round_ticks {
+        parts.push(format!(
+            "COOL x2 {}s",
+            seconds(state.tunnel_cooling_until_ticks)
+        ));
+    }
+    if state.fortress_capture_ticks > 0 {
+        parts.push(format!(
+            "CAPTURE {}/{}s",
+            state.fortress_capture_ticks / SECOND_TICKS,
+            rm_simulator_world::gameplay::zones::FORTRESS_CAPTURE_TICKS / SECOND_TICKS
+        ));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("\nZONE {}", parts.join("  "))
+    }
 }
 
 fn team_text(session: &Session, team: Team) -> String {

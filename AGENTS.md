@@ -78,8 +78,11 @@ two disagree, this file wins.
   names; four small armor modules on the chassis body score like outpost
   armor, collisions against them cost HP, and a defeated robot cannot drive,
   aim or fire until it respawns. Idle is free practice. The outpost rotor
-  starts with the round and stops at its first destruction or at 3:00. Buff
-  zones other than the outpost-radius rebuild zone, referee power limits,
+  starts with the round and stops at its first destruction, at 3:00 or when
+  the other team's base armor expands. Buff points (`zones.rs`, areas read
+  off Figure 5-24) report occupation to the engine, which applies their
+  defense, terrain crossing, Fortress and rebuild effects. The Assembly Zone,
+  referee power limits,
   remote exchanges, engineer, drone, dart, sentry and radar equipment and
   multi-round series remain unenforced in the live simulation; see
   `docs/gameplay.md` before changing either side. The chassis has an assumed

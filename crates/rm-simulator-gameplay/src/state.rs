@@ -354,6 +354,7 @@ pub struct RoundRecord {
 ///     zone: Zone {
 ///         kind: ZoneKind::Base,
 ///         owner: Team::Red,
+///         pad: 0,
 ///     },
 ///     detected: true,
 /// })?;
@@ -363,30 +364,43 @@ pub struct RoundRecord {
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ZoneKind {
-    /// Base zone. Own-side contact grants 50 percent defense, enables local
-    /// exchange and clears weakness.
+    /// Base Buff Point. Own-side contact grants 50 percent defense, enables
+    /// local exchange and clears weakness (section 5.5.3.2).
     Base,
-    /// Resupply zone. Contact enables local exchange and healing, accelerates
-    /// respawn and grants sentry resupply.
+    /// Resupply Zone Buff Point. Contact enables local exchange and healing,
+    /// accelerates respawn and grants sentry resupply (section 5.5.3.8).
     Resupply,
-    /// Outpost zone. A living own outpost enables exchange and clears
-    /// weakness; contact also scans a destroyed outpost.
+    /// Outpost Buff Point. An occupiable point (the own living outpost's, or
+    /// in the first five minutes the opponent's destroyed one while the own
+    /// outpost lives) grants 25 percent defense, enables exchange and clears
+    /// weakness; own contact also scans a destroyed outpost (section 5.5.3.6).
     Outpost,
-    /// Central highland. Contact is recorded and generates no buff.
+    /// Central Elevated Ground Buff Point, one per side of the centre. Hero,
+    /// Infantry and Sentry gain 25 percent defense unless a robot of the other
+    /// team occupied it first (section 5.5.3.3).
     CentralHighland,
-    /// Trapezoid highland. Contact is recorded and generates no buff.
+    /// Trapezoid-Shaped Elevated Ground Buff Point. Own-side contact grants
+    /// 50 percent defense (section 5.5.3.4).
     TrapezoidHighland,
-    /// Undulating road. Contact is recorded with no sequencing or reward.
+    /// Terrain Crossing Buff Point (Road): lower pad 0, then higher pad 1
+    /// within 3 s (section 5.5.3.5).
     Road,
-    /// Elevated crossing. Contact is recorded with no sequencing or reward.
+    /// Terrain Crossing Buff Point (Elevated Ground): lower pad 0, then higher
+    /// pad 1 within 5 s (section 5.5.3.5).
     ElevatedCrossing,
-    /// Launch ramp. Contact is recorded with no sequencing or reward.
+    /// Terrain Crossing Buff Point (Launch Ramp): pad 0, then pad 1 within
+    /// 10 s (section 5.5.3.5).
     LaunchRamp,
-    /// Tunnel. Contact is recorded with no sequencing or reward.
+    /// Terrain Crossing Buff Point (Tunnel): pads 0-2 and 3-5 form two
+    /// tunnels, crossed end, middle, end within 3 s (section 5.5.3.5).
     Tunnel,
-    /// Assembly zone. Contact is recorded and generates no buff.
+    /// Assembly Zone Buff Point. Contact is recorded and generates no buff.
     Assembly,
-    /// Fortress. Contact is recorded and generates no buff.
+    /// Fortress Buff Point (section 5.5.3.9). Once the owner's outpost is
+    /// destroyed, the first own Hero, Infantry or Sentry gains 50 percent
+    /// defense, a cooling bonus and a reserved allowance. From 3:00 an opposing
+    /// one takes 100 percent vulnerability, and 20 s of occupation expands the
+    /// owner's Base Protective Armor.
     Fortress,
 }
 /// A zone identified by kind and owning team.
@@ -394,8 +408,12 @@ pub enum ZoneKind {
 pub struct Zone {
     /// Zone type.
     pub kind: ZoneKind,
-    /// Team the zone belongs to.
+    /// Team the zone belongs to. Terrain crossing and central highland points
+    /// belong to the side of the field they lie on and any team may use them.
     pub owner: Team,
+    /// Card group within the zone: a terrain crossing pad's number (see
+    /// [`crate::zones::courses`]); 0 for every other kind.
+    pub pad: u8,
 }
 /// Detected contact with one zone.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -407,6 +425,23 @@ pub struct ZoneContact {
     /// Round tick when a false sample removes the contact, two seconds after
     /// the first false sample (section 5.5.3.1). `None` while detected.
     pub expires_ticks: Option<u64>,
+    /// Round tick the contact began. The earliest contact wins an exclusive
+    /// point (sections 5.5.3.3 and 5.5.3.9).
+    pub since_ticks: u64,
+}
+/// A terrain crossing in progress (section 5.5.3.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrossingProgress {
+    /// Kind and side of the crossing; `pad` is the first pad detected.
+    pub zone: Zone,
+    /// Course index within [`crate::zones::courses`].
+    pub course: u8,
+    /// Pads detected so far, in crossing order.
+    pub done: u8,
+    /// Whether the course is being crossed from its last pad.
+    pub reversed: bool,
+    /// Round tick the first pad was detected.
+    pub started_ticks: u64,
 }
 /// Respawn timer for a defeated ground robot.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -501,6 +536,23 @@ pub struct RobotState {
     /// allowance or the third launch after defeat, cleared once the robot is
     /// alive with positive 42 mm allowance.
     pub mm42_suspended: bool,
+    /// Terrain crossing in progress, if any (section 5.5.3.5).
+    pub crossing: Option<CrossingProgress>,
+    /// Terrain crossing defense in percent while `crossing_defense_until_ticks`
+    /// lies ahead.
+    pub crossing_defense_pct: u32,
+    /// Round tick the terrain crossing defense ends.
+    pub crossing_defense_until_ticks: u64,
+    /// Round tick the Tunnel's double heat cooling ends.
+    pub tunnel_cooling_until_ticks: u64,
+    /// Round tick before which a Road crossing grants nothing.
+    pub road_buff_ready_ticks: u64,
+    /// Uninterrupted opponent Fortress occupation in round ticks (section
+    /// 5.5.3.9).
+    pub fortress_capture_ticks: u64,
+    /// Round tick a paused Fortress capture timer is dropped; `None` while
+    /// occupying or without progress.
+    pub fortress_capture_retained_until_ticks: Option<u64>,
 }
 impl RobotState {
     /// Whether the robot is on the field: positive HP and not ejected.
@@ -509,7 +561,17 @@ impl RobotState {
     }
     /// Whether the robot holds a contact with the given zone and owner.
     pub fn in_zone(&self, kind: ZoneKind, owner: Team) -> bool {
-        self.zones.iter().any(|c| c.zone == Zone { kind, owner })
+        self.zones
+            .iter()
+            .any(|c| c.zone.kind == kind && c.zone.owner == owner)
+    }
+    /// The start tick of the robot's contact with the given zone and owner.
+    pub fn zone_since(&self, kind: ZoneKind, owner: Team) -> Option<u64> {
+        self.zones
+            .iter()
+            .filter(|c| c.zone.kind == kind && c.zone.owner == owner)
+            .map(|c| c.since_ticks)
+            .min()
     }
     /// Current performance values at the robot's level.
     pub fn stats(&self) -> crate::Stats {
@@ -550,7 +612,8 @@ pub struct TeamState {
     pub base_shield_hp: u32,
     /// Cumulative base HP lost this round, which sets rebuild opportunities.
     pub base_hp_lost: u32,
-    /// Tracked base-armor state; the engine never changes or reads it.
+    /// Base Protective Armor expanded by an opponent's Fortress capture
+    /// (section 5.5.3.9); it stays expanded for the round.
     pub base_armor_expanded: bool,
     /// Outpost health. Zero means destroyed and enables a rebuild scan
     /// (section 5.5.1).
@@ -584,6 +647,8 @@ pub struct TeamState {
     pub rune_bonus_tenths: u32,
     /// Round tick the Small Rune experience bonus ends.
     pub rune_bonus_until_ticks: u64,
+    /// Fortress reserved allowance units used this round (section 5.5.3.9).
+    pub fortress_reserve_used: u32,
 }
 /// A damage target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -848,6 +913,16 @@ pub enum EventKind {
         /// New level.
         level: u8,
     },
+    /// A robot completed a terrain crossing (section 5.5.3.5).
+    TerrainCrossing {
+        /// Robot that crossed.
+        robot: u32,
+        /// Crossing kind.
+        kind: ZoneKind,
+    },
+    /// An opponent's Fortress occupation expanded a team's Base Protective
+    /// Armor (section 5.5.3.9).
+    BaseArmorExpanded(Team),
 }
 
 /// What a pending remote delivery carries.
