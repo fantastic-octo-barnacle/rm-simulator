@@ -15,6 +15,7 @@ it, and it depends on no other simulator crate.
 |---|---|
 | `src/engine.rs` | `Game`, `Command` and `Error`: the transactional match loop and its validated inputs. |
 | `src/state.rs` | The state model: `Team`, `RobotKind`, `Caliber`, `Config`, `Phase`, `Snapshot`, `Event`, rounds, deliveries and zone contacts. |
+| `src/zones.rs` | Section 5.5.3 buff point constants, terrain crossing courses and the Fortress cooling and reserve formulas. |
 | `src/performance.rs` | `Performance`, `Stats` and the Hero and Infantry types: HP, chassis power, heat limit and cooling by level (Tables 5-12 to 5-14). |
 | `src/coverage.rs` | `RULES`, the inventory of sections 5.1-5.8 and 6-9, with each group's section, `Support` status and remaining work. |
 | `src/policy.rs` | Internal allowance and income policies. |

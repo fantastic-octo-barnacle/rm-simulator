@@ -78,7 +78,10 @@ use serde::{Deserialize, Serialize};
 /// `game` (levels, heat, respawn timers, buffs and the round result), outpost
 /// rotor start and homing, the match's rule commands in place of `Gameplay`
 /// edits, and a chassis placement's performance type.
-pub const PROTOCOL_VERSION: u32 = 44;
+/// Version 45 adds buff point contacts and terrain crossing, Fortress and
+/// reserve state to the gameplay record, the `TerrainCrossing` and
+/// `BaseArmorExpanded` events, and a field configuration's `zones`.
+pub const PROTOCOL_VERSION: u32 = 45;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///

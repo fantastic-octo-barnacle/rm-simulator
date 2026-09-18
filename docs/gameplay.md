@@ -36,7 +36,7 @@ and the server. It steps the engine to the round time at the start of every
 |---|---|
 | World referee | Phase changes, round clock, rune schedule and activation; translating engine events |
 | `Game` | HP, damage, heat, allowance, gold, experience, levels, performance, respawn, weakness, invincibility, buffs, base shield and outpost protection, rebuild opportunities, round result |
-| World `Field` | Detection (speed, area, interval) and scoring geometry; mirrors base and outpost HP into the physical objects; stops rotors; reports outpost-zone contacts and armor collisions |
+| World `Field` | Detection (speed, area, interval) and scoring geometry; mirrors base and outpost HP into the physical objects; stops rotors; reports buff point contacts from the Figure 5-24 areas (`zones.rs`) and armor collisions |
 | `rm-simulator-physics` | Dynamics, raw contacts, armor collision speeds and prescribed rotor motion |
 
 `StartMatch` resets the engine and begins its countdown; `ResetMatch` returns it
@@ -63,8 +63,7 @@ ammunition, pick its own performance type and fire.
 
 ### Outside the live integration
 
-Zone detection other than the outpost zone (base, resupply, highlands, road,
-fortress, assembly), remote exchanges and HP purchases, power enforcement,
+The Assembly Zone, remote exchanges and HP purchases, power enforcement,
 assembly, drone, dart, radar, engineer and sentry equipment, penalties,
 disconnection and multi-round series are not connected. The engine still
 implements several of them for headless scenarios.

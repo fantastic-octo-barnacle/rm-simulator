@@ -160,10 +160,46 @@ restoring HP resumes it.
 
 Destroying an outpost opens its base to damage (`OutpostDestroyed`). Every
 1000 HP a base loses in a round gives its team one rebuild opportunity. A
-living robot that stays 10 s within 1.5 m (horizontally) of its team's
-destroyed outpost origin, before 5:00, rebuilds it with one opportunity
-(`OutpostRebuilt`). The 1.5 m zone stands in for the outpost RFID card,
-whose placement the simulator does not model.
+living robot that stays 10 s on its team's destroyed Outpost Buff Point,
+before 5:00, rebuilds it with one opportunity (`OutpostRebuilt`). A team's
+rotor also stops once the other team's Base Protective Armor expands.
+
+## Buff points (section 5.5.3, Figure 5-24)
+
+A robot occupies a buff point while its chassis body centre lies over the
+point's card area and at most 0.45 m above its floor; the status outlives the
+last detection by 2 s (section 5.5.3.1). The rulebook prints no coordinates,
+so the areas in `rm_simulator_world::zones` were read off Figure 5-24,
+registered to the field by the outposts and bases (about 2 cm residual) and
+checked against the CAD markings; edges are good to about ±5 cm. Red's areas
+lie on +x and blue's are their point mirror. They apply only on the loaded
+arena; a field without terrain has none. Weakened or disconnected robots gain
+no point effects other than clearing weakness.
+
+| Point | Effect |
+|---|---|
+| Base (own) | 50 % defense; fourfold respawn progress |
+| Resupply (own) | Resupply healing, fourfold respawn progress, exchanges when zone-only exchange is on |
+| Trapezoid-Shaped Elevated Ground (own) | 50 % defense |
+| Central Elevated Ground | 25 % defense for Hero, Infantry and Sentry; the earliest team there holds it |
+| Outpost | 25 % defense and clears weakness on an occupiable point: the own point while the outpost stands, or before 5:00 a destroyed opposing outpost's point while the own outpost stands; the own destroyed point rebuilds |
+| Fortress (own) | Once the own outpost is destroyed, the earliest own occupant gets 50 % defense, a heat cooling bonus of `min(Δ/40, 75)` per second and a team reserve of `min(100 + 2⌊Δ/15⌋, 500)` allowance units spent before its own (1 per 17 mm, 10 per 42 mm), Δ being the base HP lost |
+| Fortress (opponent) | From 3:00, with its owner's outpost destroyed: 100 % vulnerability; 20 s of occupation (kept paused 3 s after an interruption) expands the owner's Base Protective Armor (`BaseArmorExpanded`) |
+
+Terrain crossings (section 5.5.3.5, `TerrainCrossing`) detect pads in order
+within a window; any other point interrupts a crossing, except that the
+higher Elevated Ground pad is also the Central Elevated Ground point.
+
+| Crossing | Pads | Window | Buff |
+|---|---|---|---|
+| Road | lower then upper | 3 s | 25 % defense for 5 s; 15 s before it grants again |
+| Elevated Ground | lower then higher | 5 s | 25 % defense for 30 s |
+| Launch Ramp | take-off then landing | 10 s | 25 % defense for 30 s |
+| Tunnel | an end, the middle, the other end, either way | 3 s | 50 % defense for 10 s and double heat cooling for 120 s |
+
+Repeating a Road, Elevated Ground or Launch Ramp crossing while such a buff
+lasts raises it to 50 % for the longer of its remaining and initial duration.
+A defeat clears crossing buffs. The Assembly Zone is not placed (engineer only).
 
 ## Robots (Tables 5-1, 5-2 and 5-11 to 5-14, Figure 5-16)
 
@@ -203,7 +239,7 @@ freezes, it cannot fire and it absorbs no further damage. In a running round
 it respawns where it stands (`RobotRespawned`), after 10 s plus a tenth of the
 elapsed round in seconds plus 20 s per earlier paid respawn. Standing in its
 own base, resupply or living outpost zone accelerates the timer fourfold, as
-does a base below 2000 HP; of those zones only the outpost zone is detected.
+does a base below 2000 HP.
 
 A respawned robot comes back with 10 % of its maximum HP, weakened and
 invincible for 30 s. Weakened robots cannot fire. Reaching an own living
@@ -224,14 +260,14 @@ cools; overshooting the limit by a further 100 (17 mm) or 200 (42 mm) locks
 the barrel for the round (Figure 5-1's `Q1 >= Q2`).
 Every launch in a match consumes allowance and counts toward experience.
 Refusing launches at zero allowance is the policy toggle `enforce_allowance`,
-off by default; `exchange_requires_zone` (also off) would require a service
-zone for exchanges, which the simulator does not detect.
+off by default; `exchange_requires_zone` (also off) requires a service
+zone for exchanges.
 
 Table 5-5 grants income at elapsed 1, 61, 121, 181, 241, 301 and 361 seconds.
 Pilots exchange one Table 5-6 unit with O (ten 17 mm rounds for 10 gold) or
 I (one 42 mm round for 10 gold); a robot class that cannot fire the caliber is
-refused. Per-team exchange limits apply. Remote exchanges, HP purchases,
-assembly, highland, fortress and other buff zones are not connected.
+refused. Per-team exchange limits apply. Remote exchanges, HP purchases and
+the Assembly Zone are not connected.
 
 ## Victory (section 5.8)
 
@@ -280,7 +316,12 @@ respawn like any robot, never shoot, and are removed independently of connected 
 - A struck armor module shows grey for 50 ms (`--hit-flash-ms`).
 - Ring width 15 mm (figure reading).
 - Robots respawn where they fell; the manual respawns them in the base.
-- The outpost zone is a 1.5 m circle around the outpost origin.
+- Buff point areas are read off Figure 5-24 (±5 cm); a robot counts when
+  its body centre is over the area and within 0.45 m above its floor.
+- A team's six Tunnel pads form two tunnels of three pads each; Launch Ramp
+  pads are crossed in the jump's direction.
+- The Fortress reserve is one pool per team per round, and its Δ is the base
+  HP the team has lost.
 - Rotor spin-up takes 5 s and homing 10 s.
 - Collision damage needs 1.5 m/s along the armor normal.
 - One round per match.
@@ -300,7 +341,8 @@ respawn like any robot, never shoot, and are removed independently of connected 
 | Section 5.4.1 | Experience |
 | Section 5.4.2 | Performance types |
 | Section 5.5.1 | Outpost HP, rotor start and stop; base HP, shield and outpost protection; rebuild opportunities and scans; base damage centre square |
-| Section 5.5.3.1 | Strongest attack, defense and cooling buffs |
+| Section 5.5.3.1 | Strongest attack, defense and cooling buffs; the 2 s occupation expiry |
+| Sections 5.5.3.2 to 5.5.3.9 | Buff point effects, terrain crossings and the Fortress |
 | Section 5.8 | Round result |
 | Section 5.5.2 | Rune stages, opportunities and buff sources |
 | Section 5.5.2.1 | Rune activation mechanics and ring restrictions |
@@ -318,3 +360,4 @@ respawn like any robot, never shoot, and are removed independently of connected 
 | Figure 5-16 | Armor detection area, 101 × 94 mm |
 | Figure 5-18 | Rune effective disk and ring widths |
 | Figure 5-23 | Activated rune arms are lit |
+| Figure 5-24 | Buff point card areas (read off the drawing) |

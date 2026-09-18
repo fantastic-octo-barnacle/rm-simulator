@@ -271,26 +271,26 @@ rules![
     (
         CentralHighland,
         "5.5.3.3",
-        Tracked,
-        "Occupation records; buffs not generated"
+        External,
+        "25 % defense for Hero, Infantry and Sentry per point, first team holds it"
     ),
     (
         TrapezoidHighland,
         "5.5.3.4",
-        Tracked,
-        "Occupation records; buffs not generated"
+        External,
+        "Own-side 50 % defense"
     ),
     (
         TerrainCrossing,
         "5.5.3.5",
-        Tracked,
-        "Road, elevated ground, ramp and tunnel contacts; sequencing and rewards not generated"
+        External,
+        "Pad order and windows, interruption, defense, stacking, road cooldown, tunnel cooling, removal on defeat; dart expiry not implemented"
     ),
     (
         OutpostZone,
         "5.5.3.6",
         External,
-        "Own living outpost enables exchange/weakness removal; rebuild scan; other buffs tracked"
+        "Occupiable own or opposing point: exchange, weakness removal and 25 % defense; rebuild scan"
     ),
     (
         AssemblyZone,
@@ -307,8 +307,8 @@ rules![
     (
         Fortress,
         "5.5.3.9",
-        Tracked,
-        "Occupation records; reserves, cooling, vulnerability and armor-opening timer not implemented"
+        External,
+        "First own holder's defense, cooling bonus and reserved allowance; opposing vulnerability and 20 s armor expansion"
     ),
     (
         HeroDeployment,

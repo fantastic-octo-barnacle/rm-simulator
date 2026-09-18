@@ -477,7 +477,7 @@ impl Game {
             Phase::Running => r.can_launch(
                 self.state.round_elapsed_ticks,
                 caliber,
-                self.state.policy.enforce_allowance,
+                self.state.policy.enforce_allowance && !self.reserve_covers(i, caliber),
             ),
             _ => false,
         }
@@ -548,6 +548,7 @@ impl Game {
                 assembly_defense_pct: 0,
                 rune_bonus_tenths: 0,
                 rune_bonus_until_ticks: 0,
+                fortress_reserve_used: 0,
             }),
             robots: Vec::new(),
             buffs: Vec::new(),
@@ -605,6 +606,13 @@ impl Game {
             defeated_at_ticks: None,
             launches_since_defeat: 0,
             mm42_suspended: false,
+            crossing: None,
+            crossing_defense_pct: 0,
+            crossing_defense_until_ticks: 0,
+            tunnel_cooling_until_ticks: 0,
+            road_buff_ready_ticks: 0,
+            fortress_capture_ticks: 0,
+            fortress_capture_retained_until_ticks: None,
         }
     }
     fn emit(&mut self, kind: EventKind) {
@@ -657,7 +665,292 @@ impl Game {
         let team = r.config.team;
         r.in_zone(ZoneKind::Base, team)
             || r.in_zone(ZoneKind::Resupply, team)
-            || (r.in_zone(ZoneKind::Outpost, team) && self.state.teams[team.index()].outpost_hp > 0)
+            || self.in_occupiable_outpost_zone(i)
+    }
+    /// Section 5.5.3.6: the own living outpost's point, or within the first
+    /// five minutes the opponent's destroyed outpost's point while the own
+    /// outpost lives.
+    fn in_occupiable_outpost_zone(&self, i: usize) -> bool {
+        let r = &self.state.robots[i];
+        let team = r.config.team;
+        let own_alive = self.state.teams[team.index()].outpost_hp > 0;
+        own_alive
+            && (r.in_zone(ZoneKind::Outpost, team)
+                || (r.in_zone(ZoneKind::Outpost, team.other())
+                    && self.state.teams[team.other().index()].outpost_hp == 0
+                    && self.state.round_elapsed_ticks < zones::OPPONENT_OUTPOST_ZONE_UNTIL_TICKS))
+    }
+    /// Hero, Infantry and Sentry, the robots that contest the central highland
+    /// and the fortress (sections 5.5.3.3 and 5.5.3.9).
+    fn contests_points(kind: RobotKind) -> bool {
+        matches!(
+            kind,
+            RobotKind::Hero | RobotKind::Infantry | RobotKind::Sentry
+        )
+    }
+    /// Section 5.5.3.3: robot `i` occupies a central highland point unless an
+    /// eligible robot of the other team holds an earlier contact with it.
+    fn occupies_central_highland(&self, i: usize) -> bool {
+        let r = &self.state.robots[i];
+        if !Self::contests_points(r.config.kind) || !self.eligible(i) {
+            return false;
+        }
+        Team::BOTH.into_iter().any(|side| {
+            let Some(since) = r.zone_since(ZoneKind::CentralHighland, side) else {
+                return false;
+            };
+            !self.state.robots.iter().enumerate().any(|(j, other)| {
+                other.config.team != r.config.team
+                    && Self::contests_points(other.config.kind)
+                    && self.eligible(j)
+                    && other
+                        .zone_since(ZoneKind::CentralHighland, side)
+                        .is_some_and(|s| s < since)
+            })
+        })
+    }
+    /// Section 5.5.3.9: the one own robot that holds `team`'s fortress buff,
+    /// the earliest eligible occupant once the team's outpost is destroyed.
+    fn fortress_holder(&self, team: Team) -> Option<usize> {
+        if self.state.teams[team.index()].outpost_hp > 0 {
+            return None;
+        }
+        self.state
+            .robots
+            .iter()
+            .enumerate()
+            .filter(|(i, r)| {
+                r.config.team == team && Self::contests_points(r.config.kind) && self.eligible(*i)
+            })
+            .filter_map(|(i, r)| {
+                r.zone_since(ZoneKind::Fortress, team)
+                    .map(|since| (since, r.config.id, i))
+            })
+            .min()
+            .map(|(_, _, i)| i)
+    }
+    /// Section 5.5.3.9: whether robot `i` occupies the opponent's fortress,
+    /// which is open from 3:00 once that opponent's outpost is destroyed and
+    /// until its base armor is expanded.
+    fn occupies_opponent_fortress(&self, i: usize) -> bool {
+        let r = &self.state.robots[i];
+        let owner = &self.state.teams[r.config.team.other().index()];
+        Self::contests_points(r.config.kind)
+            && self.eligible(i)
+            && r.in_zone(ZoneKind::Fortress, owner.team)
+            && self.state.round_elapsed_ticks >= zones::OPPONENT_FORTRESS_FROM_TICKS
+            && owner.outpost_hp == 0
+            && !owner.base_armor_expanded
+    }
+    /// Reserved fortress allowance units `team` has left (section 5.5.3.9).
+    /// Assumption: the reserve is one pool per round, sized by the base HP
+    /// lost so far.
+    pub fn fortress_reserve_left(&self, team: Team) -> u32 {
+        let t = &self.state.teams[team.index()];
+        zones::fortress_reserve(t.base_hp_lost).saturating_sub(t.fortress_reserve_used)
+    }
+    /// Whether robot `i`'s next `caliber` launch draws on the fortress reserve.
+    fn reserve_covers(&self, i: usize, caliber: Caliber) -> bool {
+        let team = self.state.robots[i].config.team;
+        let cost = if caliber == Caliber::Mm42 { 10 } else { 1 };
+        self.fortress_holder(team) == Some(i) && self.fortress_reserve_left(team) >= cost
+    }
+    /// Defense and vulnerability robot `i` gains from the points it occupies
+    /// and its terrain crossing buff (section 5.5.3).
+    fn zone_effects(&self, i: usize) -> (u32, u32) {
+        let now = self.state.round_elapsed_ticks;
+        let r = &self.state.robots[i];
+        let team = r.config.team;
+        let mut defense = 0;
+        if r.crossing_defense_until_ticks > now {
+            defense = r.crossing_defense_pct;
+        }
+        if !self.eligible(i) || !r.config.kind.ground() {
+            return (defense, 0);
+        }
+        if r.in_zone(ZoneKind::Base, team) {
+            defense = defense.max(zones::BASE_ZONE_DEFENSE_PCT);
+        }
+        if r.in_zone(ZoneKind::TrapezoidHighland, team) {
+            defense = defense.max(zones::TRAPEZOID_HIGHLAND_DEFENSE_PCT);
+        }
+        if self.in_occupiable_outpost_zone(i) {
+            defense = defense.max(zones::OUTPOST_ZONE_DEFENSE_PCT);
+        }
+        if self.occupies_central_highland(i) {
+            defense = defense.max(zones::CENTRAL_HIGHLAND_DEFENSE_PCT);
+        }
+        if self.fortress_holder(team) == Some(i) {
+            defense = defense.max(zones::FORTRESS_DEFENSE_PCT);
+        }
+        let vulnerability = if self.occupies_opponent_fortress(i) {
+            zones::FORTRESS_VULNERABILITY_PCT
+        } else {
+            0
+        };
+        (defense, vulnerability)
+    }
+    /// Heat cooling per second for robot `i` right now: the strongest
+    /// multiplier, or the fortress's additive bonus when that is larger
+    /// (sections 5.5.3.5 and 5.5.3.9).
+    pub fn cooling_per_s(&self, robot: u32) -> u32 {
+        let Ok(i) = self.robot_index(robot) else {
+            return 0;
+        };
+        let now = self.state.round_elapsed_ticks;
+        let r = &self.state.robots[i];
+        let base = r.stats().cooling_per_s;
+        let mut multiplier = self
+            .buffs_on(Target::Robot(robot))
+            .map(|b| b.cooling_multiplier)
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        if r.tunnel_cooling_until_ticks > now {
+            multiplier = multiplier.max(zones::TUNNEL_COOLING_MULTIPLIER);
+        }
+        let team = r.config.team;
+        let bonus = if self.fortress_holder(team) == Some(i) {
+            zones::fortress_cooling_bonus(self.state.teams[team.index()].base_hp_lost)
+        } else {
+            0
+        };
+        base.saturating_mul(multiplier)
+            .max(base.saturating_add(bonus))
+    }
+    /// Advance terrain crossing progress for a new contact (section 5.5.3.5).
+    /// Any other card detected along the way abandons the crossing.
+    fn cross(&mut self, i: usize, zone: Zone) {
+        let now = self.state.round_elapsed_ticks;
+        let eligible = self.eligible(i) && self.state.robots[i].config.kind.ground();
+        let r = &mut self.state.robots[i];
+        let Some((course, position)) = zones::course_position(zone.kind, zone.pad) else {
+            // Assumption: the central highland shares the cards of the higher
+            // Elevated Ground pads (section 5.5.3.3), so it never interrupts.
+            let shared = zone.kind == ZoneKind::CentralHighland
+                && r.crossing
+                    .is_some_and(|p| p.zone.kind == ZoneKind::ElevatedCrossing);
+            if !shared {
+                r.crossing = None;
+            }
+            return;
+        };
+        if !eligible {
+            r.crossing = None;
+            return;
+        }
+        let def = zones::courses(zone.kind)[usize::from(course)];
+        let last = def.pads.len() - 1;
+        if let Some(p) = r.crossing
+            && p.zone.kind == zone.kind
+            && p.zone.owner == zone.owner
+            && p.course == course
+            && now <= p.started_ticks + def.window_ticks
+        {
+            let done = usize::from(p.done);
+            let expected = if p.reversed { last - done } else { done };
+            if position == expected {
+                if done == last {
+                    r.crossing = None;
+                    self.grant_crossing(i, zone.kind, def);
+                } else {
+                    r.crossing = Some(CrossingProgress {
+                        done: p.done + 1,
+                        ..p
+                    });
+                }
+                return;
+            }
+            let visited = if p.reversed {
+                position > last - done
+            } else {
+                position < done
+            };
+            if visited {
+                return;
+            }
+        }
+        let start = |reversed| CrossingProgress {
+            zone,
+            course,
+            done: 1,
+            reversed,
+            started_ticks: now,
+        };
+        r.crossing = if position == 0 {
+            Some(start(false))
+        } else if def.reversible && position == last {
+            Some(start(true))
+        } else {
+            None
+        };
+    }
+    fn grant_crossing(&mut self, i: usize, kind: ZoneKind, def: zones::Course) {
+        let now = self.state.round_elapsed_ticks;
+        let r = &mut self.state.robots[i];
+        if kind == ZoneKind::Road {
+            if now < r.road_buff_ready_ticks {
+                return;
+            }
+            r.road_buff_ready_ticks = now + zones::ROAD_BUFF_COOLDOWN_TICKS;
+        }
+        // Section 5.5.3.5: a repeated Launch Ramp, Elevated Ground or Road
+        // buff while one lasts gives 50 %, for the longer remaining time.
+        let active = r.crossing_defense_until_ticks > now;
+        let pct = if active && kind != ZoneKind::Tunnel {
+            zones::CROSSING_STACKED_DEFENSE_PCT
+        } else {
+            def.defense_pct
+        };
+        r.crossing_defense_pct = if active {
+            r.crossing_defense_pct.max(pct)
+        } else {
+            pct
+        };
+        r.crossing_defense_until_ticks =
+            r.crossing_defense_until_ticks.max(now + def.defense_ticks);
+        if kind == ZoneKind::Tunnel {
+            r.tunnel_cooling_until_ticks = r
+                .tunnel_cooling_until_ticks
+                .max(now + zones::TUNNEL_COOLING_TICKS);
+        }
+        let robot = r.config.id;
+        self.emit(EventKind::TerrainCrossing { robot, kind });
+    }
+    /// Section 5.5.3.9: advance each robot's opponent fortress capture timer
+    /// and expand the owner's base armor after 20 s.
+    fn tick_fortress(&mut self, now: u64) {
+        for i in 0..self.state.robots.len() {
+            let occupying = self.occupies_opponent_fortress(i);
+            let r = &mut self.state.robots[i];
+            if occupying {
+                r.fortress_capture_ticks += 1;
+                r.fortress_capture_retained_until_ticks = None;
+                if r.fortress_capture_ticks >= zones::FORTRESS_CAPTURE_TICKS {
+                    let owner = r.config.team.other();
+                    self.state.teams[owner.index()].base_armor_expanded = true;
+                    for r in &mut self.state.robots {
+                        if r.config.team != owner {
+                            r.fortress_capture_ticks = 0;
+                            r.fortress_capture_retained_until_ticks = None;
+                        }
+                    }
+                    self.emit(EventKind::BaseArmorExpanded(owner));
+                }
+            } else if r.fortress_capture_ticks > 0 {
+                match r.fortress_capture_retained_until_ticks {
+                    None => {
+                        r.fortress_capture_retained_until_ticks =
+                            Some(now + zones::FORTRESS_CAPTURE_RETAIN_TICKS)
+                    }
+                    Some(until) if now >= until => {
+                        r.fortress_capture_ticks = 0;
+                        r.fortress_capture_retained_until_ticks = None;
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
     }
     fn spend(&mut self, team: Team, cost: u32) -> Result<(), Error> {
         let gold = &mut self.state.teams[team.index()].gold;
@@ -1033,7 +1326,11 @@ impl Game {
                 detected,
             } => {
                 let i = self.robot_index(robot)?;
+                if zone.pad != 0 && zones::course_position(zone.kind, zone.pad).is_none() {
+                    return Err(Error::Invalid);
+                }
                 let zones = &mut self.state.robots[i].zones;
+                let arrived = detected && !zones.iter().any(|c| c.zone == zone);
                 if let Some(contact) = zones.iter_mut().find(|c| c.zone == zone) {
                     contact.detected = detected;
                     // Section 5.5.3.1: two-second occupation expiry delay. Repeated
@@ -1041,14 +1338,18 @@ impl Game {
                     if detected {
                         contact.expires_ticks = None;
                     } else if contact.expires_ticks.is_none() {
-                        contact.expires_ticks = Some(now + 2 * SECOND_TICKS);
+                        contact.expires_ticks = Some(now + zones::ZONE_EXPIRY_TICKS);
                     }
                 } else if detected {
                     zones.push(ZoneContact {
                         zone,
                         detected: true,
                         expires_ticks: None,
+                        since_ticks: now,
                     });
+                }
+                if arrived {
+                    self.cross(i, zone);
                 }
                 self.update_weakness(i);
             }
@@ -1165,7 +1466,7 @@ impl Game {
                 if !self.state.robots[i].can_launch(
                     now,
                     caliber,
-                    self.state.policy.enforce_allowance,
+                    self.state.policy.enforce_allowance && !self.reserve_covers(i, caliber),
                 ) {
                     return Err(Error::Ineligible);
                 }
@@ -1291,9 +1592,22 @@ impl Game {
         let now = self.state.round_elapsed_ticks;
         let enforce = self.state.policy.enforce_allowance;
         let heat_limit = self.state.robots[i].stats().heat_limit;
+        let reserve = self.state.phase == Phase::Running && self.reserve_covers(i, caliber);
+        if reserve {
+            // Section 5.5.3.9: the fortress holder spends reserved allowance
+            // first, 1 unit per 17 mm and 10 per 42 mm projectile.
+            let team = self.state.robots[i].config.team;
+            self.state.teams[team.index()].fortress_reserve_used +=
+                if caliber == Caliber::Mm42 { 10 } else { 1 };
+        }
         let r = &mut self.state.robots[i];
         let index = caliber.index();
-        let over = record_ammo_launch(&mut r.allowance[index], &mut r.shots_launched[index]);
+        let over = if reserve {
+            r.shots_launched[index] = r.shots_launched[index].saturating_add(1);
+            false
+        } else {
+            record_ammo_launch(&mut r.allowance[index], &mut r.shots_launched[index])
+        };
         if over {
             r.shots_over_allowance[index] = r.shots_over_allowance[index].saturating_add(1);
         }
@@ -1396,11 +1710,10 @@ impl Game {
         }
         if let Target::Robot(id) = target
             && let Ok(i) = self.robot_index(id)
-            && self.eligible(i)
-            && self.state.robots[i].config.kind.ground()
-            && self.state.robots[i].in_zone(ZoneKind::Base, team)
         {
-            defense = defense.max(50);
+            let (zone_defense, zone_vulnerability) = self.zone_effects(i);
+            defense = defense.max(zone_defense);
+            vulnerability = vulnerability.max(zone_vulnerability);
         }
         (defense.min(100), vulnerability)
     }
@@ -1671,6 +1984,10 @@ impl Game {
         r.overheated = false;
         r.air_support_active = false;
         r.rebuild_progress_ticks = 0;
+        // Section 5.5.3.5: defeat removes every terrain crossing buff.
+        r.crossing = None;
+        r.crossing_defense_until_ticks = 0;
+        r.tunnel_cooling_until_ticks = 0;
         r.defeated_at_ticks = Some(now);
         r.launches_since_defeat = 0;
         if r.config.kind.ground() && !practice {
@@ -1947,16 +2264,12 @@ impl Game {
                 }
             }
         }
+        self.tick_fortress(now);
         for i in 0..self.state.robots.len() {
-            let cooling_multiplier = if now.is_multiple_of(100) {
-                let id = self.state.robots[i].config.id;
-                self.buffs_on(Target::Robot(id))
-                    .map(|b| b.cooling_multiplier)
-                    .max()
-                    .unwrap_or(1)
-                    .max(1)
+            let cooling_per_s = if now.is_multiple_of(100) {
+                self.cooling_per_s(self.state.robots[i].config.id)
             } else {
-                1
+                0
             };
             let stats = self.state.robots[i].stats();
             self.state.robots[i]
@@ -1983,9 +2296,7 @@ impl Game {
                 }
             }
             if now.is_multiple_of(100) {
-                r.heat_tenths = r
-                    .heat_tenths
-                    .saturating_sub(u64::from(stats.cooling_per_s) * u64::from(cooling_multiplier));
+                r.heat_tenths = r.heat_tenths.saturating_sub(u64::from(cooling_per_s));
                 if r.heat_tenths == 0 {
                     r.overheated = false;
                 }
@@ -2012,13 +2323,10 @@ impl Game {
                 && !r.irregularly_disconnected
                 && let Some(timer) = &mut r.respawn
             {
-                let accelerated = r.zones.iter().any(|z| {
-                    z.zone
-                        == Zone {
-                            kind: ZoneKind::Resupply,
-                            owner: r.config.team,
-                        }
-                }) || self.state.teams[r.config.team.index()].base_hp < 2000;
+                let accelerated =
+                    r.zones.iter().any(|z| {
+                        z.zone.kind == ZoneKind::Resupply && z.zone.owner == r.config.team
+                    }) || self.state.teams[r.config.team.index()].base_hp < 2000;
                 timer.progress_ticks += if accelerated { 4 } else { 1 };
                 if timer.progress_ticks >= timer.required_ticks {
                     self.respawn(i, false);
@@ -2047,12 +2355,7 @@ impl Game {
                 }
                 let t = &mut self.state.teams[team.index()];
                 let scan = r.zones.iter().any(|z| {
-                    z.detected
-                        && z.zone
-                            == Zone {
-                                kind: ZoneKind::Outpost,
-                                owner: team,
-                            }
+                    z.detected && z.zone.kind == ZoneKind::Outpost && z.zone.owner == team
                 });
                 if r.config.kind.ground()
                     && scan

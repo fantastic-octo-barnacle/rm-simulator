@@ -617,6 +617,13 @@ pub fn field_config(cad: &CadAssets, options: &LayoutOptions) -> FieldConfig {
         runes,
         outposts,
         projectile_policy: options.projectile_policy,
+        // The footprints were read off the RMUC 2026 field drawing, so they
+        // only fit the loaded arena.
+        zones: if options.terrain {
+            rm_simulator_world::zones::rmuc_2026()
+        } else {
+            Vec::new()
+        },
     }
 }
 

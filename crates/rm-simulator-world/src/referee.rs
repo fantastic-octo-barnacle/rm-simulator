@@ -54,10 +54,6 @@ pub const SMALL_RUNE_BUFF_NS: u64 = 45_000_000_000;
 pub const OUTPOST_ROTOR_STOP_NS: u64 = 180_000_000_000;
 /// Table 5-2: HP a robot loses when one of its armor modules collides.
 pub const COLLISION_DAMAGE_HP: u32 = 2;
-/// Horizontal radius around an outpost's origin that counts as its outpost
-/// zone, in metres. The rule manual draws the zone on the field map without a
-/// printed size; this is an application setting, not a rule constant.
-pub const OUTPOST_ZONE_RADIUS_M: f64 = 1.5;
 /// Ten rings across the 150 mm effective radius, ring 10 innermost; the
 /// width was read off Figure 5-18, the text only gives 1 mm radial accuracy.
 pub const RING_WIDTH_M: f64 = 0.015;
@@ -409,6 +405,20 @@ pub enum RefereeEvent {
     /// A destroyed outpost was rebuilt with 750 HP (section 5.5.1).
     OutpostRebuilt {
         /// Team whose outpost was rebuilt.
+        team: Team,
+    },
+    /// A robot completed a terrain crossing and gained its buff (section
+    /// 5.5.3.5).
+    TerrainCrossing {
+        /// Robot that crossed.
+        robot: u32,
+        /// Crossing kind.
+        kind: gp::ZoneKind,
+    },
+    /// Twenty seconds of opposing Fortress occupation expanded a team's Base
+    /// Protective Armor (section 5.5.3.9).
+    BaseArmorExpanded {
+        /// Team whose base armor expanded.
         team: Team,
     },
 }
@@ -1156,13 +1166,20 @@ impl Referee {
                 gp::EventKind::LevelChanged { robot, level } => {
                     self.push_event(RefereeEvent::LevelUp { robot, level })
                 }
+                gp::EventKind::TerrainCrossing { robot, kind } => {
+                    self.push_event(RefereeEvent::TerrainCrossing { robot, kind })
+                }
+                gp::EventKind::BaseArmorExpanded(team) => {
+                    let team = world_team(team);
+                    self.base_open[team.index()] = true;
+                    self.push_event(RefereeEvent::BaseArmorExpanded { team });
+                }
                 _ => {}
             }
         }
     }
-    /// Announce an outpost's destruction and open its team's base cover.
+    /// Announce an outpost's destruction.
     fn outpost_destroyed(&mut self, team: Team) {
-        self.base_open[team.index()] = true;
         if let Some(outpost) = self.outpost_of(team) {
             self.push_event(RefereeEvent::OutpostDestroyed {
                 outpost: outpost as u32,
@@ -1399,18 +1416,14 @@ impl Referee {
         self.drain_game_events();
         applied
     }
-    /// Report whether a robot stands in its own outpost zone. Only a running
-    /// round records zone contacts, and only a change is forwarded.
-    pub fn observe_outpost_zone(&mut self, robot: u32, detected: bool) {
+    /// Report whether a robot stands on a buff point (section 5.5.3). Only a
+    /// running round records zone contacts, and only a change is forwarded.
+    pub fn observe_zone(&mut self, robot: u32, zone: gp::Zone, detected: bool) {
         if self.phase != MatchPhase::Running {
             return;
         }
         let Some(state) = self.robot_state(robot) else {
             return;
-        };
-        let zone = gp::Zone {
-            kind: gp::ZoneKind::Outpost,
-            owner: state.config.team,
         };
         let recorded = state
             .zones
@@ -2367,7 +2380,8 @@ mod tests {
             .filter(|e| matches!(e.event, RefereeEvent::OutpostDestroyed { .. }))
             .collect();
         assert_eq!(destroyed.len(), 1);
-        assert_eq!(snapshot.base_open, [false, true]);
+        // Section 5.5.3.9: a lost outpost alone does not expand the base armor.
+        assert_eq!(snapshot.base_open, [false, false]);
         assert!(matches!(
             destroyed[0].event,
             RefereeEvent::OutpostDestroyed {
@@ -2425,7 +2439,7 @@ mod tests {
             .unwrap();
         assert_eq!(base_strike(&mut referee, Team::Red), 20);
         assert_eq!(base_strike(&mut referee, Team::Blue), 0);
-        assert_eq!(referee.snapshot().base_open, [true, false]);
+        assert_eq!(referee.snapshot().base_open, [false, false]);
     }
 
     #[test]

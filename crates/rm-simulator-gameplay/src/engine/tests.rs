@@ -85,6 +85,7 @@ fn zone(game: &mut Game, robot: u32, kind: ZoneKind, detected: bool) {
         zone: Zone {
             kind,
             owner: Team::Red,
+            pad: 0,
         },
         detected,
     })
@@ -1186,4 +1187,221 @@ fn operator_overrides_apply_in_any_phase() {
         game.projectile_hit(shot(Target::Robot(11), Caliber::Mm17, 20)),
         Err(Error::Phase)
     );
+}
+fn pad(game: &mut Game, robot: u32, kind: ZoneKind, owner: Team, pad: u8, detected: bool) {
+    game.command(Command::ZoneDetection {
+        robot,
+        zone: Zone { kind, owner, pad },
+        detected,
+    })
+    .unwrap();
+}
+fn defense(game: &Game, robot: u32) -> (u32, u32) {
+    game.defense_pct(Target::Robot(robot))
+}
+#[test]
+fn road_crossing_needs_order_and_window_then_cools_down_and_stacks() {
+    let mut game = running();
+    // Higher pad first starts nothing.
+    pad(&mut game, 1, ZoneKind::Road, Team::Red, 1, true);
+    pad(&mut game, 1, ZoneKind::Road, Team::Red, 0, true);
+    assert_eq!(robot(&game, 1).crossing.map(|c| c.done), Some(1));
+    // Too slow: the second pad after 3 s restarts nothing on a higher pad.
+    game.step(3_001).unwrap();
+    pad(&mut game, 1, ZoneKind::Road, Team::Red, 1, false);
+    game.step(2_001).unwrap();
+    pad(&mut game, 1, ZoneKind::Road, Team::Red, 1, true);
+    assert_eq!(defense(&game, 1), (0, 0));
+    // Leave both pads, then cross in time.
+    pad(&mut game, 1, ZoneKind::Road, Team::Red, 0, false);
+    pad(&mut game, 1, ZoneKind::Road, Team::Red, 1, false);
+    game.step(2_001).unwrap();
+    pad(&mut game, 1, ZoneKind::Road, Team::Red, 0, true);
+    game.step(1_000).unwrap();
+    pad(&mut game, 1, ZoneKind::Road, Team::Red, 1, true);
+    assert_eq!(defense(&game, 1), (25, 0));
+    assert!(game.snapshot().recent_events.iter().any(|e| e.kind
+        == EventKind::TerrainCrossing {
+            robot: 1,
+            kind: ZoneKind::Road
+        }));
+    // An elevated crossing while the road buff lasts stacks to 50 % for 30 s.
+    pad(
+        &mut game,
+        1,
+        ZoneKind::ElevatedCrossing,
+        Team::Blue,
+        0,
+        true,
+    );
+    pad(
+        &mut game,
+        1,
+        ZoneKind::ElevatedCrossing,
+        Team::Blue,
+        1,
+        true,
+    );
+    assert_eq!(defense(&game, 1), (50, 0));
+    game.step(29_999).unwrap();
+    assert_eq!(defense(&game, 1), (50, 0));
+    game.step(1).unwrap();
+    assert_eq!(defense(&game, 1), (0, 0));
+    // The road buff is not granted again within 15 s of the first.
+    let mut cooldown = running();
+    for _ in 0..2 {
+        for p in [0, 1] {
+            pad(&mut cooldown, 1, ZoneKind::Road, Team::Red, p, true);
+        }
+        for p in [0, 1] {
+            pad(&mut cooldown, 1, ZoneKind::Road, Team::Red, p, false);
+        }
+        cooldown.step(5_000).unwrap();
+    }
+    assert_eq!(defense(&cooldown, 1), (0, 0));
+}
+#[test]
+fn tunnel_runs_either_way_and_other_cards_interrupt() {
+    let mut game = running();
+    for p in [5, 4, 3] {
+        pad(&mut game, 1, ZoneKind::Tunnel, Team::Red, p, true);
+    }
+    assert_eq!(defense(&game, 1), (50, 0));
+    assert_eq!(game.cooling_per_s(1), 40);
+    game.step(10_000).unwrap();
+    assert_eq!(defense(&game, 1), (0, 0));
+    assert_eq!(game.cooling_per_s(1), 40);
+    game.step(110_000).unwrap();
+    assert_eq!(game.cooling_per_s(1), 20);
+    // A base card between tunnel pads abandons the crossing.
+    pad(&mut game, 2, ZoneKind::Tunnel, Team::Red, 0, true);
+    pad(&mut game, 2, ZoneKind::Base, Team::Blue, 0, true);
+    pad(&mut game, 2, ZoneKind::Tunnel, Team::Red, 1, true);
+    pad(&mut game, 2, ZoneKind::Tunnel, Team::Red, 2, true);
+    assert_eq!(robot(&game, 2).crossing_defense_until_ticks, 0);
+    // Defeat removes a crossing buff.
+    for p in [0, 1, 2] {
+        pad(&mut game, 1, ZoneKind::Tunnel, Team::Blue, p, false);
+    }
+    game.step(2_001).unwrap();
+    for p in [0, 1, 2] {
+        pad(&mut game, 1, ZoneKind::Tunnel, Team::Blue, p, true);
+    }
+    assert_eq!(defense(&game, 1), (50, 0));
+    damage(&mut game, Target::Robot(1), 200, DamageKind::Penalty);
+    assert_eq!(robot(&game, 1).crossing_defense_until_ticks, 0);
+    assert_eq!(robot(&game, 1).tunnel_cooling_until_ticks, 0);
+}
+#[test]
+fn highland_and_outpost_points_grant_defense_to_their_occupants() {
+    let mut game = running();
+    pad(
+        &mut game,
+        1,
+        ZoneKind::TrapezoidHighland,
+        Team::Red,
+        0,
+        true,
+    );
+    assert_eq!(defense(&game, 1), (50, 0));
+    pad(
+        &mut game,
+        2,
+        ZoneKind::TrapezoidHighland,
+        Team::Red,
+        0,
+        true,
+    );
+    assert_eq!(defense(&game, 2), (0, 0));
+    // Central highland: whoever arrives first holds it against the other team.
+    game.step(1).unwrap();
+    pad(&mut game, 2, ZoneKind::CentralHighland, Team::Red, 0, true);
+    game.step(1).unwrap();
+    pad(&mut game, 1, ZoneKind::CentralHighland, Team::Red, 0, true);
+    assert_eq!(defense(&game, 2), (25, 0));
+    assert_eq!(defense(&game, 1).0, 50);
+    pad(&mut game, 4, ZoneKind::CentralHighland, Team::Red, 0, true);
+    assert_eq!(defense(&game, 4), (0, 0));
+    // Engineers never occupy it.
+    pad(&mut game, 3, ZoneKind::CentralHighland, Team::Blue, 0, true);
+    assert_eq!(defense(&game, 3), (0, 0));
+    // Outpost points: the own living outpost's, and for five minutes a
+    // destroyed opposing outpost's while the own one lives.
+    pad(&mut game, 4, ZoneKind::Outpost, Team::Blue, 0, true);
+    assert_eq!(defense(&game, 4), (0, 0));
+    damage(
+        &mut game,
+        Target::Outpost(Team::Blue),
+        1500,
+        DamageKind::Penalty,
+    );
+    assert_eq!(defense(&game, 4), (25, 0));
+    pad(&mut game, 2, ZoneKind::CentralHighland, Team::Red, 0, false);
+    pad(&mut game, 4, ZoneKind::CentralHighland, Team::Red, 0, false);
+    game.step(2_000).unwrap();
+    assert_eq!(defense(&game, 4), (25, 0));
+    pad(&mut game, 2, ZoneKind::Outpost, Team::Blue, 0, true);
+    assert_eq!(defense(&game, 2), (0, 0));
+    game.step(300_000).unwrap();
+    assert_eq!(defense(&game, 4), (0, 0));
+}
+#[test]
+fn fortress_holder_buffs_and_opponent_capture_expands_base_armor() {
+    let mut game = running();
+    pad(&mut game, 1, ZoneKind::Fortress, Team::Red, 0, true);
+    assert_eq!(defense(&game, 1), (0, 0));
+    damage(
+        &mut game,
+        Target::Outpost(Team::Red),
+        1500,
+        DamageKind::Penalty,
+    );
+    damage(
+        &mut game,
+        Target::Base(Team::Red),
+        1650,
+        DamageKind::Penalty,
+    );
+    assert_eq!(game.snapshot().teams[0].base_hp_lost, 1500);
+    game.step(1).unwrap();
+    pad(&mut game, 4, ZoneKind::Fortress, Team::Red, 0, true);
+    // Only the first own robot holds the buff.
+    assert_eq!(defense(&game, 1), (50, 0));
+    assert_eq!(defense(&game, 4), (0, 0));
+    assert_eq!(game.cooling_per_s(1), 20 + 37);
+    // The holder fires from the 300-unit reserve, even without allowance.
+    game.command(Command::SetPolicy(Policy {
+        enforce_allowance: true,
+        ..game.snapshot().policy
+    }))
+    .unwrap();
+    assert_eq!(game.fortress_reserve_left(Team::Red), 300);
+    assert!(game.can_launch(1, Caliber::Mm17));
+    game.command(Command::Launch {
+        robot: 1,
+        caliber: Caliber::Mm17,
+    })
+    .unwrap();
+    assert_eq!(game.fortress_reserve_left(Team::Red), 299);
+    assert_eq!(robot(&game, 1).allowance[0], 0);
+    // The opponent may occupy it from 3:00, taking 100 % vulnerability.
+    pad(&mut game, 2, ZoneKind::Fortress, Team::Red, 0, true);
+    assert_eq!(defense(&game, 2), (0, 0));
+    game.step(180_000).unwrap();
+    assert_eq!(defense(&game, 2), (0, 100));
+    game.step(10_000).unwrap();
+    // A short absence pauses the timer for up to 3 s.
+    pad(&mut game, 2, ZoneKind::Fortress, Team::Red, 0, false);
+    game.step(4_000).unwrap();
+    pad(&mut game, 2, ZoneKind::Fortress, Team::Red, 0, true);
+    assert!(robot(&game, 2).fortress_capture_ticks >= 10_000);
+    game.step(10_000).unwrap();
+    assert!(game.snapshot().teams[0].base_armor_expanded);
+    assert!(
+        game.snapshot()
+            .recent_events
+            .iter()
+            .any(|e| e.kind == EventKind::BaseArmorExpanded(Team::Red))
+    );
+    assert_eq!(defense(&game, 2), (0, 0));
 }

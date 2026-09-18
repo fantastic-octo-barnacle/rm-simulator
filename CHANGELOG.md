@@ -4,6 +4,17 @@
 
 ## Unreleased
 
+- Detect the section 5.5.3 buff points on the loaded arena (protocol 45).
+  Card areas read off Figure 5-24 report occupation to the gameplay engine,
+  which now applies base, trapezoid, central highland, outpost and Fortress
+  defense, resupply healing and respawn acceleration, the Road, Elevated
+  Ground, Launch Ramp and Tunnel crossing buffs, the Fortress cooling bonus
+  and reserve, and the 20 s Fortress capture that expands the opponent's
+  Base Protective Armor and stops the capturer's outpost rotor. The outpost
+  rebuild uses the Outpost Buff Point instead of a 1.5 m circle, and a
+  destroyed outpost no longer opens its base armor. The HUD shows a ZONE
+  line and the panel logs `TerrainCrossing` and `BaseArmorExpanded`.
+
 - Run the remaining RMUC 2026 V2.1.0 match rules live (protocol 44). The world
   referee now runs the `rm-simulator-gameplay` engine as its rules authority in
   place of the resource tracker: robot damage follows Table 5-2 (20 HP per
