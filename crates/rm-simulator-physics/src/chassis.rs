@@ -81,9 +81,8 @@ impl Default for ChassisDynamics {
 /// Physical description of the chassis. All lengths are in the body frame:
 /// origin at the body centre, +x forward, +y left, +z up.
 ///
-/// Two presets ship: [`ChassisConfig::default`] is the omni Infantry and
-/// [`ChassisConfig::hero`] the mecanum Hero. Both are assumed values, not
-/// rulebook dimensions.
+/// Presets cover omni Infantry/Sentry, mecanum Hero/Engineer and two-wheel
+/// Balance Infantry. All use assumed values, not rulebook dimensions.
 ///
 /// ```
 /// use rm_simulator_physics::chassis::ChassisConfig;
@@ -93,7 +92,7 @@ impl Default for ChassisDynamics {
 /// assert_eq!(infantry.mass_kg, 22.0);
 /// assert!(!infantry.mecanum);
 /// // Hub drop, wheel radius and rest suspension add up to the body height.
-/// assert!((infantry.rest_height_m() - 0.1565).abs() < 1e-9);
+/// assert!((infantry.rest_height_m() - 0.2065).abs() < 1e-9);
 ///
 /// let hero = ChassisConfig::hero();
 /// hero.validate()?;
@@ -108,6 +107,13 @@ pub struct ChassisConfig {
     pub dynamics: ChassisDynamics,
     /// Drive layout: `true` is mecanum rollers, `false` ideal omni wheels.
     pub mecanum: bool,
+    /// Simplified ground-contact pitch controller for the two-wheel prototype.
+    /// Reduced-model LQR body assistance is not a full wheel-leg dynamics model.
+    #[serde(default)]
+    pub balance_assist: bool,
+    /// Fixed-altitude horizontal flight. Gravity and vertical motion are disabled.
+    #[serde(default)]
+    pub planar_flight: bool,
     /// Total chassis mass in kilograms, armour modules excluded.
     pub mass_kg: f64,
     /// Body collider half extents; the body covers the wheels' footprint so
@@ -134,8 +140,8 @@ pub struct ChassisConfig {
     /// extended. Compression beyond it is resisted by the same spring. The
     /// static sag (weight over stiffness) is the margin a wheel keeps before
     /// it lifts off on twisted ground, so a chassis that is too stiff rocks on
-    /// three wheels; the default is near critically damped so bumps and ramps
-    /// reach the body as a quick jolt rather than being soaked up.
+    /// two or three wheels. The default uses compliant, near-critically damped
+    /// springs so the edge-centered wheels retain traction on ramp entries.
     pub suspension_rest_m: f64,
     /// Spring rate of one wheel suspension, in newtons per metre.
     pub suspension_stiffness_n_m: f64,
@@ -164,29 +170,37 @@ pub struct ChassisConfig {
 }
 impl Default for ChassisConfig {
     /// A typical infantry: 22 kg (competition robots weigh about 22 to 32 kg),
-    /// 0.52 m square body, 153 mm omni wheels on a
-    /// 0.4 m square at 45 degrees, M3508-class drives (about 3 N m at the
+    /// 0.52 m square body, 153 mm omni wheels at the
+    /// four edge midpoints (245 mm from centre), prototype drives (about 4.6 N m at the
     /// wheel, 3.8 m/s free running). Assumed values, see the module notes.
     fn default() -> Self {
         Self {
-            dynamics: ChassisDynamics::default(),
+            dynamics: ChassisDynamics {
+                suspension_travel_m: 0.12,
+                ..Default::default()
+            },
             mecanum: false,
+            balance_assist: false,
+            planar_flight: false,
             mass_kg: 22.0,
             body_half_m: [0.26, 0.26, 0.05],
             turret_center_m: [0.0, 0.0, 0.2],
             turret_half_m: [0.06, 0.06, 0.06],
             hub_drop_m: 0.05,
-            wheel_hubs_m: vec![[0.2, 0.2], [-0.2, 0.2], [-0.2, -0.2], [0.2, -0.2]],
+            wheel_hubs_m: vec![[0.245, 0.0], [0.0, 0.245], [-0.245, 0.0], [0.0, -0.245]],
             wheel_radius_m: 0.0765,
             wheel_width_m: 0.04,
-            suspension_rest_m: 0.03,
-            suspension_stiffness_n_m: 10_000.0,
-            // About 0.9 of critical for a quarter of 22 kg on 10 kN/m.
-            suspension_damping_n_s_m: 420.0,
-            wheel_stall_force_n: 40.0,
+            suspension_rest_m: 0.08,
+            // Softer independent suspension keeps the driven side wheels loaded
+            // while the front edge wheel climbs a ramp.
+            suspension_stiffness_n_m: 1_000.0,
+            // About 0.9 of critical for a quarter of 22 kg on 1 kN/m.
+            suspension_damping_n_s_m: 135.0,
+            // Only the two side wheels propel a straight run in this layout.
+            wheel_stall_force_n: 60.0,
             wheel_no_load_speed_m_s: 3.8,
             slip_stiffness_n_s_m: 150.0,
-            drive_friction: 0.7,
+            drive_friction: 1.0,
             roller_friction: 0.03,
             armor_standoff_m: 0.02,
             armor_height_m: 0.015,
@@ -212,14 +226,89 @@ impl ChassisConfig {
             wheel_radius_m: 0.1015,
             wheel_width_m: 0.065,
             wheel_stall_force_n: 60.0,
+            drive_friction: 0.7,
+            suspension_rest_m: 0.03,
+            suspension_stiffness_n_m: 10_000.0,
             // About 0.9 of critical for a quarter of 30 kg on 10 kN/m.
             suspension_damping_n_s_m: 500.0,
             ..Self::default()
         }
     }
 
+    /// Approximate two-wheel infantry with passive leg suspension. Dimensions and controller
+    /// gains are prototype assumptions, not rulebook constants. It drives
+    /// forward/backward and turns; it cannot strafe. Jump uses an equivalent
+    /// leg push impulse; joint-level leg dynamics are not simulated.
+    ///
+    /// ```
+    /// use rm_simulator_physics::chassis::ChassisConfig;
+    /// let config = ChassisConfig::balance();
+    /// config.validate()?;
+    /// assert_eq!(config.wheel_hubs_m.len(), 2);
+    /// assert!(config.balance_assist);
+    /// # Ok::<(), &'static str>(())
+    /// ```
+    pub fn balance() -> Self {
+        Self {
+            balance_assist: true,
+            dynamics: ChassisDynamics::default(),
+            suspension_rest_m: 0.03,
+            body_half_m: [0.18, 0.24, 0.09],
+            hub_drop_m: 0.18,
+            wheel_hubs_m: vec![[0.0, 0.24], [0.0, -0.24]],
+            wheel_radius_m: 0.10,
+            wheel_width_m: 0.045,
+            suspension_stiffness_n_m: 20_000.0,
+            suspension_damping_n_s_m: 840.0,
+            roller_friction: 0.7,
+            drive_friction: 0.7,
+            wheel_stall_force_n: 80.0,
+            ..Self::default()
+        }
+    }
+    /// Approximate engineer platform carrying a fixed arm. The envelope,
+    /// mass and drive tuning are design assumptions; arm dynamics are absent.
+    ///
+    /// ```
+    /// use rm_simulator_physics::chassis::ChassisConfig;
+    /// let config = ChassisConfig::engineer();
+    /// config.validate()?;
+    /// assert!(config.mecanum);
+    /// # Ok::<(), &'static str>(())
+    /// ```
+    pub fn engineer() -> Self {
+        Self {
+            body_half_m: [0.36, 0.29, 0.08],
+            wheel_hubs_m: vec![
+                [0.24, 0.255],
+                [-0.24, 0.255],
+                [-0.24, -0.255],
+                [0.24, -0.255],
+            ],
+            turret_center_m: [-0.12, 0.0, 0.36],
+            turret_half_m: [0.13, 0.13, 0.1],
+            ..Self::hero()
+        }
+    }
+
+    /// Guarded quadcopter prototype constrained to a horizontal plane 1.6 m
+    /// above its spawn ground. No rotor aerodynamics or altitude controls.
+    pub fn drone() -> Self {
+        Self {
+            planar_flight: true,
+            mass_kg: 5.0,
+            body_half_m: [0.40, 0.40, 0.065],
+            turret_center_m: [0.0, 0.0, -0.14],
+            turret_half_m: [0.035; 3],
+            wheel_hubs_m: Vec::new(),
+            ..Self::default()
+        }
+    }
     /// Height of the body centre above flat ground with the springs unloaded.
     pub fn rest_height_m(&self) -> f64 {
+        if self.planar_flight {
+            return 1.6;
+        }
         self.hub_drop_m + self.wheel_radius_m + self.suspension_rest_m
     }
     /// Body-frame pose of each armor scoring face (+x the outward normal,
@@ -260,6 +349,9 @@ impl ChassisConfig {
     }
     /// Validate dimensions and physical parameters before constructing a chassis.
     pub fn validate(&self) -> Result<(), &'static str> {
+        if self.planar_flight && (self.balance_assist || !self.wheel_hubs_m.is_empty()) {
+            return Err("planar flight cannot have wheels or balance assist");
+        }
         let positive = [
             self.dynamics.gimbal_response_s,
             self.dynamics.gimbal_max_speed_rad_s,
@@ -297,10 +389,13 @@ impl ChassisConfig {
         {
             return Err("turret extents must be finite and positive");
         }
-        if self.turret_center_m[2] + self.turret_half_m[2] <= self.body_half_m[2] {
+        if self.turret_center_m[2] + self.turret_half_m[2] <= self.body_half_m[2]
+            && !(self.planar_flight
+                && self.turret_center_m[2] - self.turret_half_m[2] < -self.body_half_m[2])
+        {
             return Err("turret top must be above the body top");
         }
-        if self.wheel_hubs_m.is_empty() {
+        if self.wheel_hubs_m.is_empty() && !self.planar_flight {
             return Err("chassis needs at least one wheel");
         }
         if self
@@ -329,7 +424,7 @@ impl ChassisConfig {
 /// of it they reach. The aim is where the stabilised gun pivot points in the
 /// world; the gimbal is assumed to hold it exactly, so the turret pose in
 /// the snapshot follows it at once.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChassisCommand {
     /// Desired body forward speed, in metres per second.
     pub forward_m_s: f64,
@@ -343,6 +438,30 @@ pub struct ChassisCommand {
     /// Gun elevation above the horizon.
     #[serde(default)]
     pub aim_pitch_rad: f64,
+    /// Held jump request. Balance chassis launch once per press while supported;
+    /// other chassis ignore it. Release before requesting another jump.
+    #[serde(default)]
+    pub jump: bool,
+    /// Stabilization strength in percent, 0 (unassisted) through 100 (full LQR).
+    /// Ignored by other chassis. Carried in input and restorable snapshots.
+    #[serde(default = "full_balance_control")]
+    pub balance_control: u8,
+}
+fn full_balance_control() -> u8 {
+    100
+}
+impl Default for ChassisCommand {
+    fn default() -> Self {
+        Self {
+            forward_m_s: 0.,
+            left_m_s: 0.,
+            yaw_rate_rad_s: 0.,
+            aim_yaw_rad: 0.,
+            aim_pitch_rad: 0.,
+            jump: false,
+            balance_control: 100,
+        }
+    }
 }
 impl ChassisCommand {
     /// Validate numeric input before admitting it to a prediction history.
@@ -356,6 +475,7 @@ impl ChassisCommand {
         ]
         .iter()
         .all(|v| v.is_finite())
+            && self.balance_control <= 100
     }
 }
 
@@ -407,6 +527,9 @@ pub struct ChassisSnapshot {
     pub angular_velocity_rad_s: [f64; 3],
     /// Drive and aim the pilot last requested.
     pub command: ChassisCommand,
+    /// Previous physics slice jump state, retained to prevent replayed launches.
+    #[serde(default)]
+    pub jump_held: bool,
     /// Actual stabilized gimbal heading/elevation, preserved while defeated.
     pub held_aim_rad: [f64; 2],
     /// Actual motor rates, needed to continue acceleration-limited replay.
@@ -476,6 +599,8 @@ pub(crate) struct Chassis {
     forces: Vec<(Vector, Vector)>,
     drive_forces: Vec<(Vector, Vector)>,
     command: ChassisCommand,
+    jump_held: bool,
+    balance_gains: [f64; 2],
     /// Actual motor heading and elevation; defeat freezes them.
     aim_rad: [f64; 2],
     gimbal_velocity_rad_s: [f64; 2],
@@ -530,6 +655,7 @@ impl ChassisSnapshot {
     ///     turret: Pose::at([1.0, 2.0, 0.5]),
     ///     velocity_m_s: [0.0; 3],
     ///     angular_velocity_rad_s: [0.0; 3],
+    ///     jump_held: false,
     ///     command: ChassisCommand { forward_m_s: 1.0, ..Default::default() },
     ///     held_aim_rad: [0.0; 2],
     ///     gimbal_velocity_rad_s: [0.0; 2],
@@ -539,7 +665,8 @@ impl ChassisSnapshot {
     /// snapshot.derive_wheel_kinematics();
     /// let hub = snapshot.config.wheel_hubs_m[0];
     /// assert!((snapshot.wheels[0].hub_m[0] - (1.0 + hub[0])).abs() < 1e-12);
-    /// assert!(snapshot.wheels[0].target_m_s.abs() > 0.0);
+    /// assert_eq!(snapshot.wheels[0].target_m_s, 0.0); // Front wheel rolls sideways.
+    /// assert_eq!(snapshot.wheels[1].target_m_s, -1.0); // Side wheel drives forward.
     /// ```
     pub fn derive_wheel_kinematics(&mut self) {
         let pose = rapier_pose(self.pose);
@@ -573,6 +700,9 @@ impl Chassis {
         }
         let body = world.insert_body(
             RigidBodyBuilder::dynamic()
+                .gravity_scale(if config.planar_flight { 0.0 } else { 1.0 })
+                .enabled_translations(true, true, !config.planar_flight)
+                .enabled_rotations(!config.planar_flight, !config.planar_flight, true)
                 .pose(rapier_pose(spawn))
                 .linear_damping(LINEAR_DAMPING)
                 .angular_damping(ANGULAR_DAMPING)
@@ -592,10 +722,16 @@ impl Chassis {
         let [tx, ty, tz] = config.turret_half_m;
         let [cx, cy, cz] = config.turret_center_m;
         let turret_top = cz + tz;
-        let column_half = (turret_top - hz) * 0.5;
+        let column_bottom = if config.planar_flight {
+            (cz - tz).min(hz)
+        } else {
+            hz
+        };
+        let column_top = turret_top.max(hz);
+        let column_half = (column_top - column_bottom) * 0.5;
         world.insert_collider(
             ColliderBuilder::cuboid(tx, ty, column_half)
-                .translation(Vector::new(cx, cy, hz + column_half))
+                .translation(Vector::new(cx, cy, column_bottom + column_half))
                 .mass(config.mass_kg * TURRET_MASS_SHARE)
                 .friction(BODY_FRICTION)
                 .restitution(ROBOT_RESTITUTION)
@@ -634,6 +770,7 @@ impl Chassis {
             placement_revision: 0,
             id,
             team,
+            balance_gains: balance_lqr_gains(&config),
             config,
             body,
             armor,
@@ -641,6 +778,7 @@ impl Chassis {
             drive_forces: Vec::with_capacity(geometry.len()),
             geometry,
             wheels,
+            jump_held: false,
             command: ChassisCommand {
                 aim_yaw_rad: yaw_of(spawn),
                 ..Default::default()
@@ -709,6 +847,7 @@ impl Chassis {
         }
         self.defeated = defeated;
         if defeated {
+            self.jump_held = false;
             self.gimbal_velocity_rad_s = [0.0; 2];
         }
     }
@@ -743,6 +882,7 @@ impl Chassis {
         body.set_angvel(Vector::ZERO, true);
         body.reset_forces(true);
         body.reset_torques(true);
+        self.jump_held = false;
         self.command = ChassisCommand {
             aim_yaw_rad: yaw_of(spawn),
             ..Default::default()
@@ -798,6 +938,7 @@ impl Chassis {
         self.placement_revision = state.placement_revision;
         self.set_command(state.command)?;
         self.defeated = state.defeated;
+        self.jump_held = state.jump_held;
         self.aim_rad = state.held_aim_rad;
         self.gimbal_velocity_rad_s = state.gimbal_velocity_rad_s;
         let body = &mut world.bodies[self.body];
@@ -835,6 +976,23 @@ impl Chassis {
         } else {
             self.command
         };
+        if cfg.planar_flight {
+            let wish = pose.rotation * Vector::new(command.forward_m_s, command.left_m_s, 0.0);
+            let acceleration = ((wish - linvel) * 5.0).clamp_length_max(4.0);
+            let body = &mut world.bodies[self.body];
+            body.reset_forces(false);
+            body.reset_torques(false);
+            body.add_force(
+                Vector::new(acceleration.x, acceleration.y, 0.0) * cfg.mass_kg,
+                true,
+            );
+            body.add_torque(
+                Vector::Z * ((command.yaw_rate_rad_s - angvel.z) * 3.0).clamp(-8.0, 8.0),
+                true,
+            );
+            self.jump_held = self.command.jump;
+            return;
+        }
         let reach = cfg.wheel_radius_m + cfg.suspension_rest_m;
         let filter = QueryFilter::default().exclude_rigid_body(self.body);
         self.forces.clear();
@@ -938,6 +1096,41 @@ impl Chassis {
         body.reset_forces(false);
         body.reset_torques(false);
         let scale = drive_power_scale(mechanical_w, copper_w, cfg.dynamics.drive_power_w);
+        let supported = self
+            .wheels
+            .iter()
+            .filter(|wheel| wheel.contact.is_some())
+            .count();
+        if cfg.balance_assist && supported > 0 {
+            // Reduced inverted-pendulum LQR, with a small speed-error lean
+            // setpoint. The motor/leg plant remains an approximation; this is
+            // an assisted body torque, not a firmware wheel-leg controller.
+            let lateral = pose.rotation * Vector::Y;
+            let forward = pose.rotation * Vector::X;
+            let pitch_error = up.cross(Vector::Z).dot(lateral).clamp(-1.0, 1.0).asin();
+            let rate = angvel.dot(lateral);
+            let desired_lean =
+                ((command.forward_m_s - linvel.dot(forward)) * 0.045).clamp(-0.10, 0.10);
+            let strength = f64::from(command.balance_control) / 100.0;
+            let [kp, kd] = self.balance_gains;
+            let torque = (kp * (pitch_error + scale * desired_lean) - kd * rate)
+                .clamp(-180.0, 180.0)
+                * strength;
+            body.add_torque(lateral * torque, true);
+            // A 2.4 m/s equivalent leg push gives about 0.29 m ballistic rise.
+            // Both wheels must support an upright body. Holding the button,
+            // replaying a checkpoint or pressing again in flight cannot stack it.
+            if command.jump
+                && !self.jump_held
+                && supported == cfg.wheel_hubs_m.len()
+                && up.dot(Vector::Z) > 0.85
+                && linvel.z < 0.5
+                && !self.defeated
+            {
+                body.apply_impulse(Vector::Z * cfg.mass_kg * 2.4, true);
+            }
+        }
+        self.jump_held = self.command.jump;
         for (force, point) in self.drive_forces.drain(..) {
             body.add_force_at_point(force * scale, point, true);
         }
@@ -994,6 +1187,7 @@ impl Chassis {
             velocity_m_s: body.linvel().to_array(),
             angular_velocity_rad_s: body.angvel().to_array(),
             command: self.command,
+            jump_held: self.jump_held,
             held_aim_rad: self.aim_rad,
             gimbal_velocity_rad_s: self.gimbal_velocity_rad_s,
             wheels: self
@@ -1033,6 +1227,19 @@ pub fn yaw_of(pose: Pose) -> f64 {
 }
 
 /// Uniform motor allocation: mechanical output scales linearly and copper loss quadratically.
+// Closed-form continuous LQR for x=[pitch, pitch_rate], A=[[0,1],[mgh/I,0]],
+// B=[0,1/I], Q=diag(1000,60), R=0.01. These cost weights and the fitted
+// centre-of-mass height are prototype choices. Solve once per chassis creation.
+fn balance_lqr_gains(config: &ChassisConfig) -> [f64; 2] {
+    let h = config.hub_drop_m + TURRET_MASS_SHARE * config.turret_center_m[2];
+    let inertia = config.mass_kg
+        * ((config.body_half_m[0].powi(2) + config.body_half_m[2].powi(2)) / 3.0 + h * h);
+    let gravity = config.mass_kg * 9.81 * h;
+    let kp = gravity + (gravity * gravity + 1000.0 / 0.01).sqrt();
+    let kd = (2.0 * inertia * kp + 60.0 / 0.01).sqrt();
+    [kp, kd]
+}
+
 fn drive_power_scale(mechanical_w: f64, copper_w: f64, budget_w: f64) -> f64 {
     if mechanical_w + copper_w <= budget_w {
         return 1.0;
@@ -1148,7 +1355,8 @@ mod tests {
         }
         let state = physics.chassis_snapshots().remove(0);
         assert!(highest <= 0.601, "landing gained height: {highest}");
-        assert!((state.pose.translation_m[2] - config.rest_height_m()).abs() < 0.02);
+        let sag = config.mass_kg * 9.81 / 4.0 / config.suspension_stiffness_n_m;
+        assert!((state.pose.translation_m[2] - (config.rest_height_m() - sag)).abs() < 0.002);
         assert!(state.velocity_m_s.iter().all(|v| v.abs() < 0.01));
         assert!(state.wheels.iter().all(|w| w.contact.is_some()));
     }
@@ -1211,10 +1419,181 @@ mod tests {
         ballistics.chassis_snapshots().remove(0)
     }
     #[test]
+    fn drone_stays_in_its_plane_and_restores_its_drive() {
+        let config = ChassisConfig::drone();
+        config.validate().unwrap();
+        let mut physics = chassis_world(config, Pose::at([0.0, 0.0, 1.6]));
+        physics
+            .command_chassis(
+                0,
+                ChassisCommand {
+                    forward_m_s: 1.0,
+                    left_m_s: 0.5,
+                    yaw_rate_rad_s: 0.2,
+                    jump: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let state = run(&mut physics, 128);
+        assert!(state.pose.translation_m[0] > 0.6);
+        assert!(state.pose.translation_m[1] > 0.3);
+        assert!((state.pose.translation_m[2] - 1.6).abs() < 1e-10);
+        assert!(state.wheels.is_empty());
+        assert!(state.pose.rotation_wxyz[1].abs() < 1e-10);
+        assert!(state.pose.rotation_wxyz[2].abs() < 1e-10);
+        let mut restored = WorldPhysics::new(&[], 0.0);
+        restored.restore_chassis(&state).unwrap();
+        let original = run(&mut physics, 128);
+        let replayed = run(&mut restored, 128);
+        for (a, b) in original
+            .pose
+            .translation_m
+            .iter()
+            .zip(replayed.pose.translation_m)
+        {
+            assert!((a - b).abs() < 1e-8);
+        }
+    }
+
+    #[test]
+    fn balance_stabilization_can_be_disabled_and_restored() {
+        let pose = Pose {
+            translation_m: [0.0, 0.0, 0.31],
+            rotation_wxyz: [0.05_f64.cos(), 0.0, 0.05_f64.sin(), 0.0],
+        };
+        let mut assisted = chassis_world(ChassisConfig::balance(), pose);
+        let mut unassisted = chassis_world(ChassisConfig::balance(), pose);
+        unassisted
+            .command_chassis(
+                0,
+                ChassisCommand {
+                    balance_control: 0,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let stable = run(&mut assisted, 128);
+        let fallen = run(&mut unassisted, 128);
+        assert!(stable.pose.rotation_wxyz[2].abs() < 0.025, "{stable:?}");
+        assert!(fallen.pose.rotation_wxyz[2].abs() > 0.10, "{fallen:?}");
+        assert!(
+            unassisted
+                .command_chassis(
+                    0,
+                    ChassisCommand {
+                        balance_control: 101,
+                        ..Default::default()
+                    }
+                )
+                .is_err()
+        );
+        let mut restored = WorldPhysics::new(&[], 0.0);
+        restored.restore_chassis(&fallen).unwrap();
+        assert_eq!(restored.chassis_snapshots()[0].command.balance_control, 0);
+    }
+
+    #[test]
+    fn balance_recovers_pitch_drives_and_jumps_once_per_press() {
+        let config = ChassisConfig::balance();
+        config.validate().unwrap();
+        let mut spawn = Pose::at([0., 0., config.rest_height_m()]);
+        let angle: f64 = 0.10;
+        spawn.rotation_wxyz = [(angle / 2.).cos(), 0., (angle / 2.).sin(), 0.];
+        let mut physics = chassis_world(config, spawn);
+        let settled = run(&mut physics, 256);
+        assert!(settled.pose.rotation_wxyz[2].abs() < 0.03, "{settled:?}");
+        assert!(settled.pose.translation_m[2] > 0.20);
+        physics
+            .command_chassis(
+                0,
+                ChassisCommand {
+                    forward_m_s: 1.0,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let driven = run(&mut physics, 128);
+        assert!(
+            driven.pose.translation_m[0] > settled.pose.translation_m[0] + 0.35,
+            "{driven:?}"
+        );
+        physics
+            .command_chassis(0, ChassisCommand::default())
+            .unwrap();
+        let grounded = run(&mut physics, 256);
+        physics
+            .command_chassis(
+                0,
+                ChassisCommand {
+                    jump: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let airborne = run(&mut physics, 22);
+        assert!(
+            airborne.pose.translation_m[2] > grounded.pose.translation_m[2] + 0.12,
+            "{airborne:?}"
+        );
+        assert!(airborne.jump_held);
+        let mut restored = WorldPhysics::new(&[], 0.0);
+        restored.restore_chassis(&airborne).unwrap();
+        let replayed = run(&mut restored, 256);
+        assert!((replayed.pose.translation_m[2] - grounded.pose.translation_m[2]).abs() < 0.03);
+
+        let landed = run(&mut physics, 256);
+        assert!(
+            (landed.pose.translation_m[2] - grounded.pose.translation_m[2]).abs() < 0.03,
+            "held jump repeated: {landed:?}"
+        );
+        physics
+            .command_chassis(0, ChassisCommand::default())
+            .unwrap();
+        run(&mut physics, 1);
+        physics
+            .command_chassis(
+                0,
+                ChassisCommand {
+                    jump: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(
+            run(&mut physics, 22).pose.translation_m[2] > grounded.pose.translation_m[2] + 0.12
+        );
+    }
+
+    #[test]
+    fn jump_cannot_launch_omni_or_defeated_balance() {
+        for (config, defeated) in [
+            (ChassisConfig::default(), false),
+            (ChassisConfig::balance(), true),
+        ] {
+            let mut physics =
+                chassis_world(config.clone(), Pose::at([0., 0., config.rest_height_m()]));
+            let before = run(&mut physics, 128);
+            physics.set_chassis_defeated(0, defeated);
+            physics
+                .command_chassis(
+                    0,
+                    ChassisCommand {
+                        jump: true,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            let after = run(&mut physics, 22);
+            assert!(after.pose.translation_m[2] < before.pose.translation_m[2] + 0.02);
+        }
+    }
+
+    #[test]
     fn default_configuration_is_valid_and_bad_ones_are_rejected() {
         let config = ChassisConfig::default();
         assert!(config.validate().is_ok());
-        assert!((config.rest_height_m() - 0.1565).abs() < 1e-9);
+        assert!((config.rest_height_m() - 0.2065).abs() < 1e-9);
         assert!(
             ChassisConfig {
                 mass_kg: 0.0,
@@ -1265,7 +1644,7 @@ mod tests {
         );
         let snapshot = run(&mut ballistics, 1_500);
         let z = snapshot.pose.translation_m[2];
-        // Each spring carries a quarter of the weight: about 4.6 mm of sag.
+        // Each spring carries a quarter of the weight.
         let sag = config.mass_kg * 9.81 / 4.0 / config.suspension_stiffness_n_m;
         assert!((z - (config.rest_height_m() - sag)).abs() < 0.001, "{z}");
         assert!(snapshot.velocity_m_s.iter().all(|v| v.abs() < 1e-3));
@@ -1384,9 +1763,9 @@ mod tests {
             .unwrap();
         let snapshot = run(&mut ballistics, 4_000);
         let speed = snapshot.velocity_m_s[0];
-        // Wheels at 45 degrees see 1/sqrt(2) of the body speed, so straight-line
-        // running tops out at sqrt(2) times the wheel's no-load speed.
-        let top = config.wheel_no_load_speed_m_s * std::f64::consts::SQRT_2;
+        // The two side-midpoint wheels roll along the forward axis, so their
+        // no-load speed directly caps straight-line body speed.
+        let top = config.wheel_no_load_speed_m_s;
         assert!(speed > 0.8 * top && speed < top, "{speed}");
         assert!(
             ballistics

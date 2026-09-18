@@ -392,6 +392,29 @@ impl Client {
         robot: Robot,
         password: &str,
     ) -> anyhow::Result<Self> {
+        Self::connect_udp_with_chassis(
+            addr,
+            name,
+            team,
+            role,
+            robot,
+            crate::protocol::Chassis::Auto,
+            password,
+        )
+    }
+    /// Connect a pilot with a separately chosen chassis, validated by the host.
+    pub fn connect_udp_with_chassis(
+        addr: impl ToSocketAddrs,
+        name: &str,
+        team: Option<Team>,
+        role: Role,
+        robot: Robot,
+        chassis: crate::protocol::Chassis,
+        password: &str,
+    ) -> anyhow::Result<Self> {
+        if role == Role::Pilot {
+            chassis.config(robot).map_err(anyhow::Error::msg)?;
+        }
         let addr = address(addr)?;
         let global = GnsGlobal::get().map_err(io_error)?;
         let socket = GnsSocket::new(global)
@@ -407,7 +430,7 @@ impl Client {
         let (outbox, commands) =
             mpsc::sync_channel::<Option<QueuedCommand>>(CLIENT_COMMAND_CAPACITY);
         let (welcome_tx, welcome_rx) = mpsc::sync_channel(1);
-        let hello = ClientCodec::hello_with_password(name, team, role, robot, password)?;
+        let hello = ClientCodec::hello_with_chassis(name, team, role, robot, chassis, password)?;
         let stopping = stop.clone();
         let incoming = inbox.clone();
         let timing = ClientTiming::default();
@@ -694,6 +717,7 @@ mod tests {
                 team: None,
                 role: Role::Referee,
                 robot: Robot::default(),
+                chassis: Default::default(),
             },
             ClientMessage::Command(Command::Step { ticks: 17 }),
             ClientMessage::Command(Command::Step { ticks: 19 }),

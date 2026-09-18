@@ -85,6 +85,8 @@ pub(crate) struct PeerRegistration {
     pub(crate) role: Role,
     /// The robot a pilot asked to drive; ignored for the other seats.
     pub(crate) robot: Robot,
+    /// Requested drivetrain, validated before admission.
+    pub(crate) chassis: crate::protocol::Chassis,
     /// Owner-only placement as an FLU position in metres and a heading in
     /// degrees. `Some` also grants authority no network hello can claim.
     pub(crate) owner_spawn: Option<([f64; 3], f64)>,
@@ -678,6 +680,7 @@ impl Owner {
             team,
             role,
             robot,
+            chassis,
             owner_spawn,
             outbox,
             stream,
@@ -708,9 +711,14 @@ impl Owner {
             }))
         };
         let chassis = if let (Role::Pilot, Some(team)) = (role, team) {
+            chassis.config(robot)?;
             let spawned = match owner_spawn {
-                Some((position, yaw)) => self.simulation.spawn_robot_at(team, robot, position, yaw),
-                None => self.simulation.spawn_robot(team, robot),
+                Some((position, yaw)) => self
+                    .simulation
+                    .spawn_robot_at_with_chassis(team, robot, chassis, position, yaw),
+                None => self
+                    .simulation
+                    .spawn_robot_with_chassis(team, robot, chassis),
             };
             if owner_spawn.is_some()
                 && let Err(error) = &spawned
@@ -977,6 +985,7 @@ mod tests {
                 team: None,
                 role,
                 robot: Robot::default(),
+                chassis: Default::default(),
                 owner_spawn: None,
                 outbox,
                 stream: Stop::default(),

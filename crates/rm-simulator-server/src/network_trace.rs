@@ -251,8 +251,8 @@ impl Observer {
     }
     pub(crate) fn packet(&self, stage: &'static str, peer: Option<u32>, bytes: &[u8]) {
         let kind = match bytes.get(..4) {
-            Some(b"RMO6") => "owner",
-            Some(b"RMI3") => "inputs",
+            Some(b"RMO8") => "owner",
+            Some(b"RMI5") => "inputs",
             Some(b"RMC1") => "shot",
             Some(b"RMA2") => "baseline_ack",
             Some(b"RMG1") if bytes.get(4) == Some(&0) => "world_fragment",
@@ -470,7 +470,7 @@ mod tests {
     fn packet_classes_match_current_wire_magics() {
         let time = crate::clock::ManualTime::new();
         let observer = Observer::open("test", time.source(), None, FILE_LIMIT);
-        for bytes in [b"RMO6data", b"RMI3data", b"RMA2data", b"RMC1data"] {
+        for bytes in [b"RMO8data", b"RMI5data", b"RMA2data", b"RMC1data"] {
             observer.packet("receive", None, bytes);
         }
         let report = observer.report().unwrap();
@@ -497,10 +497,11 @@ mod tests {
                 team: None,
                 role: crate::protocol::Role::Pilot,
                 robot: Default::default(),
+                chassis: Default::default(),
             },
             None,
         );
-        observer.packet("receive", None, b"RMI3data");
+        observer.packet("receive", None, b"RMI5data");
         let report = observer.report().unwrap();
         assert_eq!(report.stages["enqueue_attempt"]["hello"].bytes, None);
         assert_eq!(report.stages["receive"]["inputs"].bytes, Some(8));
@@ -508,7 +509,7 @@ mod tests {
         assert!(!json.contains("do-not-log-this") && !json.contains("private-name"));
         let lock = observer.report.lock().unwrap();
         assert!(observer.report().is_none());
-        observer.packet("receive", None, b"RMI3data");
+        observer.packet("receive", None, b"RMI5data");
         drop(lock);
         assert_eq!(observer.report().unwrap().contended, 1);
     }
@@ -522,7 +523,7 @@ mod tests {
         let observer = Observer::open("test", TimeSource::system(), Some(&directory), FILE_LIMIT);
         let path = observer.report().unwrap().path.unwrap();
         for _ in 0..100 {
-            observer.packet("receive", None, b"RMI3data");
+            observer.packet("receive", None, b"RMI5data");
         }
         drop(observer);
         let contents = std::fs::read_to_string(path).unwrap();
@@ -582,8 +583,8 @@ mod tests {
         let mut observer = Observer::open("test", TimeSource::system(), None, FILE_LIMIT);
         let (sender, _receiver) = mpsc::sync_channel(1);
         observer.sender = Some(sender);
-        observer.packet("receive", None, b"RMI3one");
-        observer.packet("receive", None, b"RMI3two");
+        observer.packet("receive", None, b"RMI5one");
+        observer.packet("receive", None, b"RMI5two");
         let report = observer.report().unwrap();
         assert_eq!(report.dropped, 1);
         assert_eq!(report.stages["receive"]["inputs"].events, 2);

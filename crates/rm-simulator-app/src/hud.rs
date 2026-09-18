@@ -67,6 +67,8 @@ pub struct HudState {
     pub show_reticle: bool,
     /// Horizontal aim sensitivity in radians of yaw per pixel of mouse motion.
     pub sensitivity: f32,
+    /// Balance stabilization strength, 0 through 100 percent.
+    pub balance_control: u8,
     /// Escape consumed by a panel must not also quit or release capture.
     pub closed_with_escape: bool,
 }
@@ -89,6 +91,7 @@ impl Default for HudState {
             show_map: true,
             show_reticle: true,
             sensitivity: 0.0025,
+            balance_control: 100,
             closed_with_escape: false,
         }
     }

@@ -96,6 +96,31 @@ impl Server {
         spawn_m: [f64; 3],
         yaw_deg: f64,
     ) -> anyhow::Result<Client> {
+        self.connect_owner_with_chassis(
+            name,
+            team,
+            role,
+            robot,
+            crate::protocol::Chassis::Auto,
+            spawn_m,
+            yaw_deg,
+        )
+    }
+    /// Connect the local operator with an independently selected drivetrain.
+    #[allow(clippy::too_many_arguments)]
+    pub fn connect_owner_with_chassis(
+        &self,
+        name: &str,
+        team: Team,
+        role: Role,
+        robot: Robot,
+        chassis: crate::protocol::Chassis,
+        spawn_m: [f64; 3],
+        yaw_deg: f64,
+    ) -> anyhow::Result<Client> {
+        if role == Role::Pilot {
+            chassis.config(robot).map_err(anyhow::Error::msg)?;
+        }
         let mut owner = self.owner.lock().unwrap_or_else(|p| p.into_inner());
         anyhow::ensure!(owner.is_none(), "an owner is already connected");
         anyhow::ensure!(!self.stop.wait(Duration::ZERO), "server is stopped");
@@ -185,11 +210,12 @@ impl Server {
                         PumpBudget::default(),
                     );
                     to_host
-                        .send(ClientCodec::hello_with_password(
+                        .send(ClientCodec::hello_with_chassis(
                             &name,
                             Some(team),
                             role,
                             robot,
+                            chassis,
                             "",
                         )?)
                         .map_err(|_| io_error("host closed the local connection"))?;
@@ -377,8 +403,8 @@ fn record_loopback_frame(inbox: &ClientInbox, payload: &[u8]) {
         Some(b"RMRW") => "RMRW",
         Some(b"RMZ1") => "RMZ1",
         Some(b"RMBZ") => "RMBZ",
-        Some(b"RMO6") => "RMO6",
-        Some(b"RMI3") => "RMI3",
+        Some(b"RMO8") => "RMO8",
+        Some(b"RMI5") => "RMI5",
         Some(b"RMC1") => "RMC1",
         Some(b"RMA2") => "RMA2",
         Some(b"RMM1") => "RMM1",
@@ -1303,12 +1329,12 @@ mod tests {
                 })
         });
         // Once the configuration handshake completes, the owner anchors travel
-        // the same codec and classify as the current `RMO6` framing.
+        // the same codec and classify as the current `RMO8` framing.
         wait_until("owner anchor on the loopback wire", || {
             client.poll();
             client
                 .trace_report()
-                .is_some_and(|report| report.stages["loopback_wire"].contains_key("RMO6"))
+                .is_some_and(|report| report.stages["loopback_wire"].contains_key("RMO8"))
         });
         let report = client.trace_report().unwrap();
         let kinds: Vec<_> = report.stages["loopback_wire"].keys().copied().collect();
@@ -1941,6 +1967,52 @@ mod tests {
         assert!(client.wait_snapshot(Duration::from_secs(5)).is_none());
         publisher.join().unwrap();
         assert_eq!(client.disconnected(), Some("host closed"));
+    }
+
+    #[test]
+    fn local_and_udp_pilots_keep_their_selected_chassis() {
+        use crate::protocol::Chassis;
+        let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
+        let (server, simulation) = host();
+        let owner = server
+            .connect_owner_with_chassis(
+                "balance",
+                Team::Red,
+                Role::Pilot,
+                Robot::Infantry4,
+                Chassis::Balance,
+                [3.0, 0.0, 1.0],
+                0.0,
+            )
+            .unwrap();
+        assert!(
+            owner
+                .welcome()
+                .chassis
+                .as_ref()
+                .unwrap()
+                .config
+                .balance_assist
+        );
+        let mut remote = Client::connect_udp_with_chassis(
+            server.local_addr(),
+            "engineer",
+            Some(Team::Blue),
+            Role::Pilot,
+            Robot::Engineer,
+            Chassis::Mecanum,
+            "",
+        )
+        .unwrap();
+        assert_eq!(
+            remote.welcome().chassis.as_ref().unwrap().robot,
+            Robot::Engineer
+        );
+        assert!(remote.welcome().chassis.as_ref().unwrap().config.mecanum);
+        server.broadcast_snapshot();
+        let state = remote.wait_snapshot(Duration::from_secs(5)).unwrap();
+        assert!(state.field.chassis.iter().any(|c| c.config.balance_assist));
+        assert_eq!(simulation.snapshot().unwrap().chassis.len(), 2);
     }
 
     #[test]

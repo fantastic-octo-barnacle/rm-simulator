@@ -7,7 +7,7 @@ use bevy::{
     render::view::screenshot::{Screenshot, save_to_disk},
 };
 use rm_simulator_render::{
-    chassis::{ArmorOptics, ChassisVisualsPlugin},
+    chassis::{ArmorOptics, ChassisVisualsPlugin, RobotModel},
     sync::*,
     *,
 };
@@ -50,14 +50,27 @@ fn pose(x: f64, y: f64, z: f64, yaw: f64) -> PoseFlu {
         rotation_wxyz: [(yaw / 2.0).cos(), 0.0, 0.0, (yaw / 2.0).sin()],
     }
 }
-fn robot(hero: bool, y: f64, effect: &str) -> ChassisAppearance {
-    let (hx, hy, hz, radius, width, pivot, turret) = if hero {
-        (0.33, 0.28, 0.06, 0.1015, 0.065, 0.25, [0.09, 0.09, 0.075])
-    } else {
-        (0.26, 0.26, 0.05, 0.0765, 0.04, 0.20, [0.06; 3])
+fn robot(model: RobotModel, y: f64, effect: &str) -> ChassisAppearance {
+    let hero = model == RobotModel::Hero;
+    let mecanum = matches!(model, RobotModel::Hero | RobotModel::Engineer);
+    let balance = model == RobotModel::Balance;
+    let (hx, hy, hz, radius, width, pivot, turret) = match model {
+        RobotModel::Hero => (0.33, 0.28, 0.06, 0.1015, 0.065, 0.25, [0.09, 0.09, 0.075]),
+        RobotModel::Engineer => (0.36, 0.29, 0.08, 0.1015, 0.065, 0.36, [0.13, 0.13, 0.10]),
+        RobotModel::Drone => (0.40, 0.40, 0.065, 0.0, 0.0, -0.14, [0.035; 3]),
+        RobotModel::Balance => (0.18, 0.24, 0.09, 0.10, 0.045, 0.20, [0.06; 3]),
+        _ => (0.26, 0.26, 0.05, 0.0765, 0.04, 0.20, [0.06; 3]),
     };
-    let z = radius + 0.05 + 0.025;
-    let hubs = if hero { 0.22 } else { 0.20 };
+    let z = if model == RobotModel::Drone {
+        0.4
+    } else {
+        radius + if balance { 0.18 } else { 0.05 } + 0.025
+    };
+    let hubs = if model == RobotModel::Engineer {
+        0.24
+    } else {
+        0.22
+    };
     let armor = [
         (hx + 0.02, 0.0),
         (0.0, hy + 0.02),
@@ -79,13 +92,15 @@ fn robot(hero: bool, y: f64, effect: &str) -> ChassisAppearance {
     })
     .collect();
     ChassisAppearance {
-        armor_pattern: if hero {
-            armor::ArmorPattern::One
-        } else {
-            armor::ArmorPattern::Three
+        model,
+        armor_pattern: match model {
+            RobotModel::Hero => armor::ArmorPattern::One,
+            RobotModel::Engineer => armor::ArmorPattern::Two,
+            RobotModel::Sentry => armor::ArmorPattern::GuardSmall,
+            _ => armor::ArmorPattern::Three,
         },
-        id: u32::from(hero),
-        mecanum: hero,
+        id: model as u32,
+        mecanum,
         hp_fraction: if hero { 0.6 } else { 1.0 },
         team: if hero {
             TeamColor::Red
@@ -94,23 +109,38 @@ fn robot(hero: bool, y: f64, effect: &str) -> ChassisAppearance {
         },
         pose: pose(0.0, y, z, 0.0),
         body_half_m: [hx as f32, hy as f32, hz as f32],
-        wheels: [[hubs, hubs], [-hubs, hubs], [-hubs, -hubs], [hubs, -hubs]]
-            .into_iter()
-            .map(|[x, dy]| WheelAppearance {
-                pose: pose(
-                    x,
-                    y + dy,
-                    radius,
-                    if hero {
-                        0.0
-                    } else {
-                        dy.atan2(x) - std::f64::consts::FRAC_PI_2
-                    },
-                ),
-                radius_m: radius as f32,
-                width_m: width,
-            })
-            .collect(),
+        wheels: (if model == RobotModel::Drone {
+            vec![]
+        } else if balance {
+            vec![[0.0, 0.24], [0.0, -0.24]]
+        } else if model == RobotModel::Engineer {
+            vec![
+                [hubs, 0.255],
+                [-hubs, 0.255],
+                [-hubs, -0.255],
+                [hubs, -0.255],
+            ]
+        } else if mecanum {
+            vec![[hubs, hubs], [-hubs, hubs], [-hubs, -hubs], [hubs, -hubs]]
+        } else {
+            vec![[0.245, 0.0], [0.0, 0.245], [-0.245, 0.0], [0.0, -0.245]]
+        })
+        .into_iter()
+        .map(|[x, dy]| WheelAppearance {
+            pose: pose(
+                x,
+                y + dy,
+                radius,
+                if mecanum {
+                    0.0
+                } else {
+                    dy.atan2(x) - std::f64::consts::FRAC_PI_2
+                },
+            ),
+            radius_m: radius as f32,
+            width_m: width,
+        })
+        .collect(),
         armor,
         yaw_stage: pose(0.0, y, z + pivot, 0.0),
         turret: pose(0.0, y, z + pivot, 0.0),
@@ -129,8 +159,36 @@ fn setup(
 ) {
     let args: Vec<_> = std::env::args().collect();
     let effect = args.get(2).map_or("healthy", String::as_str);
+    let all = args.get(4).is_some_and(|v| v == "all");
+    let focused = args.get(4).and_then(|v| match v.as_str() {
+        "omni" => Some(RobotModel::Omni),
+        "sentry" => Some(RobotModel::Sentry),
+        "balance" => Some(RobotModel::Balance),
+        "engineer" => Some(RobotModel::Engineer),
+        "drone" => Some(RobotModel::Drone),
+        _ => None,
+    });
     scene.0 = Some(SceneState {
-        chassis: vec![robot(false, 0.48, effect), robot(true, -0.48, effect)],
+        chassis: if let Some(model) = focused {
+            vec![robot(model, 0.0, effect)]
+        } else if all {
+            [
+                RobotModel::Omni,
+                RobotModel::Sentry,
+                RobotModel::Balance,
+                RobotModel::Engineer,
+                RobotModel::Hero,
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(i, model)| robot(model, -2.2 + i as f64 * 1.1, effect))
+            .collect()
+        } else {
+            vec![
+                robot(RobotModel::Omni, 0.48, effect),
+                robot(RobotModel::Hero, -0.48, effect),
+            ]
+        },
         ..default()
     });
     let image = images.add(Image::new_target_texture(
@@ -142,12 +200,30 @@ fn setup(
     let mut camera = commands.spawn((
         Camera3d::default(),
         Transform::from_xyz(
-            1.45,
-            1.05,
+            if all {
+                1.1
+            } else if focused.is_some() {
+                0.85
+            } else {
+                1.45
+            },
+            if all {
+                2.1
+            } else if focused.is_some() {
+                0.80
+            } else {
+                1.05
+            },
             if args.get(3).is_some_and(|v| v == "rear") {
                 1.8
             } else {
-                -1.8
+                if all {
+                    -4.5
+                } else if focused.is_some() {
+                    -1.1
+                } else {
+                    -1.8
+                }
             },
         )
         .looking_at(Vec3::new(0.0, 0.25, 0.0), Vec3::Y),
@@ -186,7 +262,7 @@ fn setup(
         })),
         Transform::from_xyz(0.0, -0.015, 0.0),
     ));
-    commands.spawn((UiTargetCamera(camera_id), Text::new(format!("RED: HERO / MECANUM     BLUE: INFANTRY / OMNI\nAM02 armor  /  LI01 HP bar  /  FI02 RFID  /  SM01 / SM11  /  VT03\nStatic visual study: {effect}. Hero HP staged at 60%.")),TextFont {font_size:22.0.into(),..default()},Node {position_type:PositionType::Absolute,left:Val::Px(35.0),bottom:Val::Px(28.0),..default()}));
+    commands.spawn((UiTargetCamera(camera_id), Text::new(if let Some(model)=focused { format!("{model:?} / procedural model") } else if all { "OMNI INFANTRY     SENTRY     BALANCE INFANTRY     ENGINEER     HERO\nProcedural approximations. No STEP or URDF meshes.".into() } else { format!("RED: HERO / MECANUM     BLUE: INFANTRY / OMNI\nAM02 armor  /  LI01 HP bar  /  FI02 RFID  /  SM01 / SM11  /  VT03\nStatic visual study: {effect}. Hero HP staged at 60%.") }),TextFont {font_size:22.0.into(),..default()},Node {position_type:PositionType::Absolute,left:Val::Px(35.0),bottom:Val::Px(28.0),..default()}));
 }
 fn capture(mut commands: Commands, mut capture: ResMut<Capture>) {
     capture.frames += 1;

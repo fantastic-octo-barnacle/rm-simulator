@@ -61,6 +61,13 @@ ammunition, pick its own performance type and fire.
 | Outpost and base HP | Set through the engine; zero outpost HP counts as a destruction. |
 | Rune opportunities and buff | Set a team's opportunity count; override or clear its rune buff. |
 
+The selectable Drone is a fixed-altitude flight prototype with a 17 mm launcher.
+The live referee starts with `enforce_air_support: false`, so the prototype
+can fire during a round without unsupported activation controls. Heat, caliber,
+allowance policy and firing cadence still apply. The standalone game defaults
+to requiring air support under section 5.6.3; callers can retain that policy.
+Drone air-support controls and mission mechanics remain outside the live integration.
+
 ### Outside the live integration
 
 The Assembly Zone, remote exchanges and HP purchases, power enforcement,
@@ -74,6 +81,9 @@ Construct `Game::new(Config)` with a fixed roster and explicit performance
 parameters. Robot ids must be unique and HP positive. The roster supports
 Hero, Engineer, Infantry, Drone, Sentry, Dart and Radar. These records do not
 create chassis, so unsupported equipment can exist in a headless scenario.
+The app also offers manually driven Engineer and Sentry chassis prototypes;
+the Engineer arm and Sentry radar are decorative and their equipment rules
+remain outside the live integration.
 There is no referee robot. `AddRobot` and `RemoveRobot` admit and drop robots
 at any phase; the live referee uses them as pilots join and leave.
 

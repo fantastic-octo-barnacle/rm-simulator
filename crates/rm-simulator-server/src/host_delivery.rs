@@ -27,6 +27,7 @@ fn fixture() -> (Host, Client, outbox::Receiver) {
             team: None,
             role: Role::Referee,
             robot: Default::default(),
+            chassis: Default::default(),
             owner_spawn: None,
             outbox: sender,
             stream: Stop::default(),

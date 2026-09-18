@@ -19,7 +19,7 @@ use bevy::{
     text::{EditableText, TextEdit},
     ui_widgets::{Activate, ActivateOnPress, ValueChange, checkbox_self_update},
 };
-use rm_simulator_server::protocol::Robot;
+use rm_simulator_server::protocol::{Chassis, Robot};
 use rm_simulator_world::{Caliber, Team};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -68,6 +68,14 @@ impl Seat {
     /// The seat in words, as the robot page's selection line shows it.
     pub fn describe(self) -> String {
         match self {
+            Seat::Pilot {
+                team,
+                robot: Robot::Engineer,
+            } => format!("{} driving Engineer (fixed arm)", team.name()),
+            Seat::Pilot {
+                team,
+                robot: Robot::Drone,
+            } => format!("{} flying Drone (17 mm, fixed altitude)", team.name()),
             Seat::Pilot { team, robot } => format!(
                 "{} driving {} ({} mm)",
                 team.name(),
@@ -96,6 +104,8 @@ pub enum Page {
     Multiplayer,
     /// The seat picker that precedes every join.
     Robot,
+    /// Drivetrain selection after choosing a pilot robot.
+    Chassis,
 }
 
 /// One of the buttons.
@@ -124,6 +134,8 @@ pub enum Choice {
     Quit,
     /// Take this seat on the robot page; the join waits for `Confirm`.
     Seat(Seat),
+    /// Select a supported drivetrain on the chassis page.
+    Chassis(Chassis),
     /// Enter the match the robot page was opened for, in the chosen seat.
     Confirm,
 }
@@ -182,6 +194,9 @@ pub struct TitleFields {
     /// Robot the pilot drives, by its `Robot::id`; blank means the Infantry 3.
     #[serde(default)]
     pub robot: String,
+    /// Remembered drivetrain; Auto follows the selected robot.
+    #[serde(default)]
+    pub chassis: Chassis,
     /// Join as the referee: no robot, the free camera and the match keys.
     /// Skipped by serde, so no later match starts refereed by accident.
     #[serde(skip)]
@@ -246,6 +261,11 @@ impl TitleFields {
                 base.robot.id().into()
             } else {
                 pick(remembered.robot, None, Robot::default().id())
+            },
+            chassis: if base.chassis != Chassis::Auto {
+                base.chassis
+            } else {
+                remembered.chassis
             },
             referee: base.referee,
             max_fire_rate: pick(
@@ -362,8 +382,14 @@ pub fn join_args(base: &Args, fields: &TitleFields, choice: Choice) -> Result<Ar
     args.robot = if fields.robot.trim().is_empty() {
         Robot::default()
     } else {
-        Robot::parse(fields.robot.trim()).ok_or("Pick a robot: hero, infantry-3 or infantry-4")?
+        Robot::parse(fields.robot.trim())
+            .ok_or("Pick a robot: hero, engineer, infantry-3, infantry-4 or sentry")?
     };
+    args.chassis = fields.chassis;
+    if !args.fly && !args.referee {
+        args.chassis.config(args.robot)?;
+    }
+
     match choice {
         Choice::Connect => {
             let address = fields.address.trim();
@@ -619,6 +645,7 @@ pub(crate) struct TitleState {
     page: Page,
     pending: Option<Choice>,
     seat: Seat,
+    chassis: Chassis,
     tip: bool,
     public: bool,
     selected: Option<usize>,
@@ -637,6 +664,10 @@ impl TitleState {
             Page::Main => false,
             Page::Multiplayer => {
                 self.page = Page::Main;
+                true
+            }
+            Page::Chassis => {
+                self.page = Page::Robot;
                 true
             }
             Page::Robot => {
@@ -662,6 +693,7 @@ impl Plugin for TitlePlugin {
                     poll_lobbies,
                     show_page,
                     show_seats,
+                    show_chassis,
                     fit_columns,
                     fit_scrollbars,
                     prefill,
@@ -786,6 +818,12 @@ fn sync_title(
     state.pending = None;
     state.public = fields.public;
     state.seat = fields.seat();
+    state.chassis = fields.chassis;
+    if let Seat::Pilot { robot, .. } = state.seat
+        && state.chassis.config(robot).is_err()
+    {
+        state.chassis = Chassis::Auto;
+    }
     let root = commands
         .spawn((
             TitleRoot,
@@ -1094,7 +1132,7 @@ fn sync_title(
         .id();
     commands.spawn((
         ChildOf(robot_page),
-        Text::new("Choose your seat"),
+        Text::new("Choose your robot"),
         TextFont {
             font_size: FontSize::Px(24.0),
             ..default()
@@ -1102,7 +1140,7 @@ fn sync_title(
     ));
     commands.spawn((
         ChildOf(robot_page),
-        Text::new("The Hero fires 42 mm rounds and the infantries 17 mm. Two pilots may pick the same robot."),
+        Text::new("Choose a team and robot, then choose its chassis. Engineer has a fixed arm; Sentry is manually driven."),
         TextFont {
             font_size: FontSize::Px(14.0),
             ..default()
@@ -1150,7 +1188,13 @@ fn sync_title(
             seat_card(
                 &mut commands,
                 column,
-                &format!("{} ({} mm)", robot.name(), caliber_mm(robot)),
+                &if robot == Robot::Engineer {
+                    "Engineer (fixed arm)".into()
+                } else if robot == Robot::Drone {
+                    "Drone (17 mm, fixed altitude)".into()
+                } else {
+                    format!("{} ({} mm)", robot.name(), caliber_mm(robot))
+                },
                 Seat::Pilot { team, robot },
             );
         }
@@ -1176,9 +1220,9 @@ fn sync_title(
         .id();
     seat_card(&mut commands, bottom, "Referee", Seat::Referee);
     button(&mut commands, bottom, "Back", Choice::Back);
-    let start = button(&mut commands, bottom, "Start match", Choice::Confirm);
+    let start = button(&mut commands, bottom, "Continue", Choice::Confirm);
     commands.entity(start).insert(WhenHosting(true));
-    let join = button(&mut commands, bottom, "Join lobby", Choice::Confirm);
+    let join = button(&mut commands, bottom, "Continue", Choice::Confirm);
     commands.entity(join).insert(WhenHosting(false));
     commands.spawn((
         ChildOf(robot_page),
@@ -1190,6 +1234,65 @@ fn sync_title(
         },
         TextColor(Color::srgb(0.55, 0.65, 0.72)),
     ));
+
+    let chassis_page = commands
+        .spawn((
+            ChildOf(card),
+            MenuPage(Page::Chassis),
+            Node {
+                width: percent(100),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(14),
+                display: Display::None,
+                ..default()
+            },
+        ))
+        .id();
+    commands.spawn((
+        ChildOf(chassis_page),
+        Text::new("Choose your chassis"),
+        TextFont {
+            font_size: FontSize::Px(24.0),
+            ..default()
+        },
+    ));
+    commands.spawn((
+        ChildOf(chassis_page),
+        ChassisText,
+        Text::new(""),
+        TextFont {
+            font_size: FontSize::Px(14.0),
+            ..default()
+        },
+    ));
+    for (chassis, label) in [
+        (
+            Chassis::Omni,
+            "Omni — four wheels, movement in any direction",
+        ),
+        (
+            Chassis::Balance,
+            "Balance — two wheels, assisted balance and jump",
+        ),
+        (
+            Chassis::Mecanum,
+            "Mecanum — four wheels, movement in any direction",
+        ),
+        (
+            Chassis::Flight,
+            "Flight — horizontal movement at a fixed altitude",
+        ),
+    ] {
+        let entity = button(&mut commands, chassis_page, label, Choice::Chassis(chassis));
+        commands
+            .entity(entity)
+            .insert((ChassisCard(chassis), BorderColor::all(Color::NONE)));
+    }
+    button(&mut commands, chassis_page, "Back to robots", Choice::Back);
+    let start = button(&mut commands, chassis_page, "Start match", Choice::Confirm);
+    commands.entity(start).insert(WhenHosting(true));
+    let join = button(&mut commands, chassis_page, "Join lobby", Choice::Confirm);
+    commands.entity(join).insert(WhenHosting(false));
 
     let host_settings = commands
         .spawn((
@@ -1321,7 +1424,7 @@ fn show_page(
         let width = px(match state.page {
             Page::Main => 480.0,
             Page::Multiplayer => 1100.0,
-            Page::Robot => 760.0,
+            Page::Robot | Page::Chassis => 760.0,
         });
         let height = if multiplayer { percent(80) } else { Val::Auto };
         if node.max_width != width {
@@ -1345,7 +1448,7 @@ fn show_page(
         }
     }
     for mut node in &mut settings {
-        let display = if state.page == Page::Robot {
+        let display = if matches!(state.page, Page::Robot | Page::Chassis) {
             Display::None
         } else {
             Display::Flex
@@ -1364,6 +1467,51 @@ fn show_page(
         if node.display != display {
             node.display = display;
         }
+    }
+}
+
+/// A drivetrain option, shown only for compatible robot types.
+#[derive(Component)]
+struct ChassisCard(Chassis);
+/// The selected robot and chassis caption.
+#[derive(Component)]
+struct ChassisText;
+fn show_chassis(
+    state: Res<TitleState>,
+    mut cards: Query<(&ChassisCard, &mut Node, &mut BorderColor)>,
+    mut texts: Query<&mut Text, With<ChassisText>>,
+) {
+    let Seat::Pilot { robot, .. } = state.seat else {
+        return;
+    };
+    for (card, mut node, mut border) in &mut cards {
+        node.display = if robot.chassis_choices().contains(&card.0) {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        node.border = UiRect::all(px(2));
+        *border = BorderColor::all(if state.chassis.resolved(robot) == card.0 {
+            Color::srgb(0.35, 0.85, 0.9)
+        } else {
+            Color::NONE
+        });
+    }
+    for mut text in &mut texts {
+        text.0 = format!(
+            "{} / {}\n{}",
+            robot.name(),
+            state.chassis.resolved(robot).name(),
+            match robot {
+                Robot::Drone =>
+                    "Fly horizontally with WASD; aim with the mouse and fire 17 mm with left click. Fixed altitude.",
+                Robot::Engineer => "Drive with WASD. The arm is fixed; there is no launcher.",
+                Robot::Sentry => "Drive and aim like Infantry. The radar tower is decorative.",
+                Robot::Hero => "The existing Hero chassis and 42 mm launcher.",
+                _ =>
+                    "Omni shares the Sentry lower body, without its radar tower. Balance uses assisted stabilization; press Space to jump.",
+            }
+        );
     }
 }
 
@@ -1567,7 +1715,7 @@ fn title_input(
         let choice = match state.page {
             Page::Main => Choice::Practice,
             Page::Multiplayer => Choice::Connect,
-            Page::Robot => Choice::Confirm,
+            Page::Robot | Page::Chassis => Choice::Confirm,
         };
         state.actions.push(choice);
     }
@@ -1591,6 +1739,30 @@ fn title_input(
     }
     if let Choice::Seat(seat) = choice {
         state.seat = seat;
+        if let Seat::Pilot { robot, .. } = seat
+            && state.chassis.config(robot).is_err()
+        {
+            state.chassis = Chassis::Auto;
+        }
+        return;
+    }
+    if let Choice::Chassis(chassis) = choice {
+        if let Seat::Pilot { robot, .. } = state.seat
+            && chassis.config(robot).is_ok()
+        {
+            state.chassis = chassis;
+        }
+        return;
+    }
+    if choice == Choice::Confirm
+        && state.pending.is_some()
+        && state.page == Page::Robot
+        && let Seat::Pilot { robot, .. } = state.seat
+    {
+        if state.chassis.config(robot).is_err() {
+            state.chassis = Chassis::Auto;
+        }
+        state.page = Page::Chassis;
         return;
     }
     if choice == Choice::Multiplayer {
@@ -1612,6 +1784,7 @@ fn title_input(
         ..default()
     };
     fields.set_seat(state.seat);
+    fields.chassis = state.chassis;
     for (_, text, name, address, host, lobby) in &inputs {
         let value = text.value().to_string();
         if let Some(lobby) = lobby {
@@ -1705,7 +1878,8 @@ fn title_input(
             screen.status = None;
         }
         Ok(args) => {
-            if let Some(path) = remembered_path()
+            if !cfg!(test)
+                && let Some(path) = remembered_path()
                 && let Err(error) = save_remembered(&path, &fields)
             {
                 warn!(
@@ -1799,6 +1973,68 @@ mod tests {
         assert!(!app.world().contains_resource::<JoinRequest>());
         assert_eq!(Choice::Connect.origin(), Page::Multiplayer);
         assert_eq!(Choice::Host.origin(), Page::Multiplayer);
+    }
+
+    #[test]
+    fn pilot_chooses_chassis_before_join_and_back_preserves_robot() {
+        let mut app = App::new();
+        app.init_resource::<TitleState>()
+            .init_resource::<TitleScreen>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<bevy::input_focus::InputFocus>()
+            .insert_resource(BaseArgs(base()))
+            .add_message::<AppExit>()
+            .add_systems(Update, title_input);
+        app.world_mut()
+            .spawn((NameInput, EditableText::new("pilot")));
+        let press = |app: &mut App, choice| {
+            app.world_mut()
+                .resource_mut::<TitleState>()
+                .actions
+                .push(choice);
+            app.update();
+        };
+        press(&mut app, Choice::Practice);
+        press(&mut app, Choice::Confirm);
+        assert_eq!(app.world().resource::<TitleState>().page, Page::Chassis);
+        assert!(!app.world().contains_resource::<JoinRequest>());
+        press(&mut app, Choice::Chassis(Chassis::Balance));
+        press(&mut app, Choice::Back);
+        assert_eq!(app.world().resource::<TitleState>().page, Page::Robot);
+        assert_eq!(
+            app.world().resource::<TitleState>().pending,
+            Some(Choice::Practice)
+        );
+        press(&mut app, Choice::Confirm);
+        press(&mut app, Choice::Confirm);
+        assert_eq!(
+            app.world().resource::<JoinRequest>().0.chassis,
+            Chassis::Balance
+        );
+    }
+
+    #[test]
+    fn switching_robot_resets_an_incompatible_chassis() {
+        let mut app = App::new();
+        app.insert_resource(TitleState {
+            chassis: Chassis::Balance,
+            ..default()
+        })
+        .init_resource::<TitleScreen>()
+        .init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<bevy::input_focus::InputFocus>()
+        .insert_resource(BaseArgs(base()))
+        .add_message::<AppExit>()
+        .add_systems(Update, title_input);
+        app.world_mut()
+            .resource_mut::<TitleState>()
+            .actions
+            .push(Choice::Seat(Seat::Pilot {
+                team: Team::Red,
+                robot: Robot::Engineer,
+            }));
+        app.update();
+        assert_eq!(app.world().resource::<TitleState>().chassis, Chassis::Auto);
     }
 
     #[test]
@@ -2000,7 +2236,7 @@ mod tests {
             join_args(&base(), &blank, Choice::Practice).unwrap().robot,
             Robot::default()
         );
-        blank.robot = "sentry".into();
+        blank.robot = "unknown-robot".into();
         assert!(join_args(&base(), &blank, Choice::Practice).is_err());
         let host = join_args(&base(), &fields, Choice::Host).unwrap();
         assert_eq!(host.connect, None);

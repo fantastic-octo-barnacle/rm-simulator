@@ -366,12 +366,21 @@ impl Session {
         };
         Some((state.heat_tenths + pending, state.stats().heat_limit))
     }
-    /// Whether the host would refuse a launch for heat (section 5.1.3), so no
+    /// Whether the pilot has no launcher or the host would refuse a launch for heat (section 5.1.3), so no
     /// local shot should begin: the latest snapshot has the barrel overheated
     /// or locked for the round, or its heat plus the shots still on their way
     /// to the host is already past the limit. The snapshot's heat predates
     /// its cooling since, so under lag this errs toward holding a shot.
     pub fn barrel_blocked(&self) -> bool {
+        if self
+            .client
+            .welcome()
+            .chassis
+            .as_ref()
+            .is_some_and(|c| matches!(c.robot, rm_simulator_server::protocol::Robot::Engineer))
+        {
+            return true;
+        }
         self.own_game_robot()
             .is_some_and(|r| r.overheated || r.heat_locked_for_round)
             || self

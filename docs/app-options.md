@@ -18,7 +18,8 @@ joined with `--connect` takes those from the server.
 | `--play` | Skip the title screen and start a local practice match at once |
 | `--console [ADDR]` | App automation console on localhost, default `127.0.0.1:7790`; see [console commands](console.md) |
 | `--window-mode normal\|unfocused\|headless` | Normal visible window, visible without requesting focus, or GPU rendering without an OS window |
-| `--robot hero\|infantry-3\|infantry-4` | Robot you drive, on any host: the mecanum Hero fires 42 mm, the omni Infantry 3 (default; `infantry` is accepted) and Infantry 4 fire 17 mm. The two infantries differ only in the painted number |
+| `--robot hero\|engineer\|infantry-3\|infantry-4\|sentry\|drone` | Robot you drive on any host. Hero fires 42 mm; Infantry (default), Sentry and Drone fire 17 mm. Engineer has a fixed decorative arm; Drone flies at fixed altitude. Engineer has no launcher |
+| `--chassis auto\|omni\|balance\|mecanum\|flight` | Default `auto`: Infantry/Sentry use omni, Hero/Engineer use mecanum; Drone uses fixed-altitude flight. Infantry also offers balance (two wheels, mock balance assist and jump). Incompatible choices are rejected |
 | `--performance TYPE` | Section 5.4.2 performance type requested after joining: `long-range` or `melee` for the Hero, `hp-cooling`, `hp-burst`, `power-cooling` or `power-burst` for an infantry. Unset keeps the rulebook default; a host refuses a type for the other class or during a running round |
 | `--cad-assets DIR` | Extracted RMUC CAD directory; relative paths start at the working directory for both manifests and meshes |
 | `--big-rune` / `--no-rune` | Big Rune motion and two-target groups for training (a match always starts with the Small Rune and converts at 3:00), or no rune rules |
@@ -66,17 +67,33 @@ joined with `--connect` takes those from the server.
 screen and enter a match at once; the remaining options are the defaults every
 join from the title screen starts from.
 
-## Robot page
+## Robot and chassis pages
 
 Single Player, Join lobby / address and Create lobby all open the robot page
 before the match starts. The blue column is on the left and the red column on
-the right; each offers the Hero (42 mm), Infantry 3 (17 mm), Infantry 4
-(17 mm) and a spectating free camera. The Referee seat sits below them with
-Back and the Start match or Join lobby button. The chosen frame is lit and a
-line below names the seat. Enter confirms, Escape goes back to the page the
-choice came from. The robot is remembered with the other fields; the referee
-seat is not. Two pilots may drive the same robot: a host has no seat list to
+the right; each offers Hero, Engineer, Infantry 3, Infantry 4, Sentry and a
+spectating free camera. The Referee seat sits below them. Continue (or Enter)
+opens chassis selection for pilots; spectators and referees join directly.
+Choose a supported chassis, then Start match or Join lobby. Escape returns to
+robot selection without losing the pending lobby. The robot and chassis are
+remembered with the other fields; the referee seat is not. Two pilots may drive the same robot: a host has no seat list to
 show before the connection is made.
+
+## Balance stabilization and Drone flight
+
+**P > Controls > Balance stabilization** sets 0–100% assistance while in a
+match and is remembered between launches. Zero disables stabilizing torque;
+100% applies the full reduced-model LQR. Intermediate values scale the torque
+and damping, so low settings can let the robot tip. The slider affects only
+Balance, and travels to the host through normal pilot inputs. Reset all settings
+restores 100%. Space still requests one jump per grounded press.
+
+Drone offers the Flight chassis. WASD moves in its horizontal spawn plane,
+mouse look steers, and V changes viewpoint. The initial plane is 1.6 m above
+the spawn ground; Space/Shift do not change altitude. Left click fires an
+underslung 17 mm gimbal launcher, including when aiming downward. Live matches
+do not require activating air support for this prototype; normal cadence, heat
+and configured ammunition checks still apply.
 
 ## Weapon settings
 
@@ -185,7 +202,7 @@ an NVIDIA laptop GPU; Mac performance still needs separate measurements.
 | V | Toggle first- and third-person view while driving |
 | C | Cycle physics colliders: Off / Overlay / Only |
 | F3 | Open / close debug panel: collider Off / Overlay / Only, visual wireframe, rendering statistics, remote motion buffering, reset own robot to spawn |
-| Space / Left Shift | Move up / down (flying) |
+| Space / Left Shift | Move up / down (flying); Space jumps once per grounded press on balance Infantry |
 | F6 | Pause or resume the world clock (local world or referee) |
 | F7 | Step the world one manual step (three 128 Hz ticks, 23.4375 ms) while paused (local world or referee) |
 | O / I | Buy one 17 mm / 42 mm round using team gold, at default prices of 1 / 10 gold during a running match |
@@ -196,4 +213,4 @@ an NVIDIA laptop GPU; Mac performance still needs separate measurements.
 | M | Toggle the large team map |
 | F12 (hold) | Show controls |
 | Toolbar | Mouse-driven Settings, Map, Team, Help, Close and Leave match; appears with the cursor released |
-| Escape | Close the current panel or open Pause; on the robot page, return to the page its choice came from; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |
+| Escape | Close the current panel or open Pause; on the chassis page, return to robots; on the robot page, return to the page its choice came from; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |

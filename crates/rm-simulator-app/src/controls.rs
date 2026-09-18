@@ -89,6 +89,8 @@ pub struct PlayerCamera;
 /// the pilot acts or the robot is placed, so a change here is a transition.
 #[derive(Clone, Copy, PartialEq)]
 struct DriveIntent {
+    balance_control: u8,
+    jump: bool,
     forward: f64,
     left: f64,
     fast: bool,
@@ -193,6 +195,8 @@ pub fn drive_command(
             .clamp(-MAX_FOLLOW_RAD_S, MAX_FOLLOW_RAD_S)
     };
     ChassisCommand {
+        jump: false,
+        balance_control: 100,
         forward_m_s: body.x,
         left_m_s: body.y,
         yaw_rate_rad_s,
@@ -233,6 +237,12 @@ pub fn drive_chassis(
     };
     let blocked = ui.blocks_input();
     let intent = DriveIntent {
+        balance_control: ui.balance_control,
+        jump: !blocked
+            && chassis.config.balance_assist
+            && ui
+                .controls
+                .pressed(InputAction::Jump, &keys, buttons.as_deref()),
         forward: if blocked {
             0.
         } else {
@@ -259,6 +269,11 @@ pub fn drive_chassis(
         f64::from(player.pitch_rad),
         yaw_of(chassis.pose),
     );
+    command.jump = intent.jump;
+    command.balance_control = intent.balance_control;
+    if chassis.config.balance_assist {
+        command.left_m_s = 0.;
+    }
     if blocked {
         command.yaw_rate_rad_s = 0.;
     }
@@ -779,13 +794,20 @@ mod tests {
         }
         let chassis = field.snapshot().chassis.remove(0);
         let [x, y, z] = chassis.pose.translation_m;
-        assert!(chassis.wheels.iter().all(|w| w.contact.is_some()));
+        assert!(
+            chassis.wheels.iter().all(|w| w.contact.is_some()),
+            "{chassis:?}"
+        );
         // Started at -9 m; the plateau spans -8.5..-6.3 m and costs some of
         // the commanded 2 m/s. On the flat V1.2.0 slab its top is at +0.15 m;
         // the crowned V2.0.0 slab puts it at about +0.04 m.
         let crest = if ground > -0.05 { ground + 0.15 } else { 0.04 };
-        assert!(x > -6.0 && y.abs() < 0.5, "{x} {y}");
-        assert!(highest > crest + config.rest_height_m() - 0.03, "{highest}");
+        assert!(x > -6.0 && y.abs() < 0.5, "{x} {y}: {chassis:?}");
+        let sag = config.mass_kg * 9.81 / 4.0 / config.suspension_stiffness_n_m;
+        assert!(
+            highest > crest + config.rest_height_m() - sag - 0.03,
+            "{highest}"
+        );
         assert!(z < highest - 0.05, "{z} {highest}");
     }
     /// The 起伏路段 undulating road near the red-side wall (x ≈ 6.3..8.7,
@@ -869,7 +891,8 @@ mod tests {
         let chassis = field.snapshot().chassis.remove(0);
         let [x, _, z] = chassis.pose.translation_m;
         assert!(x > -12.3, "{x}");
-        assert!((z - start_z).abs() < 0.03, "{z} vs {start_z}");
+        let sag = config.mass_kg * 9.81 / 4.0 / config.suspension_stiffness_n_m;
+        assert!((z - (start_z - sag)).abs() < 0.03, "{z} vs {start_z}");
         assert!(chassis.wheels.iter().all(|w| w.contact.is_some()));
         // On the deck top (0.9 m above the flat slab, about 0.46 m on the
         // crowned one): set down from above and stay there.

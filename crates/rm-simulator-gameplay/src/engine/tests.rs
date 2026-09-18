@@ -600,6 +600,47 @@ fn sentry_claims_accumulated_resupply_and_drone_cannot_purchase_ammo() {
     );
 }
 #[test]
+fn prototype_drone_policy_relaxes_only_air_support_gate() {
+    let mut game = running();
+    assert!(!game.can_launch(5, Caliber::Mm17));
+    game.command(Command::SetPolicy(Policy {
+        enforce_air_support: false,
+        ..game.snapshot().policy
+    }))
+    .unwrap();
+    assert!(game.can_launch(5, Caliber::Mm17));
+    assert!(!game.can_launch(5, Caliber::Mm42));
+    let before = game.snapshot().robots[4].clone();
+    game.command(Command::Launch {
+        robot: 5,
+        caliber: Caliber::Mm17,
+    })
+    .unwrap();
+    assert_eq!(
+        game.snapshot().robots[4].allowance[0],
+        before.allowance[0] - 1
+    );
+    assert!(game.snapshot().robots[4].heat_tenths > before.heat_tenths);
+    game.command(Command::SetAllowance {
+        robot: 5,
+        allowance: [0, 0],
+    })
+    .unwrap();
+    assert!(!game.can_launch(5, Caliber::Mm17));
+    game.command(Command::SetAllowance {
+        robot: 5,
+        allowance: [10, 0],
+    })
+    .unwrap();
+    game.command(Command::SetPolicy(Policy {
+        enforce_air_support: true,
+        ..game.snapshot().policy
+    }))
+    .unwrap();
+    assert!(!game.can_launch(5, Caliber::Mm17));
+}
+
+#[test]
 fn drone_support_consumes_time_then_gold() {
     let mut game = running();
     game.command(Command::AirSupport {

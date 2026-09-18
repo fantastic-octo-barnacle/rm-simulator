@@ -387,6 +387,9 @@ fn armor_pattern(
     use rm_simulator_server::protocol::Robot;
     match robot {
         Some(Robot::Hero) => ArmorPattern::One,
+        Some(Robot::Engineer) => ArmorPattern::Two,
+        Some(Robot::Sentry) => ArmorPattern::GuardSmall,
+        Some(Robot::Drone) => ArmorPattern::Three,
         Some(Robot::Infantry3) => ArmorPattern::Three,
         Some(Robot::Infantry4) => ArmorPattern::Four,
         None if chassis.config.mecanum => ArmorPattern::One,
@@ -405,6 +408,19 @@ fn chassis_appearance(
     let aim = pose_flu(chassis.turret);
     let (yaw_stage, turret) = gimbal_poses(pose_flu(chassis.pose), aim);
     ChassisAppearance {
+        model: {
+            use rm_simulator_render::chassis::RobotModel;
+            use rm_simulator_server::protocol::Robot;
+            match robot {
+                Some(Robot::Engineer) => RobotModel::Engineer,
+                Some(Robot::Drone) => RobotModel::Drone,
+                Some(Robot::Sentry) => RobotModel::Sentry,
+                Some(Robot::Hero) => RobotModel::Hero,
+                _ if config.balance_assist => RobotModel::Balance,
+                None if config.mecanum => RobotModel::Hero,
+                _ => RobotModel::Omni,
+            }
+        },
         armor_pattern: armor_pattern(chassis, robot),
         mecanum: config.mecanum,
         hp_fraction: if chassis.defeated { 0.0 } else { 1.0 },

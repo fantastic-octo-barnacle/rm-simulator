@@ -114,3 +114,77 @@ The shared emission profile now reaches that brighter center through tone
 mapping. The corpus spans different exposures and includes synthetic images;
 only the photographed robots guided this qualitative fit. No corpus images
 are embedded or redistributed, and this is not a calibrated camera or LED model.
+
+## Robot and chassis selection prototypes
+
+The title flow selects the robot/team first, then a compatible chassis.
+`--chassis auto|omni|balance|mecanum|flight` exposes the same selection to the CLI.
+Infantry 3/4 offers omni or balance; Sentry uses omni; Hero and Engineer use
+mecanum; Drone uses Flight. The host validates the pairing. Hello, snapshots and owner anchors
+carry the selection and jump state in protocol 49 (`RMI5` input batches,
+`RMO8` owner anchors); use matching builds.
+
+All new models are authored boxes, cylinders and wheel details. The supplied
+`sentry_urdf_final/robot.urdf`, `combine_urdf/urdf/combine_urdf.urdf` and
+`【装配体】轮腿步兵总装_V4.STEP` were inspected on 2026-09-18 only as references.
+Their meshes are not copied, bundled or loaded. The Sentry reference has an
+approximately 496 × 514 mm lower-body envelope and 153 mm wheels. Omni Infantry
+shares the compact core, exposed motors and open corner frame, omitting
+the Sentry sensor tower. The Engineer reference's chassis envelope is about
+635 × 562 mm; its approximate folded arm is decorative and has no controls.
+Engineer has no launcher. Sentry uses normal manual Infantry drive/aim/fire.
+Its sensor rack is attached to the pitch cradle, following both gimbal axes
+above and behind the camera instead of rotating across its view with the body.
+Ground robots retain four small visible scoring modules; decorative arms, towers and links do not
+add mesh colliders. Hero's geometry and dynamics remain unchanged.
+
+The omni wheel contacts are centered on the four edges, 245 mm from the centre.
+Their double roller rows, spokes and motor mounts are procedural details.
+The omni mock uses softer 1 kN/m springs with 80 mm unloaded extension
+(about 54 mm static sag) to keep the side wheels loaded as the front wheel
+enters a ramp. Its assumed 60 N drives and 1.0 drive friction account for
+only two motors propelling a straight run. Hero and Engineer retain their
+original suspension and tyre tuning.
+Engineer uses an open truss frame with shoulder, elbow and wrist housings,
+paired arm plates and a canted open gripper.
+
+Balance uses two 200 mm wheels and a narrower electronics pod inside its
+360 × 480 × 180 mm collision envelope. Each leg is a serial hip–knee–wheel
+chain. A four-bar parallelogram transfers the coaxial hip motor's angle to the
+knee; a slim pushrod is separated from the load-bearing thigh. The drawn links
+solve a two-link inverse-kinematics pose from the caller's suspension-following
+wheel hub. Their lengths are 145 mm; knee-drive cranks are 45 mm. This is a
+procedural visual mechanism, not independently simulated joint dynamics.
+
+Stabilization uses a reduced continuous-time LQR for pitch and pitch rate:
+`A = [[0,1],[mgh/I,0]]`, `B = [0,1/I]`, `Q = diag(1000,60)`, `R = 0.01`.
+The closed-form Riccati solution computes gains once from the preset mass,
+fitted inertia and centre-of-mass height. A bounded speed-error lean setpoint
+encourages forward acceleration, and a 180 N m torque cap limits correction.
+Settings > Controls scales this torque from 0 to 100 percent, default 100;
+zero removes stabilization entirely. This reduced body-torque controller is
+not the reference firmware's ten-state wheel-leg controller. No firmware code,
+solved firmware gain table, mesh or sibling dependency is copied. Jump is
+represented by one equivalent 2.4 m/s upward push (about 0.29 m free-flight rise)
+when both wheels support an upright body. Press Space once; holding it cannot
+repeat the jump. Airborne and defeated robots cannot launch. The input latch is
+part of the restorable snapshot and compact owner stream.
+
+Drone is an original four-rotor approximation: diagonal arms, motor cans,
+three-blade propellers, landing skids, and twin guard hoops connected by a
+crossed-wire side mesh around each rotor. Its 0.8 m square collision envelope
+is approximate. Gravity, pitch/roll and vertical translation are locked for
+this planar prototype; velocity feedback accelerates horizontally up to
+4 m/s². The plane starts 1.6 m above the spawn ground and does not follow
+terrain. Walls still collide with the body. There is no rotor aerodynamics,
+altitude control or new drone-rule enforcement. A small two-axis 17 mm launcher
+is mounted 140 mm below the body centre, clear of the rotor plane, with the
+normal aim camera and muzzle. The live referee disables the air-support gate
+for this prototype because its activation controls are not integrated; heat,
+ammunition policy and host firing cadence remain authoritative.
+
+Render a CAD-free comparison with:
+
+```sh
+cargo run -p rm-simulator-render --example robots -- /tmp/robots.png healthy front all
+```

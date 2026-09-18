@@ -14,8 +14,9 @@ use rm_simulator_world::{ChassisConfig, ChassisSnapshot};
 use serde::{Deserialize, Serialize};
 use std::io;
 
-/// Anchor magic, `RMO6`, checked before any field is read. The sixth revision
-/// keeps the `RMO4` header and configuration reference and quantizes every
+/// Anchor magic, `RMO8`, checked before any field is read. The eighth revision
+/// adds stabilization strength to the seventh revision's jump input and latch.
+/// It keeps the `RMO4` header and configuration reference and quantizes every
 /// dynamic float: translations to millimetres, velocities to 1 cm/s, rates to
 /// 1 mrad/s and aims to 0.1 mrad. Quaternions travel smallest-three in six
 /// bytes (see [`crate::binary_snapshot::bitpack::smallest_three`]), where
@@ -25,7 +26,7 @@ use std::io;
 /// hostile or corrupt anchor still decodes to finite values, and
 /// out-of-range or non-finite dynamics fail at encode time, so the datagram
 /// size stays fixed whatever the motion.
-pub const MAGIC: &[u8; 4] = b"RMO6";
+pub const MAGIC: &[u8; 4] = b"RMO8";
 /// Largest accepted anchor datagram in bytes. An encoding past this fails
 /// rather than fragmenting, because one anchor must fit one datagram.
 pub const MAX_BYTES: usize = 1000;
@@ -159,6 +160,9 @@ impl OwnerAnchor {
     /// size. Errors when a dynamic value is non-finite or outside its
     /// quantized range, or when the whole anchor exceeds [`MAX_BYTES`].
     pub fn encode(&self) -> io::Result<Vec<u8>> {
+        if !self.owner.command.is_finite() {
+            return Err(invalid());
+        }
         let mut bytes = MAGIC.to_vec();
         for n in [
             self.snapshot_id,
@@ -193,6 +197,9 @@ impl OwnerAnchor {
         bytes.extend(quantize_i16(c.yaw_rate_rad_s, RATE_SCALE)?.to_le_bytes());
         bytes.extend(quantize_i32(c.aim_yaw_rad, AIM_SCALE)?.to_le_bytes());
         bytes.extend(quantize_i32(c.aim_pitch_rad, AIM_SCALE)?.to_le_bytes());
+        bytes.push(u8::from(c.jump));
+        bytes.push(c.balance_control);
+        bytes.push(u8::from(self.owner.jump_held));
         for v in self.owner.held_aim_rad {
             bytes.extend(quantize_i32(v, AIM_SCALE)?.to_le_bytes());
         }
@@ -281,7 +288,13 @@ impl OwnerAnchor {
             yaw_rate_rad_s: reader.q16(RATE_SCALE)?,
             aim_yaw_rad: reader.q32(AIM_SCALE)?,
             aim_pitch_rad: reader.q32(AIM_SCALE)?,
+            jump: reader.boolean()?,
+            balance_control: reader.take::<1>()?[0],
         };
+        if !command.is_finite() {
+            return Err(invalid());
+        }
+        let jump_held = reader.boolean()?;
         let held_aim_rad = reader.q32_array::<2>(AIM_SCALE)?;
         let gimbal_velocity_rad_s = reader.q16_array::<2>(RATE_SCALE)?;
         let count = reader.take::<1>()?[0] as usize;
@@ -315,6 +328,7 @@ impl OwnerAnchor {
                 velocity_m_s,
                 angular_velocity_rad_s,
                 command,
+                jump_held,
                 held_aim_rad,
                 gimbal_velocity_rad_s,
                 wheels,
@@ -323,7 +337,7 @@ impl OwnerAnchor {
         })
     }
 }
-/// Quantizer scales for the `RMO6` dynamic body, chosen to mirror the
+/// Quantizer scales for the `RMO8` dynamic body, chosen to mirror the
 /// checkpoint precisions: millimetre positions, smallest-three quaternions,
 /// centimetre-per-second velocities, milliradian-per-second rates and
 /// 0.1 mrad aims. Wheel roll keeps 0.1 mrad in 32 bits because roll is
@@ -560,6 +574,12 @@ mod tests {
         {
             close(a, b, 0.001);
         }
+        assert_eq!(expected.owner.command.jump, actual.owner.command.jump);
+        assert_eq!(
+            expected.owner.command.balance_control,
+            actual.owner.command.balance_control
+        );
+        assert_eq!(expected.owner.jump_held, actual.owner.jump_held);
         let pairs = [
             (
                 expected.owner.command.forward_m_s,
@@ -611,7 +631,10 @@ mod tests {
     #[test]
     fn anchor_round_trips_against_its_named_configuration_only() {
         let (state, chassis) = anchored(177, 5, 3);
-        let anchor = OwnerAnchor::from_state(&state, chassis).unwrap();
+        let mut anchor = OwnerAnchor::from_state(&state, chassis).unwrap();
+        anchor.owner.command.jump = true;
+        anchor.owner.command.balance_control = 35;
+        anchor.owner.jump_held = true;
         let bytes = anchor.encode().unwrap();
         assert_eq!(
             OwnerAnchor::config_revision_of(&bytes).unwrap(),

@@ -26,6 +26,8 @@ pub enum InputAction {
     Fast,
     /// Toggle spin mode; the pilot's chassis is the only thing that spins.
     Spin,
+    /// Jump with the balance infantry, once per press while grounded.
+    Jump,
     /// Toggle the first- and third-person camera; only a chassis has an eye on it.
     Camera,
     /// Hold to shoot at the gun's cadence: a chassis gun through the host's
@@ -72,7 +74,7 @@ pub enum InputAction {
 }
 impl InputAction {
     /// Every action, in the order the help panel and the controls menu list them.
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 26] = [
         Self::Forward,
         Self::Backward,
         Self::Left,
@@ -81,6 +83,7 @@ impl InputAction {
         Self::Down,
         Self::Fast,
         Self::Spin,
+        Self::Jump,
         Self::Camera,
         Self::Fire,
         Self::AutoAim,
@@ -110,6 +113,7 @@ impl InputAction {
             Self::Down => "Fly down",
             Self::Fast => "Move faster",
             Self::Spin => "Toggle spin",
+            Self::Jump => "Jump (balance)",
             Self::Camera => "Change camera",
             Self::Fire => "Fire",
             Self::AutoAim => "Hold auto aim",
@@ -133,6 +137,7 @@ impl InputAction {
     fn contexts(self) -> u8 {
         match self {
             Self::Spin
+            | Self::Jump
             | Self::Camera
             | Self::Buy17
             | Self::Buy42
@@ -155,6 +160,7 @@ impl InputAction {
             Self::Down => ShiftLeft,
             Self::Fast => ControlLeft,
             Self::Spin => KeyR,
+            Self::Jump => Space,
             Self::Camera => KeyV,
             Self::Fire => return Binding::Mouse(MouseButton::Left),
             Self::AutoAim | Self::AutoFire => return Binding::Mouse(MouseButton::Right),

@@ -193,7 +193,7 @@ function number(id) {
   return value;
 }
 async function submit(action) { try { await action(); } catch(e) { $('error').textContent = String(e); } }
-function savePolicy() { return referee({SetPolicy:{enforce_allowance:$('enforceAmmo').checked, exchange_requires_zone:$('exchangeZone').checked}}); }
+function savePolicy() { return referee({SetPolicy:{enforce_allowance:$('enforceAmmo').checked, exchange_requires_zone:$('exchangeZone').checked, enforce_air_support:false}}); }
 function selectedRobot() { if ($('resourceRobot').value === '') throw new Error('No robot selected'); return number('resourceRobot'); }
 function saveAllowance() { return referee({SetAllowance:{robot:selectedRobot(), allowance:[number('ammo17'),number('ammo42')]}}); }
 function buyAmmo() { return referee({BuyAmmo:{robot:selectedRobot(),caliber:$('purchaseCaliber').value,amount:number('purchaseAmount')}}); }
