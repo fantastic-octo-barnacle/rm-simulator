@@ -67,6 +67,22 @@ joined with `--connect` takes those from the server.
 screen and enter a match at once; the remaining options are the defaults every
 join from the title screen starts from.
 
+## Menu feedback and navigation
+
+In Multiplayer, Enter submits the form containing the focused input: lobby
+creation fields create a lobby, while the address and join-password fields join
+one. Passwords start masked; each field has its own Show password checkbox.
+Passwords are never remembered. Search progress appears beside Refresh LAN;
+validation and lobby-selection messages appear beside the relevant action.
+LAN help opens troubleshooting on request; Escape dismisses it. Menu pages
+start at the top and clear focus from inputs on the previous page.
+Loading can be cancelled with Escape, including while scenery and the first
+frame are being prepared.
+
+Settings keeps its tabs and Reset / Close buttons visible while the selected
+page scrolls. The active tab is underlined; switching tabs starts at the top of
+that page.
+
 ## Robot and chassis pages
 
 Single Player, Join lobby / address and Create lobby all open the robot page

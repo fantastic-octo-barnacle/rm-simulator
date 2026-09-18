@@ -231,8 +231,11 @@ fn poll(world: &mut World) {
     if world
         .resource::<ButtonInput<KeyCode>>()
         .just_pressed(KeyCode::Escape)
-        && !loading.prepared
     {
+        if loading.prepared {
+            to_title(world, None);
+            return;
+        }
         loading.cancelled = true;
         loading.text = "Cancelling".into();
     }
@@ -544,6 +547,26 @@ mod tests {
                 .next()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn escape_cancels_scenery_and_first_frame_preparation() {
+        for loaded in [0, 2] {
+            let (mut world, _sender) = loading_world(true);
+            world.insert_resource(crate::session::test_session(false));
+            let splash = world.spawn(Splash).id();
+            world.resource_mut::<CadSceneStatus>().loaded = loaded;
+            world
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::Escape);
+            poll(&mut world);
+            assert!(world.contains_resource::<TitleScreen>());
+            assert!(!world.contains_resource::<Loading>());
+            assert!(!world.contains_resource::<Ready>());
+            assert!(!world.contains_resource::<Session>());
+            assert!(world.get_entity(splash).is_err());
+            assert_eq!(failure(&world), None);
+        }
     }
 
     #[test]

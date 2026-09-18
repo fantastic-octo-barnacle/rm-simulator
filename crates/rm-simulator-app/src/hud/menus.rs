@@ -47,6 +47,7 @@ impl Plugin for HudPlugin {
                         .after(super::panel_input)
                         .before(crate::session::advance_world),
                     sync_sections,
+                    sync_settings_navigation,
                     sync_weapon_controls,
                     super::controls_menu::sync_overlay,
                     super::controls_menu::capture_input.before(super::panel_input),
@@ -180,7 +181,7 @@ fn spawn_menus(
         .id();
     commands.spawn((
         ChildOf(shade),
-        Text::new("Scroll to see all settings"),
+        Text::new("Scroll for more settings • Changes are saved automatically"),
         Node {
             position_type: PositionType::Absolute,
             bottom: percent(8.),
@@ -192,15 +193,13 @@ fn spawn_menus(
     let card = commands
         .spawn((
             ChildOf(shade),
-            bevy::ui_widgets::ScrollArea,
             Node {
-                width: percent(80),
+                width: percent(90),
                 max_width: px(920),
                 max_height: percent(76),
-                overflow: Overflow::scroll_y(),
-                padding: UiRect::all(px(24)),
+                padding: UiRect::all(px(20)),
                 flex_direction: FlexDirection::Column,
-                row_gap: px(22),
+                row_gap: px(14),
                 border: UiRect::all(px(1)),
                 border_radius: BorderRadius::all(px(8)),
                 ..default()
@@ -220,6 +219,9 @@ fn spawn_menus(
             ChildOf(card),
             Node {
                 column_gap: px(10.),
+                row_gap: px(6.),
+                flex_wrap: FlexWrap::Wrap,
+                flex_shrink: 0.0,
                 ..default()
             },
         ))
@@ -230,16 +232,44 @@ fn spawn_menus(
         ("Display", SettingsTab::Display),
         ("Weapon", SettingsTab::Weapon),
     ] {
+        let frame = commands
+            .spawn((
+                ChildOf(tabs),
+                SettingsTabIndicator(tab),
+                Node {
+                    border: UiRect::bottom(px(3)),
+                    padding: UiRect::bottom(px(4)),
+                    ..default()
+                },
+                BorderColor::all(Color::NONE),
+            ))
+            .id();
         commands.spawn_scene(bsn! {
             @FeathersButton { @caption: bsn! { Text(title) ThemedText } }
             ActivateOnPress
+            AccessibleLabel(title)
             on(move |_: On<Activate>, mut selected: ResMut<SettingsTab>, mut ui: ResMut<HudState>| { *selected = tab; ui.consumed = true; })
-        }).insert(ChildOf(tabs));
+        }).insert(ChildOf(frame));
     }
-    let display = section(&mut commands, card, SettingsTab::Display);
-    let controls = section(&mut commands, card, SettingsTab::Controls);
-    let graphics = section(&mut commands, card, SettingsTab::Graphics);
-    let weapon = section(&mut commands, card, SettingsTab::Weapon);
+    let body = commands
+        .spawn((
+            ChildOf(card),
+            SettingsScroll,
+            bevy::ui_widgets::ScrollArea,
+            Node {
+                min_height: px(0),
+                overflow: Overflow::scroll_y(),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(14),
+                padding: UiRect::right(px(12)),
+                ..default()
+            },
+        ))
+        .id();
+    let display = section(&mut commands, body, SettingsTab::Display);
+    let controls = section(&mut commands, body, SettingsTab::Controls);
+    let graphics = section(&mut commands, body, SettingsTab::Graphics);
+    let weapon = section(&mut commands, body, SettingsTab::Weapon);
     spawn_weapon_controls(&mut commands, weapon);
     commands.spawn((
         ChildOf(display),
@@ -302,13 +332,15 @@ fn spawn_menus(
         .insert((ChildOf(controls), BalanceControl));
     super::controls_menu::spawn(&mut commands, controls, shade);
     crate::graphics::spawn_graphics_controls(&mut commands, graphics, &preferences.graphics);
-    commands.spawn((ChildOf(card), Text::new("Drive, aim and fire are suspended while a panel is open.\nEsc closes settings. Click the field to resume control."),
+    commands.spawn((ChildOf(body), Text::new("Drive, aim and fire are suspended while a panel is open.\nEsc closes settings. Click the field to resume control."),
         text_font(13.), TextColor(Color::srgb(0.6, 0.7, 0.74))));
     let footer = commands
         .spawn((
             ChildOf(card),
             Node {
                 column_gap: px(10),
+                row_gap: px(6),
+                flex_wrap: FlexWrap::Wrap,
                 min_height: px(34),
                 flex_shrink: 0.0,
                 ..default()
@@ -581,6 +613,31 @@ enum SettingsTab {
     Display,
     Weapon,
 }
+/// Persistent underline for the active settings page.
+#[derive(Component)]
+struct SettingsTabIndicator(SettingsTab);
+fn sync_settings_navigation(
+    selected: Res<SettingsTab>,
+    mut indicators: Query<(&SettingsTabIndicator, &mut BorderColor)>,
+    mut scrolls: Query<&mut ScrollPosition, With<SettingsScroll>>,
+) {
+    for (tab, mut border) in &mut indicators {
+        let next = BorderColor::all(if tab.0 == *selected {
+            Color::srgb(0.1, 0.75, 0.85)
+        } else {
+            Color::NONE
+        });
+        if *border != next {
+            *border = next;
+        }
+    }
+    if selected.is_changed() {
+        for mut scroll in &mut scrolls {
+            *scroll = default();
+        }
+    }
+}
+
 #[derive(Component)]
 struct SettingsSection(SettingsTab);
 fn section(commands: &mut Commands, parent: Entity, tab: SettingsTab) -> Entity {
@@ -643,6 +700,44 @@ mod focus_tests {
 #[cfg(test)]
 mod section_tests {
     use super::*;
+    #[test]
+    fn switching_tabs_resets_only_the_settings_scroll() {
+        let mut app = App::new();
+        app.init_resource::<SettingsTab>()
+            .add_systems(Update, sync_settings_navigation);
+        let settings = app
+            .world_mut()
+            .spawn((SettingsScroll, ScrollPosition(Vec2::new(0., 120.))))
+            .id();
+        let other = app
+            .world_mut()
+            .spawn(ScrollPosition(Vec2::new(0., 90.)))
+            .id();
+        app.update();
+        let indicator = app
+            .world_mut()
+            .spawn((
+                SettingsTabIndicator(SettingsTab::Controls),
+                BorderColor::all(Color::NONE),
+            ))
+            .id();
+        app.update();
+        assert_eq!(
+            *app.world().get::<BorderColor>(indicator).unwrap(),
+            BorderColor::all(Color::srgb(0.1, 0.75, 0.85))
+        );
+        app.world_mut()
+            .get_mut::<ScrollPosition>(settings)
+            .unwrap()
+            .y = 200.;
+        app.update();
+        assert_eq!(app.world().get::<ScrollPosition>(settings).unwrap().y, 200.);
+        *app.world_mut().resource_mut::<SettingsTab>() = SettingsTab::Graphics;
+        app.update();
+        assert_eq!(app.world().get::<ScrollPosition>(settings).unwrap().y, 0.);
+        assert_eq!(app.world().get::<ScrollPosition>(other).unwrap().y, 90.);
+    }
+
     #[test]
     fn settings_sections_are_entities_and_only_selected_tab_is_visible() {
         let mut app = App::new();

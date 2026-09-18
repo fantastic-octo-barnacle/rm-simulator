@@ -6,6 +6,8 @@
 //! a match first opens the robot page, where the seat (a robot on a team, a
 //! spectating camera or the referee) is picked and confirmed. The last name,
 //! addresses and robot are remembered in the user's configuration directory.
+mod password;
+
 use crate::{args::Args, loading::JoinRequest};
 use bevy::{
     feathers::{
@@ -111,13 +113,14 @@ pub enum Page {
 /// One of the buttons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Choice {
-    /// Open the multiplayer page, which starts a LAN search and shows the
-    /// firewall tip.
+    /// Open the multiplayer page and start a LAN search.
     Multiplayer,
     /// Leave the multiplayer page for the main menu.
     Back,
     /// Search the LAN for lobbies on a worker thread.
     Refresh,
+    /// Show LAN connection help.
+    ShowTip,
     /// Hide the firewall tip.
     DismissTip,
     /// Pick the discovered lobby at this index in the last listing. An entry
@@ -535,6 +538,8 @@ struct TitleRoot;
 #[derive(Component)]
 struct TitleCard;
 #[derive(Component)]
+struct TitleScroll;
+#[derive(Component)]
 struct MenuScrollbar(Entity);
 
 #[derive(Resource)]
@@ -626,8 +631,33 @@ struct FirewallTip;
 /// loading splash: allow the app through the firewall and use one network.
 pub const FIREWALL_TIP: &str = "Can’t find or join a LAN lobby? Allow RM Simulator through your firewall on private networks. Both players must be on the same network; guest Wi-Fi may block connections.";
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StatusLocation {
+    General,
+    Join,
+    Host,
+    Search,
+}
 #[derive(Component)]
-struct StatusText;
+struct StatusText(StatusLocation);
+
+fn status_text(commands: &mut Commands, parent: Entity, location: StatusLocation) {
+    commands.spawn((
+        ChildOf(parent),
+        StatusText(location),
+        Text::default(),
+        TextFont {
+            font_size: FontSize::Px(14.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.7, 0.82, 0.85)),
+        Node {
+            display: Display::None,
+            flex_shrink: 0.0,
+            ..default()
+        },
+    ));
+}
 /// Text to put into an input once its editor exists.
 #[derive(Component)]
 struct Prefill(String);
@@ -635,7 +665,7 @@ struct Prefill(String);
 struct TitleButton;
 /// Pressed buttons waiting to be acted on, and the checkbox states, kept
 /// here because a checkbox reports changes only.
-type DiscoveryResult = (Vec<rm_simulator_server::lobby::Listing>, String);
+type DiscoveryResult = (Vec<rm_simulator_server::lobby::Listing>, String, bool);
 
 /// Title screen state the text fields do not hold: the open page, the choice
 /// the robot page was opened for, the chosen seat, the last LAN listing, a
@@ -652,6 +682,9 @@ pub(crate) struct TitleState {
     entries: Vec<rm_simulator_server::lobby::Listing>,
     discovery: Option<std::sync::Mutex<std::sync::mpsc::Receiver<DiscoveryResult>>>,
     actions: Vec<Choice>,
+    feedback: Option<(StatusLocation, bool, String)>,
+    search_status: Option<String>,
+    search_failed: bool,
 }
 
 impl TitleState {
@@ -660,6 +693,11 @@ impl TitleState {
     /// Returns whether a page was open, so Escape offers to quit only from the
     /// main page.
     pub(crate) fn escape_back(&mut self) -> bool {
+        if self.tip && self.page == Page::Multiplayer {
+            self.tip = false;
+            return true;
+        }
+        self.feedback = None;
         match self.page {
             Page::Main => false,
             Page::Multiplayer => {
@@ -684,7 +722,8 @@ impl TitleState {
 pub struct TitlePlugin;
 impl Plugin for TitlePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<TitleState>()
+        app.add_plugins(password::PasswordPlugin)
+            .init_resource::<TitleState>()
             .init_resource::<TitleBackground>()
             .add_systems(
                 Update,
@@ -692,6 +731,7 @@ impl Plugin for TitlePlugin {
                     sync_title,
                     poll_lobbies,
                     show_page,
+                    sync_page_navigation,
                     show_seats,
                     show_chassis,
                     fit_columns,
@@ -757,7 +797,7 @@ fn field<M: Component + Default + Clone>(
     label: &'static str,
     value: String,
     marker: M,
-) {
+) -> Entity {
     commands.spawn((
         ChildOf(parent),
         Text::new(label),
@@ -778,7 +818,13 @@ fn field<M: Component + Default + Clone>(
         .spawn_scene(bsn! {
             @FeathersTextInput { @max_characters: 96usize }
         })
-        .insert((ChildOf(container), marker, Prefill(value)));
+        .insert((
+            ChildOf(container),
+            marker,
+            Prefill(value),
+            AccessibleLabel(label.into()),
+        ))
+        .id()
 }
 
 /// Show the title screen while `TitleScreen` exists and take it down when
@@ -788,7 +834,7 @@ fn sync_title(
     screen: Option<Res<TitleScreen>>,
     base: Option<Res<BaseArgs>>,
     roots: Query<Entity, With<TitleRoot>>,
-    mut status: Query<&mut Text, With<StatusText>>,
+    mut status: Query<(&StatusText, &mut Text, &mut TextColor, &mut Node)>,
     mut state: ResMut<TitleState>,
     background: Res<TitleBackground>,
 ) {
@@ -798,13 +844,39 @@ fn sync_title(
         }
         return;
     };
-    if let Ok(mut text) = status.single_mut() {
-        if screen.is_changed() {
-            text.0 = screen.status.clone().unwrap_or_default();
-        }
-        return;
-    }
     if !roots.is_empty() {
+        for (location, mut text, mut color, mut node) in &mut status {
+            let feedback = state
+                .feedback
+                .as_ref()
+                .filter(|(at, _, _)| *at == location.0);
+            let (message, error) = if let Some((_, error, message)) = feedback {
+                (Some(message.as_str()), *error)
+            } else if location.0 == StatusLocation::General {
+                (screen.status.as_deref(), true)
+            } else if location.0 == StatusLocation::Search {
+                (state.search_status.as_deref(), state.search_failed)
+            } else {
+                (None, false)
+            };
+            let value = message.unwrap_or_default();
+            if text.0 != value {
+                text.0 = value.into();
+            }
+            let next = if error {
+                Color::srgb(1.0, 0.62, 0.52)
+            } else {
+                Color::srgb(0.7, 0.82, 0.85)
+            };
+            if color.0 != next {
+                color.0 = next;
+            }
+            node.display = if value.is_empty() {
+                Display::None
+            } else {
+                Display::Flex
+            };
+        }
         return;
     }
     let Some(base) = base else {
@@ -814,6 +886,8 @@ fn sync_title(
         &base.0,
         remembered_path().and_then(|path| load_remembered(&path)),
     );
+    state.feedback = None;
+    state.search_status = None;
     state.page = Page::Main;
     state.pending = None;
     state.public = fields.public;
@@ -876,6 +950,7 @@ fn sync_title(
     let viewport = commands
         .spawn((
             ChildOf(frame),
+            TitleScroll,
             bevy::ui_widgets::ScrollArea,
             Node {
                 width: percent(100),
@@ -910,6 +985,7 @@ fn sync_title(
             },
         ))
         .id();
+    status_text(&mut commands, card, StatusLocation::General);
     field(&mut commands, card, "Name", fields.name.clone(), NameInput);
     let row = commands
         .spawn((
@@ -929,6 +1005,8 @@ fn sync_title(
     commands.entity(row).insert(MenuPage(Page::Main));
     commands.spawn_scene(bsn! {
         @FeathersButton { @caption: bsn! { Text("Settings") ThemedText } }
+        Node { height: px(38), flex_shrink: 0.0, padding: UiRect::horizontal(px(18)) }
+        AccessibleLabel("Settings")
         ActivateOnPress
         on(|_: On<Activate>, mut ui: ResMut<crate::hud::HudState>, mut focus: ResMut<bevy::input_focus::InputFocus>| {
             ui.close(); ui.settings = true; ui.consumed = true; focus.clear();
@@ -976,7 +1054,30 @@ fn sync_title(
         fields.lobby_host.clone(),
         LobbyInput::Directory,
     );
-    button(&mut commands, left, "Refresh LAN", Choice::Refresh);
+    let discovery_actions = commands
+        .spawn((
+            ChildOf(left),
+            Node {
+                column_gap: px(10),
+                row_gap: px(6),
+                flex_wrap: FlexWrap::Wrap,
+                ..default()
+            },
+        ))
+        .id();
+    button(
+        &mut commands,
+        discovery_actions,
+        "Refresh LAN",
+        Choice::Refresh,
+    );
+    button(
+        &mut commands,
+        discovery_actions,
+        "LAN help",
+        Choice::ShowTip,
+    );
+    status_text(&mut commands, left, StatusLocation::Search);
     let tip = commands
         .spawn((
             ChildOf(root),
@@ -1012,7 +1113,7 @@ fn sync_title(
             ChildOf(left),
             Node {
                 width: percent(100),
-                height: px(190),
+                height: px(140),
                 flex_shrink: 0.0,
                 padding: UiRect::right(px(12)),
                 ..default()
@@ -1043,14 +1144,16 @@ fn sync_title(
         fields.address.clone(),
         AddressInput,
     );
-    field(
+    let join_password = field(
         &mut commands,
         left,
-        "Lobby password (optional, visible)",
+        "Lobby password (optional)",
         fields.join_password.clone(),
         LobbyInput::JoinPassword,
     );
+    password::attach(&mut commands, left, join_password);
     button(&mut commands, left, "Join lobby / address", Choice::Connect);
+    status_text(&mut commands, left, StatusLocation::Join);
     let right = commands
         .spawn((
             ChildOf(multiplayer),
@@ -1079,13 +1182,14 @@ fn sync_title(
         fields.lobby_name.clone(),
         LobbyInput::Name,
     );
-    field(
+    let host_password = field(
         &mut commands,
         right,
-        "Password (optional, visible)",
+        "Password (optional)",
         fields.password.clone(),
         LobbyInput::Password,
     );
+    password::attach(&mut commands, right, host_password);
     let mut public = commands.spawn_scene(bsn! {
         @FeathersCheckbox { @caption: bsn! { Text("Public (unavailable)") ThemedText } }
         on(|change: On<ValueChange<bool>>, mut state: ResMut<TitleState>| { state.public = change.value; })
@@ -1115,6 +1219,7 @@ fn sync_title(
         },
     ));
     button(&mut commands, right, "Create lobby", Choice::Host);
+    status_text(&mut commands, right, StatusLocation::Host);
     button(&mut commands, right, "Back", Choice::Back);
 
     let robot_page = commands
@@ -1384,16 +1489,6 @@ fn sync_title(
     );
 
     commands.spawn((
-        ChildOf(card),
-        StatusText,
-        Text::new(screen.status.clone().unwrap_or_default()),
-        TextFont {
-            font_size: FontSize::Px(14.0),
-            ..default()
-        },
-        TextColor(Color::srgb(0.95, 0.55, 0.45)),
-    ));
-    commands.spawn((
         ChildOf(root),
         Text::new("Matches run on the host computer  |  Esc goes back or opens quit confirmation"),
         TextFont {
@@ -1467,6 +1562,23 @@ fn show_page(
         if node.display != display {
             node.display = display;
         }
+    }
+}
+
+/// New pages start at the top and cannot keep typing into an input they hide.
+fn sync_page_navigation(
+    state: Res<TitleState>,
+    mut previous: Local<Option<Page>>,
+    mut focus: ResMut<bevy::input_focus::InputFocus>,
+    mut scrolls: Query<&mut ScrollPosition, With<TitleScroll>>,
+) {
+    if *previous == Some(state.page) {
+        return;
+    }
+    *previous = Some(state.page);
+    focus.clear();
+    for mut scroll in &mut scrolls {
+        *scroll = default();
     }
 }
 
@@ -1618,22 +1730,20 @@ fn fit_scrollbars(
 fn poll_lobbies(
     mut commands: Commands,
     mut state: ResMut<TitleState>,
-    mut screen: Option<ResMut<TitleScreen>>,
     lists: Query<(Entity, Option<&Children>), With<LobbyList>>,
 ) {
     let result = state
         .discovery
         .as_ref()
         .and_then(|rx| rx.lock().ok()?.try_recv().ok());
-    let Some((entries, message)) = result else {
+    let Some((entries, message, failed)) = result else {
         return;
     };
     state.discovery = None;
     state.entries = entries;
     state.selected = None;
-    if let Some(screen) = screen.as_mut() {
-        screen.status = Some(message);
-    }
+    state.search_status = Some(message);
+    state.search_failed = failed;
     for (parent, children) in &lists {
         if let Some(children) = children {
             for child in children.iter() {
@@ -1643,7 +1753,7 @@ fn poll_lobbies(
         if state.entries.is_empty() {
             commands.spawn((
                 ChildOf(parent),
-                Text::new("No lobbies found. Create one, then refresh here."),
+                Text::new("No lobbies found. Refresh after a host creates one, or enter its HOST:PORT below."),
                 TextFont {
                     font_size: FontSize::Px(14.0),
                     ..default()
@@ -1695,7 +1805,7 @@ fn title_input(
         Option<&LobbyInput>,
     )>,
     focus: Res<bevy::input_focus::InputFocus>,
-    controls: Query<(), Or<(With<bevy::ui_widgets::Checkbox>, With<TitleButton>)>>,
+    controls: Query<(), Or<(With<bevy::ui_widgets::Checkbox>, With<FeathersButton>)>>,
 ) {
     if ui.as_ref().is_some_and(|ui| ui.blocks_input()) {
         state.actions.clear();
@@ -1714,7 +1824,34 @@ fn title_input(
     {
         let choice = match state.page {
             Page::Main => Choice::Practice,
-            Page::Multiplayer => Choice::Connect,
+            Page::Multiplayer => {
+                let hosting = focus
+                    .get()
+                    .and_then(|entity| inputs.get(entity).ok())
+                    .is_some_and(|(_, _, _, _, host, lobby)| {
+                        host || matches!(
+                            lobby,
+                            Some(
+                                LobbyInput::Name
+                                    | LobbyInput::Password
+                                    | LobbyInput::Advertised
+                                    | LobbyInput::FireRate
+                                    | LobbyInput::MaxFireRate
+                                    | LobbyInput::MaxMuzzleSpeed
+                                    | LobbyInput::MuzzleSpeed
+                                    | LobbyInput::SpeedVariation
+                                    | LobbyInput::Spread
+                                    | LobbyInput::Distribution
+                                    | LobbyInput::Seed
+                            )
+                        )
+                    });
+                if hosting {
+                    Choice::Host
+                } else {
+                    Choice::Connect
+                }
+            }
             Page::Robot | Page::Chassis => Choice::Confirm,
         };
         state.actions.push(choice);
@@ -1729,11 +1866,12 @@ fn title_input(
         }
         return;
     }
-    if choice == Choice::DismissTip {
-        state.tip = false;
+    if matches!(choice, Choice::ShowTip | Choice::DismissTip) {
+        state.tip = choice == Choice::ShowTip;
         return;
     }
     if choice == Choice::Back {
+        state.feedback = None;
         state.escape_back();
         return;
     }
@@ -1767,7 +1905,7 @@ fn title_input(
     }
     if choice == Choice::Multiplayer {
         state.page = Page::Multiplayer;
-        state.tip = true;
+        state.tip = false;
         choice = Choice::Refresh;
     }
     // A choice that enters a match is checked, then opens the robot page;
@@ -1815,7 +1953,8 @@ fn title_input(
         if state.discovery.is_none() {
             let (tx, rx) = std::sync::mpsc::channel();
             state.discovery = Some(std::sync::Mutex::new(rx));
-            screen.status = Some("Searching LAN lobbies...".into());
+            state.search_status = Some("Searching LAN lobbies…".into());
+            state.search_failed = false;
             std::thread::spawn(move || {
                 let mut entries = Vec::new();
                 let mut errors = Vec::new();
@@ -1824,12 +1963,21 @@ fn title_input(
                     Err(e) => errors.push(format!("LAN: {e}")),
                 }
                 entries.sort_by(|a, b| a.name.cmp(&b.name).then(a.address.cmp(&b.address)));
+                let failed = !errors.is_empty();
                 let message = if errors.is_empty() {
-                    format!("{} lobbies found", entries.len())
+                    format!(
+                        "{} LAN {} found",
+                        entries.len(),
+                        if entries.len() == 1 {
+                            "lobby"
+                        } else {
+                            "lobbies"
+                        }
+                    )
                 } else {
                     errors.join("; ")
                 };
-                let _ = tx.send((entries, message));
+                let _ = tx.send((entries, message, failed));
             });
         }
         return;
@@ -1840,7 +1988,9 @@ fn title_input(
             return;
         };
         if !entry.lan || !entry.compatible() {
-            screen.status = Some(
+            state.feedback = Some((
+                StatusLocation::Join,
+                true,
                 if entry.protocol != rm_simulator_server::protocol::PROTOCOL_VERSION {
                     rm_simulator_server::protocol::version_mismatch(
                         entry.protocol,
@@ -1849,7 +1999,7 @@ fn title_input(
                 } else {
                     "This lobby is unavailable or uses an unsupported transport.".into()
                 },
-            );
+            ));
             return;
         }
         for (entity, _, _, address, _, _) in &inputs {
@@ -1859,18 +2009,23 @@ fn title_input(
                     .insert(Prefill(entry.address.clone()));
             }
         }
-        screen.status = Some(format!(
-            "Selected {}. {}Press Join lobby / address to connect.",
-            entry.name,
-            if entry.locked {
-                "Enter its password, then "
-            } else {
-                ""
-            }
+        state.feedback = Some((
+            StatusLocation::Join,
+            false,
+            format!(
+                "Selected {}. {}Press Join lobby / address to connect.",
+                entry.name,
+                if entry.locked {
+                    "Enter its password, then "
+                } else {
+                    ""
+                }
+            ),
         ));
         state.selected = Some(index);
         return;
     }
+    state.feedback = None;
     match join_args(&base, &fields, choice) {
         Ok(_) if !confirming => {
             state.pending = Some(choice);
@@ -1890,7 +2045,19 @@ fn title_input(
             screen.status = None;
             commands.insert_resource(JoinRequest(args));
         }
-        Err(message) => screen.status = Some(message),
+        Err(message) => {
+            let location = if fields.name.trim().is_empty() {
+                StatusLocation::General
+            } else if choice == Choice::Connect {
+                StatusLocation::Join
+            } else if choice == Choice::Host {
+                StatusLocation::Host
+            } else {
+                StatusLocation::General
+            };
+            screen.status = None;
+            state.feedback = Some((location, true, message));
+        }
     }
 }
 
@@ -1944,10 +2111,14 @@ mod tests {
         assert_eq!(app.world().resource::<TitleState>().page, Page::Main);
         assert!(
             app.world()
-                .resource::<TitleScreen>()
-                .status
-                .as_deref()
-                .is_some_and(|s| s.contains("name"))
+                .resource::<TitleState>()
+                .feedback
+                .as_ref()
+                .is_some_and(
+                    |(location, error, text)| *location == StatusLocation::General
+                        && *error
+                        && text.contains("name")
+                )
         );
         app.world_mut()
             .spawn((NameInput, EditableText::new("dave")));
@@ -2089,6 +2260,100 @@ mod tests {
             Seat::Spectator { team: Team::Blue }.describe(),
             "blue spectator"
         );
+    }
+
+    #[test]
+    fn enter_submits_the_focused_multiplayer_form() {
+        for hosting in [true, false] {
+            let mut app = App::new();
+            app.init_resource::<TitleState>()
+                .init_resource::<TitleScreen>()
+                .init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<bevy::input_focus::InputFocus>()
+                .insert_resource(BaseArgs(base()))
+                .add_systems(Update, title_input);
+            app.world_mut().resource_mut::<TitleState>().page = Page::Multiplayer;
+            app.world_mut()
+                .spawn((NameInput, EditableText::new("pilot")));
+            app.world_mut()
+                .spawn((AddressInput, EditableText::new("127.0.0.1:7700")));
+            let input = app
+                .world_mut()
+                .spawn((
+                    if hosting {
+                        LobbyInput::Name
+                    } else {
+                        LobbyInput::JoinPassword
+                    },
+                    EditableText::new(if hosting { "Practice lobby" } else { "secret" }),
+                ))
+                .id();
+            app.world_mut()
+                .resource_mut::<bevy::input_focus::InputFocus>()
+                .set(input, bevy::input_focus::FocusCause::Pressed);
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::Enter);
+            app.update();
+            let state = app.world().resource::<TitleState>();
+            assert_eq!(
+                state.pending,
+                Some(if hosting {
+                    Choice::Host
+                } else {
+                    Choice::Connect
+                })
+            );
+            assert_eq!(state.page, Page::Robot);
+        }
+    }
+
+    #[test]
+    fn changing_title_pages_resets_scroll_and_hidden_input_focus() {
+        let mut app = App::new();
+        app.init_resource::<TitleState>()
+            .init_resource::<bevy::input_focus::InputFocus>()
+            .add_systems(Update, sync_page_navigation);
+        let scroll = app
+            .world_mut()
+            .spawn((TitleScroll, ScrollPosition::default()))
+            .id();
+        let input = app.world_mut().spawn_empty().id();
+        app.update();
+        app.world_mut().get_mut::<ScrollPosition>(scroll).unwrap().y = 250.;
+        app.world_mut()
+            .resource_mut::<bevy::input_focus::InputFocus>()
+            .set(input, bevy::input_focus::FocusCause::Pressed);
+        app.update();
+        assert_eq!(app.world().get::<ScrollPosition>(scroll).unwrap().y, 250.);
+        app.world_mut().resource_mut::<TitleState>().page = Page::Robot;
+        app.update();
+        assert_eq!(app.world().get::<ScrollPosition>(scroll).unwrap().y, 0.);
+        assert!(
+            app.world()
+                .resource::<bevy::input_focus::InputFocus>()
+                .get()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn search_results_do_not_replace_form_errors() {
+        let mut app = App::new();
+        app.init_resource::<TitleState>()
+            .add_systems(Update, poll_lobbies);
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            let mut state = app.world_mut().resource_mut::<TitleState>();
+            state.feedback = Some((StatusLocation::Join, true, "Enter an address".into()));
+            state.discovery = Some(std::sync::Mutex::new(rx));
+        }
+        tx.send((vec![], "0 LAN lobbies found".into(), false))
+            .unwrap();
+        app.update();
+        let state = app.world().resource::<TitleState>();
+        assert_eq!(state.feedback.as_ref().unwrap().2, "Enter an address");
+        assert_eq!(state.search_status.as_deref(), Some("0 LAN lobbies found"));
     }
 
     #[test]
@@ -2290,6 +2555,10 @@ mod tests {
         let state = app.world().resource::<TitleState>();
         assert_eq!((state.page, state.pending), (Page::Multiplayer, None));
         assert!(!app.world().resource::<crate::hud::HudState>().quit_confirm);
+        app.world_mut().resource_mut::<TitleState>().tip = true;
+        escape(&mut app);
+        assert_eq!(app.world().resource::<TitleState>().page, Page::Multiplayer);
+        assert!(!app.world().resource::<TitleState>().tip);
         escape(&mut app);
         assert_eq!(app.world().resource::<TitleState>().page, Page::Main);
         assert!(!app.world().resource::<crate::hud::HudState>().quit_confirm);

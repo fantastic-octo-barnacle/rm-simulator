@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+- Improve menu navigation: settings tabs and footer stay visible, the active
+  tab is underlined, and switching tabs resets scrolling. Multiplayer Enter
+  submits the focused form, passwords are masked with individual Show toggles,
+  and search / validation feedback appears beside the relevant action. Escape
+  also cancels scenery and first-frame preparation. Add clearer empty-lobby
+  guidance, on-demand LAN help, and accessible labels for title inputs. Menu
+  page changes reset scrolling and clear focus from hidden inputs.
+
 - Balance legs now use a serial hip/knee chain and a four-bar knee-drive
   linkage. A reduced inverted-pendulum LQR replaces the fixed feedback gains;
   Settings > Controls has a remembered 0–100% stabilization slider.
