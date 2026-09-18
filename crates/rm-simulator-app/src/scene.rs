@@ -623,7 +623,9 @@ fn scene_state_with_hits(
     let dart_position = snapshot
         .referee
         .as_ref()
-        .map_or(0., |r| r.dart_target_position(presentation_ns));
+        .map_or(rm_simulator_world::referee::DART_TARGET_REST, |r| {
+            r.dart_target_position(presentation_ns)
+        });
     SceneState {
         bases: snapshot
             .bases

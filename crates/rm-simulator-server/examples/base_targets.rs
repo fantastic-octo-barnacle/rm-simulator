@@ -33,7 +33,9 @@ fn main() -> anyhow::Result<()> {
             for plate in 0..7 {
                 let dart = field
                     .referee()
-                    .map_or(0., |r| r.snapshot().dart_target_position(field.time_ns()));
+                    .map_or(rm_simulator_world::referee::DART_TARGET_REST, |r| {
+                        r.snapshot().dart_target_position(field.time_ns())
+                    });
                 let target = field.snapshot().bases[base].pose(plate, dart);
                 let normal = math::rotate(target.rotation_wxyz, [1., 0., 0.]);
                 let muzzle = Pose {

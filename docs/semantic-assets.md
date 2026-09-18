@@ -117,11 +117,11 @@ its source materials; the legacy color and cap geometry heuristics do not run.
 Rune detector-front offset and detector/orbit dimensions remain fitted constants.
 
 Base shield slides and the dart gate follow referee overrides, including their
-collision meshes. Base dart targets rest at the start of their rails until a
-referee sends `SetDartTargetMoving`, then sweep between the exported rail limits
-with a four-second cosine cycle measured from that command. This is
-illustrative motion, not a rulebook target mode. The world computes position from simulation time; clients apply that same
-position, so pause and single stepping hold both geometry and collision together.
+collision meshes. Base dart targets rest in the middle of their rails until a
+referee sends `SetDartTargetMoving`, then sweep from there between the exported
+rail limits with a four-second cosine cycle measured from that command. This is
+illustrative motion, not a rulebook target mode. The world computes position
+from simulation time; clients apply that same position, so pause and single stepping hold both geometry and collision together.
 Tech-core arm frames are loaded but remain at rest: the reference still marks
 shared hardware as needing rigid-link partitioning before arm animation.
 

@@ -477,8 +477,8 @@ pub struct RefereeSnapshot {
 }
 
 pub use rm_simulator_physics::motion::{
-    BASE_TRAVEL_NS, DART_TARGET_PERIOD_NS, Mechanism, MechanismState, dart_target_fraction,
-    dart_target_position,
+    BASE_TRAVEL_NS, DART_TARGET_PERIOD_NS, DART_TARGET_REST, Mechanism, MechanismState,
+    dart_target_fraction, dart_target_position,
 };
 
 impl RefereeSnapshot {
@@ -491,7 +491,8 @@ impl RefereeSnapshot {
             time_ns,
         )
     }
-    /// Dart rail position at field time `time_ns`, 0 at rest to 1.
+    /// Dart rail position at field time `time_ns`, 0 to 1 along the rail and
+    /// [`DART_TARGET_REST`] while not sweeping.
     pub fn dart_target_position(&self, time_ns: u64) -> f64 {
         dart_target_position(self.dart_target_since_ns, time_ns)
     }
@@ -523,7 +524,7 @@ pub fn mechanism_view(referee: Option<&RefereeSnapshot>, time_ns: u64) -> Mechan
             std::array::from_fn(|i| r.base_open_fraction(i, time_ns))
         }),
         dart_door_open: referee.map_or([true; 2], |r| r.dart_door_open),
-        dart_target_fraction: referee.map_or(0.0, |r| r.dart_target_position(time_ns)),
+        dart_target_fraction: referee.map_or(DART_TARGET_REST, |r| r.dart_target_position(time_ns)),
     }
 }
 

@@ -1762,15 +1762,23 @@ mod tests {
             };
             let mut bulk = make();
             let mut incremental = make();
+            // The sweep sets off from the middle of the rail.
             let initial = bulk.static_geometry();
-            assert!(initial.0.contains(&[20., -0.28, 1.]));
-            bulk.step(ticks(2_000_000_000)).unwrap();
-            for _ in 0..ticks(2_000_000_000) {
+            assert!(
+                initial
+                    .0
+                    .iter()
+                    .any(|v| v[0] == 20. && v[1].abs() < 1e-12 && v[2] == 1.)
+            );
+            bulk.step(ticks(1_000_000_000)).unwrap();
+            for _ in 0..ticks(1_000_000_000) {
                 incremental.step(1).unwrap();
             }
             assert_eq!(bulk.static_geometry(), incremental.static_geometry());
             assert!(bulk.static_geometry().0.contains(&[20., 0.28, 1.]));
             bulk.step(ticks(2_000_000_000)).unwrap();
+            assert!(bulk.static_geometry().0.contains(&[20., -0.28, 1.]));
+            bulk.step(ticks(1_000_000_000)).unwrap();
             assert_eq!(bulk.static_geometry(), initial);
             bulk.step(0).unwrap();
             assert_eq!(bulk.static_geometry(), initial);

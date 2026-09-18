@@ -129,21 +129,29 @@ pub fn dart_target_fraction(time_ns: u64) -> f64 {
     let phase = (time_ns % DART_TARGET_PERIOD_NS) as f64 / DART_TARGET_PERIOD_NS as f64;
     0.5 - 0.5 * (phase * std::f64::consts::TAU).cos()
 }
+/// Rail position of a dart target that is not sweeping: the middle of the
+/// rail. An application setting; the rulebook's fixed target mode is not
+/// modelled.
+pub const DART_TARGET_REST: f64 = 0.5;
 /// Dart rail position at `time_ns` for a target that started sweeping at
-/// `since_ns`, or rests at 0 while `since_ns` is `None`. The sweep always
-/// sets off from rest, so switching it on never makes the target jump.
+/// `since_ns`, or [`DART_TARGET_REST`] while `since_ns` is `None`. The sweep
+/// sets off from the middle of the rail, a quarter of the way through
+/// [`dart_target_fraction`]'s cycle, so switching it on never makes the target
+/// jump.
 ///
 /// ```
-/// use rm_simulator_physics::motion::{dart_target_position, DART_TARGET_PERIOD_NS};
+/// use rm_simulator_physics::motion::{
+///     dart_target_position, DART_TARGET_PERIOD_NS, DART_TARGET_REST,
+/// };
 ///
-/// assert_eq!(dart_target_position(None, 123), 0.0);
-/// assert_eq!(dart_target_position(Some(7), 7), 0.0);
-/// let far = dart_target_position(Some(7), 7 + DART_TARGET_PERIOD_NS / 2);
+/// assert_eq!(dart_target_position(None, 123), DART_TARGET_REST);
+/// assert!((dart_target_position(Some(7), 7) - DART_TARGET_REST).abs() < 1e-12);
+/// let far = dart_target_position(Some(7), 7 + DART_TARGET_PERIOD_NS / 4);
 /// assert!((far - 1.0).abs() < 1e-12);
 /// ```
 pub fn dart_target_position(since_ns: Option<u64>, time_ns: u64) -> f64 {
-    since_ns.map_or(0.0, |since| {
-        dart_target_fraction(time_ns.saturating_sub(since))
+    since_ns.map_or(DART_TARGET_REST, |since| {
+        dart_target_fraction(time_ns.saturating_sub(since) + DART_TARGET_PERIOD_NS / 4)
     })
 }
 
