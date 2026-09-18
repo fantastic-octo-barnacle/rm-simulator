@@ -90,14 +90,14 @@ impl Default for ChassisDynamics {
 ///
 /// let infantry = ChassisConfig::default();
 /// infantry.validate()?;
-/// assert_eq!(infantry.mass_kg, 15.0);
+/// assert_eq!(infantry.mass_kg, 22.0);
 /// assert!(!infantry.mecanum);
 /// // Hub drop, wheel radius and rest suspension add up to the body height.
 /// assert!((infantry.rest_height_m() - 0.1565).abs() < 1e-9);
 ///
 /// let hero = ChassisConfig::hero();
 /// hero.validate()?;
-/// assert_eq!(hero.mass_kg, 25.0);
+/// assert_eq!(hero.mass_kg, 30.0);
 /// assert!(hero.mecanum);
 /// assert!(hero.wheel_radius_m > infantry.wheel_radius_m);
 /// # Ok::<(), &'static str>(())
@@ -163,14 +163,15 @@ pub struct ChassisConfig {
     pub armor_tilt_rad: f64,
 }
 impl Default for ChassisConfig {
-    /// A typical infantry: 15 kg, 0.52 m square body, 153 mm omni wheels on a
+    /// A typical infantry: 22 kg (competition robots weigh about 22 to 32 kg),
+    /// 0.52 m square body, 153 mm omni wheels on a
     /// 0.4 m square at 45 degrees, M3508-class drives (about 3 N m at the
     /// wheel, 3.8 m/s free running). Assumed values, see the module notes.
     fn default() -> Self {
         Self {
             dynamics: ChassisDynamics::default(),
             mecanum: false,
-            mass_kg: 15.0,
+            mass_kg: 22.0,
             body_half_m: [0.26, 0.26, 0.05],
             turret_center_m: [0.0, 0.0, 0.2],
             turret_half_m: [0.06, 0.06, 0.06],
@@ -180,7 +181,8 @@ impl Default for ChassisConfig {
             wheel_width_m: 0.04,
             suspension_rest_m: 0.03,
             suspension_stiffness_n_m: 10_000.0,
-            suspension_damping_n_s_m: 350.0,
+            // About 0.9 of critical for a quarter of 22 kg on 10 kN/m.
+            suspension_damping_n_s_m: 420.0,
             wheel_stall_force_n: 40.0,
             wheel_no_load_speed_m_s: 3.8,
             slip_stiffness_n_s_m: 150.0,
@@ -202,7 +204,7 @@ impl ChassisConfig {
                 ..Default::default()
             },
             mecanum: true,
-            mass_kg: 25.0,
+            mass_kg: 30.0,
             body_half_m: [0.33, 0.28, 0.06],
             turret_center_m: [0.0, 0.0, 0.25],
             turret_half_m: [0.09, 0.09, 0.075],
@@ -210,7 +212,8 @@ impl ChassisConfig {
             wheel_radius_m: 0.1015,
             wheel_width_m: 0.065,
             wheel_stall_force_n: 60.0,
-            suspension_damping_n_s_m: 450.0,
+            // About 0.9 of critical for a quarter of 30 kg on 10 kN/m.
+            suspension_damping_n_s_m: 500.0,
             ..Self::default()
         }
     }

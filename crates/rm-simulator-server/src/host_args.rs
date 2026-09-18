@@ -71,6 +71,24 @@ pub struct HostArgs {
     /// Repeatable bullet spread seed.
     #[arg(long, default_value_t = 0)]
     pub spread_seed: u64,
+    /// Hero (42 mm) starting muzzle speed in m/s.
+    #[arg(long, default_value_t = 12.0)]
+    pub hero_muzzle_speed_m_s: f64,
+    /// Hero starting shots per second while the trigger is held.
+    #[arg(long, default_value_t = 1.0)]
+    pub hero_fire_rate_hz: f64,
+    /// Hero maximum firing rate in Hz.
+    #[arg(long, default_value_t = 2.0)]
+    pub hero_max_fire_rate_hz: f64,
+    /// Hero maximum actual launch speed in m/s.
+    #[arg(long, default_value_t = 16.0)]
+    pub hero_max_muzzle_speed_m_s: f64,
+    /// Hero maximum Gaussian muzzle-speed deviation in m/s, from 0 to 1.
+    #[arg(long, default_value_t = 0.1)]
+    pub hero_muzzle_speed_variation_m_s: f64,
+    /// Hero maximum bullet deviation in degrees.
+    #[arg(long, default_value_t = 0.1)]
+    pub hero_spread_deg: f64,
     /// Skip the field CAD collision proxies; only a flat floor at height zero and armor collide.
     #[arg(long)]
     pub no_field_collision: bool,
@@ -134,6 +152,43 @@ impl HostArgs {
                 distribution: self.spread_distribution,
                 seed: self.spread_seed,
             },
+        }
+    }
+
+    /// The Hero's 42 mm starting weapon, from the `--hero-*` options; the
+    /// spread distribution and seed are shared with the 17 mm weapon.
+    ///
+    /// ```
+    /// use clap::Parser;
+    /// use rm_simulator_server::{host_args::HostArgs, protocol::WeaponConfig};
+    /// #[derive(Parser)]
+    /// struct Cli {
+    ///     #[command(flatten)]
+    ///     host: HostArgs,
+    /// }
+    /// let cli = Cli::parse_from(["host"]);
+    /// assert_eq!(cli.host.hero_weapon(), WeaponConfig::hero());
+    /// ```
+    pub fn hero_weapon(&self) -> WeaponConfig {
+        WeaponConfig {
+            shot: Shot {
+                caliber: Caliber::Mm42,
+                speed_m_s: self.hero_muzzle_speed_m_s,
+            },
+            interval_ns: (1e9 / self.hero_fire_rate_hz.clamp(0.1, 1000.0)).ceil() as u64,
+            speed_variation_m_s: self.hero_muzzle_speed_variation_m_s,
+            spread: BulletSpread {
+                angle_rad: self.hero_spread_deg.to_radians(),
+                distribution: self.spread_distribution,
+                seed: self.spread_seed,
+            },
+        }
+    }
+    /// The Hero's caps, from `--hero-max-*`.
+    pub fn hero_weapon_limits(&self) -> WeaponLimits {
+        WeaponLimits {
+            max_speed_m_s: self.hero_max_muzzle_speed_m_s,
+            min_interval_ns: (1e9 / self.hero_max_fire_rate_hz.clamp(0.1, 1000.0)).ceil() as u64,
         }
     }
 

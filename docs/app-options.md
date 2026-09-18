@@ -31,7 +31,7 @@ joined with `--connect` takes those from the server.
 | `--collision-view hidden\|overlay\|alone` | Start with the physics geometry drawn as a green wireframe over the scenery or on its own (F3 panel; built in the background on first use; default hidden) |
 | `--start-paused` | Open with the world clock paused |
 | `--screenshot PATH` | Capture the window or headless camera to a PNG once loaded and settled, then exit |
-| `--muzzle-speed-m-s V` | Starting muzzle speed, default 25 m/s for either caliber (the caliber follows each pilot's robot); unavailable with `--connect` |
+| `--muzzle-speed-m-s V` | Starting muzzle speed for 17 mm robots, default 25 m/s (the caliber follows each pilot's robot; a Hero uses the `--hero-*` weapon below); unavailable with `--connect` |
 | `--fire-rate-hz R` | Starting firing rate in simulation time, default 20 Hz; unavailable with `--connect` |
 | `--max-fire-rate-hz R` | Host firing-rate cap, default 30 Hz; unavailable with `--connect` |
 | `--max-muzzle-speed-m-s V` | Host actual launch-speed cap, default 30 m/s; unavailable with `--connect` |
@@ -39,6 +39,9 @@ joined with `--connect` takes those from the server.
 | `--spread-deg D` | Host default spread half-angle, 0..90 degrees; default 0.3; zero means perfect accuracy; unavailable with `--connect` |
 | `--spread-distribution uniform\|gaussian` | Host default distribution: Gaussian angular offsets truncated at three sigma, or a uniform solid-angle cone; unavailable with `--connect` |
 | `--spread-seed N` | Repeatable spread seed, default 0; unavailable with `--connect` |
+| `--hero-muzzle-speed-m-s V` / `--hero-fire-rate-hz R` | A Hero's own starting 42 mm muzzle speed and firing rate, default 12 m/s and 1 Hz; unavailable with `--connect` |
+| `--hero-max-muzzle-speed-m-s V` / `--hero-max-fire-rate-hz R` | Host caps for a Hero's weapon, default 16 m/s and 2 Hz; unavailable with `--connect` |
+| `--hero-muzzle-speed-variation-m-s V` / `--hero-spread-deg D` | A Hero's default speed variation and spread, default 0.1 m/s and 0.1°; the spread distribution and seed are shared; unavailable with `--connect` |
 | `--debug-panel` | Open the F3 debug panel at startup |
 | `--network-stats MODE` | Show local network diagnostics; also selectable in P/F3 |
 | `--render-stats` | Show frame and renderer CPU statistics at startup |

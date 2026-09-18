@@ -219,9 +219,13 @@ impl Session {
                 },
             )?
             .with_password(args.password.clone())
-            .with_weapon(args.weapon())
+            .with_weapon(args.host.weapon())
             .map_err(anyhow::Error::msg)?
             .with_weapon_limits(args.host.weapon_limits())
+            .map_err(anyhow::Error::msg)?
+            .with_hero_weapon(args.host.hero_weapon())
+            .map_err(anyhow::Error::msg)?
+            .with_hero_weapon_limits(args.host.hero_weapon_limits())
             .map_err(anyhow::Error::msg)?;
             let address = args.host.listen.as_deref().unwrap_or("127.0.0.1:0");
             let server = if args.host.listen.is_none() && args.lobby_name.is_none() {

@@ -741,7 +741,10 @@ impl Owner {
                 || self.simulation.weapon(),
                 |chassis| self.simulation.weapon_for(chassis.id),
             ),
-            weapon_limits: self.simulation.weapon_limits(),
+            weapon_limits: chassis.as_ref().map_or_else(
+                || self.simulation.weapon_limits(),
+                |chassis| self.simulation.weapon_limits_for(chassis.id),
+            ),
         };
         let peer = Peer {
             info: PlayerInfo {

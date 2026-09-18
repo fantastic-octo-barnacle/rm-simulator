@@ -438,8 +438,12 @@ pub struct TimedEvent {
 /// robot records, ownership, the gameplay state and the recent events.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RefereeSnapshot {
-    /// Operator mechanism overrides, indexed red then blue.
+    /// Whether each base's protective armor is open or opening, indexed red
+    /// then blue: an operator override or a Fortress capture.
     pub base_open: [bool; 2],
+    /// When each base set off toward its `base_open` state, on the field
+    /// clock; `None` once it rests there. See [`Self::base_open_fraction`].
+    pub base_moved_ns: [Option<u64>; 2],
     /// Dart door overrides, indexed red then blue; open by default.
     pub dart_door_open: [bool; 2],
     /// The gameplay engine's whole state: gold, HP, experience, heat,
@@ -469,13 +473,33 @@ pub struct RefereeSnapshot {
 }
 
 pub use rm_simulator_physics::motion::{
-    DART_TARGET_PERIOD_NS, Mechanism, MechanismState, dart_target_fraction,
+    BASE_TRAVEL_NS, DART_TARGET_PERIOD_NS, Mechanism, MechanismState, dart_target_fraction,
 };
+
+impl RefereeSnapshot {
+    /// Eased travel of team `index`'s base armor at field time `time_ns`, 0
+    /// shut to 1 open, moving over [`BASE_TRAVEL_NS`].
+    pub fn base_open_fraction(&self, index: usize, time_ns: u64) -> f64 {
+        rm_simulator_physics::motion::base_open_fraction(
+            self.base_open[index],
+            self.base_moved_ns[index],
+            time_ns,
+        )
+    }
+}
 
 /// Resolve match decisions before physics reads mechanism motion.
 pub fn mechanism_state(referee: Option<&Referee>, time_ns: u64) -> MechanismState {
     MechanismState {
-        base_open: referee.map_or([false; 2], |r| r.base_open),
+        base_open_fraction: referee.map_or([0.0; 2], |r| {
+            std::array::from_fn(|i| {
+                rm_simulator_physics::motion::base_open_fraction(
+                    r.base_open[i],
+                    r.base_moved_ns[i],
+                    time_ns,
+                )
+            })
+        }),
         dart_door_open: referee.map_or([true; 2], |r| r.dart_door_open),
         dart_target_fraction: dart_target_fraction(time_ns),
     }
@@ -483,7 +507,9 @@ pub fn mechanism_state(referee: Option<&Referee>, time_ns: u64) -> MechanismStat
 /// Resolve public match state for presentation clearance queries.
 pub fn mechanism_view(referee: Option<&RefereeSnapshot>, time_ns: u64) -> MechanismState {
     MechanismState {
-        base_open: referee.map_or([false; 2], |r| r.base_open),
+        base_open_fraction: referee.map_or([0.0; 2], |r| {
+            std::array::from_fn(|i| r.base_open_fraction(i, time_ns))
+        }),
         dart_door_open: referee.map_or([true; 2], |r| r.dart_door_open),
         dart_target_fraction: dart_target_fraction(time_ns),
     }
@@ -835,6 +861,8 @@ fn game_error(error: gp::Error) -> &'static str {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Referee {
     base_open: [bool; 2],
+    /// Field time each base set off toward `base_open`; `None` at rest.
+    base_moved_ns: [Option<u64>; 2],
     dart_door_open: [bool; 2],
     game: gp::Game,
     /// Id of the first game event not yet translated into a referee event.
@@ -898,6 +926,7 @@ impl Referee {
         .map_err(game_error)?;
         Ok(Self {
             base_open: [false; 2],
+            base_moved_ns: [None; 2],
             dart_door_open: [true; 2],
             game,
             game_events_seen: 0,
@@ -1056,6 +1085,9 @@ impl Referee {
                 visit(&mut self.now_ns);
                 visit(&mut self.phase_started_ns);
                 visit(&mut self.match_started_ns);
+                for moved in self.base_moved_ns.iter_mut().flatten() {
+                    visit(moved);
+                }
                 for event in &mut self.events {
                     visit(&mut event.time_ns);
                 }
@@ -1077,6 +1109,25 @@ impl Referee {
                 }
             }
         }
+    }
+    /// Send team's base armor toward `open` from where it is now, so a
+    /// reversal mid-travel continues smoothly.
+    fn set_base_open(&mut self, team: Team, open: bool) {
+        let i = team.index();
+        if self.base_open[i] == open {
+            return;
+        }
+        let travel = rm_simulator_physics::motion::base_travel(
+            self.base_open[i],
+            self.base_moved_ns[i],
+            self.now_ns,
+        );
+        let done = if open { travel } else { 1.0 - travel };
+        self.base_open[i] = open;
+        self.base_moved_ns[i] = Some(
+            self.now_ns
+                .saturating_sub((done * BASE_TRAVEL_NS as f64).round() as u64),
+        );
     }
     fn match_time(&self, now_ns: u64) -> u64 {
         match self.phase {
@@ -1174,7 +1225,7 @@ impl Referee {
                 }
                 gp::EventKind::BaseArmorExpanded(team) => {
                     let team = world_team(team);
-                    self.base_open[team.index()] = true;
+                    self.set_base_open(team, true);
                     self.push_event(RefereeEvent::BaseArmorExpanded { team });
                 }
                 _ => {}
@@ -1213,6 +1264,12 @@ impl Referee {
             return Err(RuneError::TimeReversal);
         }
         self.now_ns = now_ns;
+        // A base that finished its travel rests, so its stamp stops travelling.
+        for moved in &mut self.base_moved_ns {
+            if moved.is_some_and(|t| now_ns.saturating_sub(t) >= BASE_TRAVEL_NS) {
+                *moved = None;
+            }
+        }
         if self.phase == MatchPhase::Countdown
             && now_ns - self.phase_started_ns >= self.config.countdown_ns
         {
@@ -1467,7 +1524,7 @@ impl Referee {
                 shield_hp,
             }),
             RefereeCommand::SetBaseOpen { team, open } => {
-                self.base_open[team.index()] = open;
+                self.set_base_open(team, open);
                 Ok(())
             }
             RefereeCommand::SetDartDoorOpen { team, open } => {
@@ -1574,7 +1631,10 @@ impl Referee {
                 for team in &mut self.teams {
                     *team = TeamState::fresh();
                 }
+                // A new or reset match starts with the bases shut, not
+                // closing.
                 self.base_open = [false; 2];
+                self.base_moved_ns = [None; 2];
                 self.dart_door_open = [true; 2];
                 self.stage = RuneStage::Small;
                 self.schedule_index = 0;
@@ -1648,7 +1708,10 @@ impl Referee {
                 for team in &mut self.teams {
                     *team = TeamState::fresh();
                 }
+                // A new or reset match starts with the bases shut, not
+                // closing.
                 self.base_open = [false; 2];
+                self.base_moved_ns = [None; 2];
                 self.dart_door_open = [true; 2];
                 self.stage = RuneStage::Small;
                 self.schedule_index = 0;
@@ -1828,6 +1891,7 @@ impl Referee {
         let match_time_ns = self.match_time(self.now_ns);
         RefereeSnapshot {
             base_open: self.base_open,
+            base_moved_ns: self.base_moved_ns,
             dart_door_open: self.dart_door_open,
             game: self.game.snapshot().clone(),
             phase: self.phase,
@@ -2558,6 +2622,35 @@ mod tests {
                 .iter()
                 .any(|e| e.event == RefereeEvent::RuneActivationExpired { team: Team::Red })
         );
+    }
+
+    #[test]
+    fn base_armor_travels_and_reverses_continuously() {
+        let mut runes = runes();
+        let mut referee = referee();
+        let open = |open| RefereeCommand::SetBaseOpen {
+            team: Team::Red,
+            open,
+        };
+        let fraction = |r: &Referee, t| r.snapshot().base_open_fraction(0, t);
+        assert_eq!(fraction(&referee, 0), 0.0);
+        referee.command(open(true), 1_000, &mut runes).unwrap();
+        let half = 1_000 + BASE_TRAVEL_NS / 2;
+        assert_eq!(fraction(&referee, half), 0.5);
+        // Reversing at the half-way point closes from where it is.
+        referee.command(open(false), half, &mut runes).unwrap();
+        assert!((fraction(&referee, half) - 0.5).abs() < 1e-9);
+        let quarter = half + BASE_TRAVEL_NS / 4;
+        assert!(fraction(&referee, quarter) < 0.5);
+        assert!(fraction(&referee, quarter) > 0.0);
+        // It settles shut and stops carrying a stamp.
+        let shut = half + BASE_TRAVEL_NS / 2;
+        referee.tick(shut, &mut runes).unwrap();
+        assert_eq!(referee.snapshot().base_moved_ns, [None; 2]);
+        assert_eq!(fraction(&referee, shut + 1), 0.0);
+        // Repeating the resting state starts no travel.
+        referee.command(open(false), shut + 2, &mut runes).unwrap();
+        assert_eq!(referee.snapshot().base_moved_ns[0], None);
     }
 
     #[test]

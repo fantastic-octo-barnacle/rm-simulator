@@ -1728,7 +1728,7 @@ mod tests {
         }
     }
     #[test]
-    fn mechanism_override_moves_collision_immediately_and_resets() {
+    fn mechanism_override_moves_collision_over_its_travel_and_resets() {
         let config = FieldConfig {
             referee: Some(RefereeConfig::alternating(1, 2)),
             ..Default::default()
@@ -1757,6 +1757,14 @@ mod tests {
                 team: Team::Blue,
                 open: true,
             })
+            .unwrap();
+        // The armor travels; halfway through it is halfway up.
+        field
+            .step(ticks(rm_simulator_physics::motion::BASE_TRAVEL_NS / 2))
+            .unwrap();
+        assert!(field.static_geometry().0.contains(&[20., 0., 2.5]));
+        field
+            .step(ticks(rm_simulator_physics::motion::BASE_TRAVEL_NS / 2))
             .unwrap();
         let opened = field.static_geometry();
         assert_ne!(opened, closed);

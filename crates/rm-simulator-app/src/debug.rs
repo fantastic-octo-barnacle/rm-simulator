@@ -257,7 +257,7 @@ impl MovingMeshPose {
     fn transform(&self, scene: &rm_simulator_render::sync::SceneState) -> Transform {
         use rm_simulator_world::referee::Mechanism;
         let fraction = match self.kind {
-            Mechanism::Base => f64::from(scene.base_open[self.team.index()]),
+            Mechanism::Base => f64::from(scene.base_open_fraction[self.team.index()]),
             Mechanism::DartDoor => f64::from(scene.dart_door_open[self.team.index()]),
             Mechanism::DartTarget => f64::from(scene.dart_target_fraction),
         };
