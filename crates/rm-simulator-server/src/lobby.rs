@@ -39,6 +39,10 @@ pub struct Listing {
     pub locked: bool,
     /// Whether this entry came from a LAN reply rather than the directory.
     pub lan: bool,
+    /// Random id of one advertisement, so LAN discovery lists a host once
+    /// however many of its interfaces answer; zero from hosts that predate it.
+    #[serde(default)]
+    pub instance: u64,
 }
 impl Listing {
     /// Whether the host advertises the only gameplay transport this crate
@@ -145,10 +149,26 @@ pub fn lan_lobbies() -> io::Result<Vec<Listing>> {
                         .parse::<SocketAddr>()
                         .expect("validated")
                         .port();
+                    let rank = reply_rank(&entry.address, peer);
                     entry.address = SocketAddr::new(peer.ip(), port).to_string();
                     entry.lan = true;
-                    if !entries.contains(&entry) && entries.len() < 128 {
-                        entries.push(entry);
+                    // A host answers once per probe that reaches it: every
+                    // interface broadcast and the loopback probe. Keep one
+                    // entry per advertisement: the first reply, which came
+                    // over the lowest-latency path, unless a later one is
+                    // the only address the host listens on.
+                    let same = entries.iter().position(|(_, known): &(u8, Listing)| {
+                        if entry.instance == 0 {
+                            *known == entry
+                        } else {
+                            known.instance == entry.instance
+                        }
+                    });
+                    match same {
+                        Some(i) if rank < entries[i].0 => entries[i] = (rank, entry),
+                        Some(_) => {}
+                        None if entries.len() < 128 => entries.push((rank, entry)),
+                        None => {}
                     }
                 }
             }
@@ -165,7 +185,17 @@ pub fn lan_lobbies() -> io::Result<Vec<Listing>> {
             Err(e) => return Err(e),
         }
     }
-    Ok(entries)
+    Ok(entries.into_iter().map(|(_, entry)| entry).collect())
+}
+
+/// Preference among one host's LAN replies, lower first: 0 for the address a
+/// host bound to one interface listens on, 1 for any reply from a host bound
+/// to every interface. Equal ranks keep the earliest, fastest reply.
+fn reply_rank(advertised: &str, peer: SocketAddr) -> u8 {
+    match advertised.parse::<SocketAddr>().map(|a| a.ip()) {
+        Ok(ip) if !ip.is_unspecified() && ip == peer.ip() => 0,
+        _ => 1,
+    }
 }
 
 /// Owned by the match. Drop signals withdrawal without blocking the render thread.
@@ -209,6 +239,14 @@ impl Advertisement {
             protocol: PROTOCOL_VERSION,
             locked,
             lan: true,
+            instance: {
+                use std::hash::{BuildHasher, Hasher};
+                // Randomly keyed by the standard library; never zero.
+                std::collections::hash_map::RandomState::new()
+                    .build_hasher()
+                    .finish()
+                    .max(1)
+            },
         };
         let socket = UdpSocket::bind(("0.0.0.0", LAN_PORT)).map_err(|e| io::Error::new(e.kind(), format!("Cannot open LAN discovery port {LAN_PORT}: {e}. Close any other advertised lobby on this computer.")))?;
         socket.set_nonblocking(true)?;
@@ -341,6 +379,12 @@ mod tests {
         )
         .unwrap();
         let entries = lan_lobbies().unwrap();
+        // One entry however many interfaces answered.
+        assert_eq!(
+            entries.iter().filter(|e| e.name == "Local test").count(),
+            1,
+            "{entries:?}"
+        );
         assert!(entries.iter().any(|entry| entry.name == "Local test"
             && entry.locked
             && entry.lan

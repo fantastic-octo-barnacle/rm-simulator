@@ -4,6 +4,16 @@
 
 ## Unreleased
 
+- Animate a base's protective armor over 2 s as it opens or closes, easing
+  in and out and reversing smoothly from mid-travel; its collision follows
+  the drawn position (protocol 46). A Hero now has its own weapon, 12 m/s at
+  1 Hz with 0.1 m/s speed variation and 0.1° spread under 16 m/s and 2 Hz
+  caps, set with the `--hero-*` options. `rm-simulator-server` advertises a
+  LAN lobby (`--lobby-name`, `--no-lobby`). Chassis are heavier and closer to
+  real robots: 22 kg Infantry and 30 kg Hero, with matching damping.
+  LAN discovery lists a host once instead of once per network interface
+  that answered, keeping its fastest reply.
+
 - Show the 5 s countdown's own seconds on the HUD clock and the referee panel
   instead of the round clock; the referee view derives them from the phase
   start it already carries, so the wire format is unchanged. An overheated

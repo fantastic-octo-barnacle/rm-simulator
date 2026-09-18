@@ -81,7 +81,9 @@ use serde::{Deserialize, Serialize};
 /// Version 45 adds buff point contacts and terrain crossing, Fortress and
 /// reserve state to the gameplay record, the `TerrainCrossing` and
 /// `BaseArmorExpanded` events, and a field configuration's `zones`.
-pub const PROTOCOL_VERSION: u32 = 45;
+/// Version 46 carries each base armor's travel stamp (`base_moved_ns`) in the
+/// referee, so peers animate it opening and closing.
+pub const PROTOCOL_VERSION: u32 = 46;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///
@@ -121,6 +123,22 @@ impl Default for WeaponLimits {
     }
 }
 impl WeaponLimits {
+    /// Default caps for the Hero's 42 mm launcher: 16 m/s and 2 Hz. Assumed
+    /// application settings, not rulebook values.
+    ///
+    /// ```
+    /// use rm_simulator_server::protocol::{WeaponConfig, WeaponLimits};
+    /// use rm_simulator_world::Caliber;
+    /// let limits = WeaponLimits::hero();
+    /// assert!(limits.admit(Caliber::Mm42, WeaponConfig::hero()).is_ok());
+    /// assert!(limits.admit(Caliber::Mm42, WeaponConfig { interval_ns: 50_000_000, ..WeaponConfig::hero() }).is_err());
+    /// ```
+    pub fn hero() -> Self {
+        Self {
+            max_speed_m_s: 16.,
+            min_interval_ns: 500_000_000,
+        }
+    }
     /// Validate a pilot's configuration against the host's caliber and caps.
     ///
     /// ```
@@ -192,6 +210,31 @@ impl Default for WeaponConfig {
     }
 }
 impl WeaponConfig {
+    /// Starting settings for the Hero's 42 mm launcher: 12 m/s, 1 Hz, 0.1 m/s
+    /// speed variation and a 0.1 degree spread. Assumed application settings,
+    /// not rulebook values.
+    ///
+    /// ```
+    /// use rm_simulator_server::protocol::WeaponConfig;
+    /// use rm_simulator_world::Caliber;
+    /// let hero = WeaponConfig::hero();
+    /// assert_eq!(hero.shot.caliber, Caliber::Mm42);
+    /// assert_eq!((hero.shot.speed_m_s, hero.interval_ns), (12.0, 1_000_000_000));
+    /// ```
+    pub fn hero() -> Self {
+        Self {
+            shot: Shot {
+                caliber: rm_simulator_world::Caliber::Mm42,
+                speed_m_s: 12.0,
+            },
+            interval_ns: 1_000_000_000,
+            speed_variation_m_s: 0.1,
+            spread: BulletSpread {
+                angle_rad: 0.1_f64.to_radians(),
+                ..BulletSpread::default()
+            },
+        }
+    }
     /// Sample the launch speed for a configuration admitted by the host.
     /// `max_speed_m_s` is that host's speed cap, at least the nominal speed.
     /// The normal distribution is truncated at +/- three sigma and again at

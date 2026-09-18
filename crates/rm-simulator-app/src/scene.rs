@@ -641,10 +641,9 @@ fn scene_state_with_hits(
             .collect(),
         dart_target_fraction: rm_simulator_world::referee::dart_target_fraction(presentation_ns)
             as f32,
-        base_open: snapshot
-            .referee
-            .as_ref()
-            .map_or([false; 2], |r| r.base_open),
+        base_open_fraction: snapshot.referee.as_ref().map_or([0.0; 2], |r| {
+            std::array::from_fn(|i| r.base_open_fraction(i, presentation_ns) as f32)
+        }),
         dart_door_open: snapshot
             .referee
             .as_ref()

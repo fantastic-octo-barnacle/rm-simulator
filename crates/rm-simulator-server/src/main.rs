@@ -27,6 +27,12 @@ struct Args {
     /// Offer no chassis; pilots get none and cannot fire.
     #[arg(long)]
     no_chassis: bool,
+    /// Name this host advertises to LAN lobby discovery.
+    #[arg(long, default_value = "RM Simulator server")]
+    lobby_name: String,
+    /// Do not answer LAN lobby discovery.
+    #[arg(long)]
+    no_lobby: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -47,10 +53,37 @@ fn main() -> anyhow::Result<()> {
     .with_weapon(args.host.weapon())
     .map_err(anyhow::Error::msg)?
     .with_weapon_limits(args.host.weapon_limits())
+    .map_err(anyhow::Error::msg)?
+    .with_hero_weapon(args.host.hero_weapon())
+    .map_err(anyhow::Error::msg)?
+    .with_hero_weapon_limits(args.host.hero_weapon_limits())
     .map_err(anyhow::Error::msg)?;
     let listen = args.host.listen_address();
     let server = Server::bind(&listen, simulation)?;
     println!("players: GNS UDP at {}", server.local_addr());
+    // A LAN advertisement that cannot bind its port (another advertised host
+    // on this computer) leaves the host reachable by address only.
+    let _lobby = if args.no_lobby {
+        None
+    } else {
+        match rm_simulator_server::lobby::Advertisement::start(
+            rm_simulator_server::lobby::DEFAULT_HOST,
+            &args.lobby_name,
+            server.local_addr(),
+            false,
+            false,
+            "",
+        ) {
+            Ok(advertisement) => {
+                println!("lobby: \"{}\" on LAN discovery", args.lobby_name.trim());
+                Some(advertisement)
+            }
+            Err(e) => {
+                eprintln!("lobby: not advertised: {e}");
+                None
+            }
+        }
+    };
     let http_address = args.host.http_address();
     let _http = if http_address != "none" {
         let http = HttpServer::bind(&http_address, server.handle())?;
@@ -91,6 +124,8 @@ mod tests {
             format!("127.0.0.1:{DEFAULT_HTTP_PORT}")
         );
         assert!(!args.host.no_referee);
+        assert!(!args.no_lobby);
+        assert_eq!(args.lobby_name, "RM Simulator server");
         let args = Args::try_parse_from(["rm-simulator-server", "--http", "none", "--no-chassis"])
             .unwrap();
         assert_eq!(args.host.http_address(), "none");

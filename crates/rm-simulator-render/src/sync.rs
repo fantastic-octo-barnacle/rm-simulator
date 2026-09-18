@@ -142,8 +142,8 @@ pub struct SceneState {
     pub bases: Vec<BaseAppearance>,
     /// Caller-owned normalized position along the base dart target rail.
     pub dart_target_fraction: f32,
-    /// Whether each team's base gate is open; 0 is red and 1 is blue.
-    pub base_open: [bool; 2],
+    /// Each team's base gate travel, 0 shut to 1 open; 0 is red and 1 is blue.
+    pub base_open_fraction: [f32; 2],
     /// Whether each team's dart door is open; 0 is red and 1 is blue.
     pub dart_door_open: [bool; 2],
     /// Source time that phases the rune flow arrows.

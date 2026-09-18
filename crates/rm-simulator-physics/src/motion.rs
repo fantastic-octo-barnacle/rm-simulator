@@ -28,7 +28,7 @@ pub enum Mechanism {
 /// };
 ///
 /// let state = MechanismState {
-///     base_open: [true, false],
+///     base_open_fraction: [1.0, 0.0],
 ///     dart_door_open: [true, true],
 ///     dart_target_fraction: 0.25,
 /// };
@@ -38,26 +38,26 @@ pub enum Mechanism {
 ///
 /// // Defaults: base plates shut, dart gates open, target at its near stop.
 /// let default = MechanismState::default();
-/// assert_eq!(default.base_open, [false; 2]);
+/// assert_eq!(default.base_open_fraction, [0.0; 2]);
 /// assert_eq!(default.dart_door_open, [true; 2]);
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MechanismState {
-    /// Base shield plates, red then blue: `true` is open, which is the far end
-    /// of the captured travel.
-    pub base_open: [bool; 2],
+    /// Base shield plates, red then blue: 0 shut, 1 open (the far end of the
+    /// captured travel), in between while moving ([`base_open_fraction`]).
+    pub base_open_fraction: [f64; 2],
     /// Dart station gates, red then blue: `true` is open.
     pub dart_door_open: [bool; 2],
     /// Dart rail target between its stops: 0 at the near stop, 1 at the far one.
     pub dart_target_fraction: f64,
 }
 impl MechanismState {
-    /// Interpolation fraction for one mechanism: a boolean state becomes 1.0
-    /// when open and 0.0 when shut, and the dart target returns its own
-    /// fraction unchanged.
+    /// Interpolation fraction for one mechanism: the base's travel fraction,
+    /// a dart door's 1.0 when open and 0.0 when shut, and the dart target's
+    /// own fraction.
     pub fn fraction(&self, mechanism: Mechanism, team: Team) -> f64 {
         match mechanism {
-            Mechanism::Base => f64::from(self.base_open[team.index()]),
+            Mechanism::Base => self.base_open_fraction[team.index()],
             Mechanism::DartDoor => f64::from(self.dart_door_open[team.index()]),
             Mechanism::DartTarget => self.dart_target_fraction,
         }
@@ -66,11 +66,50 @@ impl MechanismState {
 impl Default for MechanismState {
     fn default() -> Self {
         Self {
-            base_open: [false; 2],
+            base_open_fraction: [0.0; 2],
             dart_door_open: [true; 2],
             dart_target_fraction: 0.0,
         }
     }
+}
+/// Time a base's protective armor takes to travel between shut and open. An
+/// application animation setting; the rulebook gives no travel time.
+pub const BASE_TRAVEL_NS: u64 = 2_000_000_000;
+/// Linear base travel at `time_ns`, 0 shut to 1 open: `open` is the state it
+/// moves toward and `moved_ns` when it set off from the other end, or `None`
+/// once it rests at `open`. A reversal mid-travel back-dates `moved_ns` so
+/// the travel stays continuous.
+///
+/// ```
+/// use rm_simulator_physics::motion::{base_travel, BASE_TRAVEL_NS};
+///
+/// assert_eq!(base_travel(true, None, 5), 1.0);
+/// assert_eq!(base_travel(true, Some(0), BASE_TRAVEL_NS / 4), 0.25);
+/// assert_eq!(base_travel(false, Some(0), BASE_TRAVEL_NS / 4), 0.75);
+/// assert_eq!(base_travel(false, Some(0), 2 * BASE_TRAVEL_NS), 0.0);
+/// ```
+pub fn base_travel(open: bool, moved_ns: Option<u64>, time_ns: u64) -> f64 {
+    let Some(moved_ns) = moved_ns else {
+        return f64::from(open);
+    };
+    let done = (time_ns.saturating_sub(moved_ns) as f64 / BASE_TRAVEL_NS as f64).min(1.0);
+    if open { done } else { 1.0 - done }
+}
+/// Eased base position for [`MechanismState::base_open_fraction`]: the
+/// [`base_travel`] fraction through a smoothstep, so the armor starts and
+/// stops gently.
+///
+/// ```
+/// use rm_simulator_physics::motion::{base_open_fraction, BASE_TRAVEL_NS};
+///
+/// assert_eq!(base_open_fraction(true, Some(0), 0), 0.0);
+/// assert_eq!(base_open_fraction(true, Some(0), BASE_TRAVEL_NS / 2), 0.5);
+/// assert!(base_open_fraction(true, Some(0), BASE_TRAVEL_NS / 4) < 0.25);
+/// assert_eq!(base_open_fraction(true, Some(0), BASE_TRAVEL_NS), 1.0);
+/// ```
+pub fn base_open_fraction(open: bool, moved_ns: Option<u64>, time_ns: u64) -> f64 {
+    let x = base_travel(open, moved_ns, time_ns);
+    x * x * (3.0 - 2.0 * x)
 }
 /// Four-second inspection sweep matching rm-map-tools' illustrative preview.
 /// An application motion setting, not a rulebook target-mode speed.

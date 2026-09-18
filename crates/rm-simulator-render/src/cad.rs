@@ -637,7 +637,7 @@ fn sync_joints(input: Res<SceneInput>, mut joints: Query<(&JointRest, &mut Trans
             Some(JointDriver::BaseOpening { team }) => joint
                 .binding
                 .limits
-                .map(|[closed, open]| if scene.base_open[*team] { open } else { closed }),
+                .map(|[closed, open]| closed + (open - closed) * scene.base_open_fraction[*team]),
             Some(JointDriver::DartDoor { team }) => joint.binding.limits.map(|[closed, open]| {
                 if scene.dart_door_open[*team] {
                     open
@@ -810,7 +810,7 @@ mod tests {
             .id();
         for open in [false, true, false] {
             app.world_mut().resource_mut::<SceneInput>().0 = Some(SceneState {
-                base_open: [open, !open],
+                base_open_fraction: [f32::from(u8::from(open)), f32::from(u8::from(!open))],
                 dart_door_open: [!open, open],
                 ..Default::default()
             });

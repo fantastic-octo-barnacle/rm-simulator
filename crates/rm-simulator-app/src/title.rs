@@ -467,8 +467,7 @@ pub fn join_args(base: &Args, fields: &TitleFields, choice: Choice) -> Result<Ar
                 .parse()
                 .map_err(|_| "Enter a maximum speed in m/s")?;
         }
-        args.host
-            .weapon_limits()
+        args.weapon_limits()
             .admit(args.caliber(), args.weapon())
             .map_err(str::to_string)?;
     }

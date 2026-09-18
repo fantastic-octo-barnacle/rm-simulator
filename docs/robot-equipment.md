@@ -40,8 +40,8 @@ threads, connector contacts, optical calibration and electromagnetic behavior.
 
 ## Chassis assumptions
 
-Infantry retains the existing 15 kg chassis and 153 mm omni-wheel assumptions.
-Hero uses a 25 kg, 660 × 560 × 120 mm body envelope, 203 mm mecanum wheels,
+Infantry retains the existing 22 kg chassis and 153 mm omni-wheel assumptions.
+Hero uses a 30 kg, 660 × 560 × 120 mm body envelope, 203 mm mecanum wheels,
 65 mm wheel width and a taller, wider gimbal. These are design choices, not
 rulebook dimensions. The muzzle sits 350 mm ahead of the gun pivot, leaving an exposed barrel
 section behind the speed monitor. This length is an app design choice.

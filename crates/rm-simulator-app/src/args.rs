@@ -266,25 +266,30 @@ impl Args {
     pub fn caliber(&self) -> Caliber {
         self.robot.caliber()
     }
-    /// The round this player fires. The default starting speed is 25 m/s for
-    /// either caliber; `--muzzle-speed-m-s` overrides it.
+    /// The round this player fires: the Hero's `--hero-muzzle-speed-m-s`
+    /// (12 m/s by default) for 42 mm, else `--muzzle-speed-m-s` (25 m/s).
     pub fn shot(&self) -> Shot {
-        Shot {
-            caliber: self.caliber(),
-            speed_m_s: self.host.muzzle_speed_m_s.unwrap_or(25.0),
+        self.weapon().shot
+    }
+    /// The minimum gap between this player's shots in ns: the Hero's
+    /// `--hero-fire-rate-hz` for 42 mm, else `--fire-rate-hz`, clamped to
+    /// 0.1..=1000 Hz.
+    pub fn fire_interval_ns(&self) -> u64 {
+        self.weapon().interval_ns
+    }
+    /// The weapon configuration the host starts this player with: the Hero's
+    /// own settings for 42 mm, else the shared 17 mm settings.
+    pub fn weapon(&self) -> WeaponConfig {
+        match self.caliber() {
+            Caliber::Mm42 => self.host.hero_weapon(),
+            Caliber::Mm17 => self.host.weapon(),
         }
     }
-    /// The minimum gap between shots in ns, from `--fire-rate-hz`, which is
-    /// clamped to 0.1..=1000 Hz.
-    pub fn fire_interval_ns(&self) -> u64 {
-        self.host.fire_interval_ns()
-    }
-    /// The weapon configuration the host enforces for this player: the robot's
-    /// caliber with the shared launch, cadence and spread settings.
-    pub fn weapon(&self) -> WeaponConfig {
-        WeaponConfig {
-            shot: self.shot(),
-            ..self.host.weapon()
+    /// The host caps for this player's caliber.
+    pub fn weapon_limits(&self) -> rm_simulator_server::protocol::WeaponLimits {
+        match self.caliber() {
+            Caliber::Mm42 => self.host.hero_weapon_limits(),
+            Caliber::Mm17 => self.host.weapon_limits(),
         }
     }
 }
@@ -423,9 +428,9 @@ mod tests {
             "rm-simulator",
             "--robot",
             "hero",
-            "--muzzle-speed-m-s",
+            "--hero-muzzle-speed-m-s",
             "10",
-            "--fire-rate-hz",
+            "--hero-fire-rate-hz",
             "2",
         ]);
         assert_eq!(

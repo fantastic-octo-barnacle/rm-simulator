@@ -263,7 +263,9 @@ just run --connect 127.0.0.1:7700 --team blue --name alice
 
 `rm-simulator-server` loads the CAD, builds the same field as the app, steps
 it in real time and serves gameplay over Valve GameNetworkingSockets UDP and an
-HTTP referee panel. Open UDP port 7700 for guests.
+HTTP referee panel. Open UDP port 7700 for guests. It advertises itself as a
+LAN lobby, so Refresh LAN on the Multiplayer page lists it; `--lobby-name NAME`
+names it (default `RM Simulator server`) and `--no-lobby` stays unlisted.
 
 ### Transports and roles
 
@@ -738,7 +740,7 @@ same robot. The visible equipment is decorative;
 armor scoring keeps its existing dimensions. [Reference measurements and
 limitations](docs/robot-equipment.md) distinguish modeled details from assumptions.
 
-Each chassis is a generic 15 kg infantry-sized box (520 × 520 × 100 mm) on
+Each chassis is a generic 22 kg infantry-sized box (520 × 520 × 100 mm) on
 four 153 mm omni wheels in an X layout, with a 120 mm turret cube 150 mm
 above the body (its top is about 0.42 m above the ground), four small armor
 modules on its sides (the outpost's 128 × 113 mm module, leaning back 15°,

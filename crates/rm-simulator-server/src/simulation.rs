@@ -172,6 +172,9 @@ pub struct Simulation {
     spawner: Option<ChassisSpawner>,
     weapon: WeaponConfig,
     weapon_limits: crate::protocol::WeaponLimits,
+    /// Starting settings and caps for a 42 mm (Hero) chassis.
+    hero_weapon: WeaponConfig,
+    hero_weapon_limits: crate::protocol::WeaponLimits,
     pilot_weapons: BTreeMap<u32, WeaponConfig>,
     /// The robot each pilot's chassis was spawned as; a bot or a chassis
     /// spawned by configuration alone has no entry.
@@ -234,6 +237,8 @@ impl Simulation {
             spawner: None,
             weapon: WeaponConfig::default(),
             weapon_limits: Default::default(),
+            hero_weapon: WeaponConfig::hero(),
+            hero_weapon_limits: crate::protocol::WeaponLimits::hero(),
             pilot_weapons: BTreeMap::new(),
             robots: BTreeMap::new(),
             fired_ns: BTreeMap::new(),
@@ -305,9 +310,60 @@ impl Simulation {
         self.weapon_limits = limits;
         Ok(self)
     }
-    /// Caps offered to every pilot independently of their starting settings.
+    /// Set the Hero's 42 mm starting settings and match its caps to their
+    /// rate and speed, like [`Self::with_weapon`]. Call
+    /// `with_hero_weapon_limits` afterward to allow higher values.
+    pub fn with_hero_weapon(mut self, mut weapon: WeaponConfig) -> Result<Self, String> {
+        weapon.shot.caliber = rm_simulator_world::Caliber::Mm42;
+        self.hero_weapon = weapon.validate().map_err(str::to_string)?;
+        self.hero_weapon_limits = crate::protocol::WeaponLimits {
+            max_speed_m_s: weapon.shot.speed_m_s,
+            min_interval_ns: weapon.interval_ns,
+        };
+        Ok(self)
+    }
+    /// Set the Hero's caps, refusing limits that exclude its defaults.
+    ///
+    /// ```
+    /// use rm_simulator_server::{simulation::Simulation, protocol::{WeaponConfig, WeaponLimits}};
+    /// use rm_simulator_world::{Caliber, Field, FieldConfig};
+    /// let simulation = Simulation::new(Field::new(&FieldConfig::default()).unwrap(), false)
+    ///     .with_hero_weapon(WeaponConfig::hero()).unwrap()
+    ///     .with_hero_weapon_limits(WeaponLimits::hero()).unwrap();
+    /// assert_eq!(simulation.hero_weapon().shot.caliber, Caliber::Mm42);
+    /// assert_eq!(simulation.limits_for_caliber(Caliber::Mm42).max_speed_m_s, 16.0);
+    /// ```
+    pub fn with_hero_weapon_limits(
+        mut self,
+        limits: crate::protocol::WeaponLimits,
+    ) -> Result<Self, String> {
+        limits
+            .admit(rm_simulator_world::Caliber::Mm42, self.hero_weapon)
+            .map_err(str::to_string)?;
+        self.hero_weapon_limits = limits;
+        Ok(self)
+    }
+    /// Caps offered to every 17 mm pilot independently of their starting settings.
     pub fn weapon_limits(&self) -> crate::protocol::WeaponLimits {
         self.weapon_limits
+    }
+    /// Host starting settings for a 42 mm (Hero) chassis.
+    pub fn hero_weapon(&self) -> WeaponConfig {
+        self.hero_weapon
+    }
+    /// The caps for a launcher of `caliber`: the Hero's for 42 mm.
+    pub fn limits_for_caliber(
+        &self,
+        caliber: rm_simulator_world::Caliber,
+    ) -> crate::protocol::WeaponLimits {
+        match caliber {
+            rm_simulator_world::Caliber::Mm17 => self.weapon_limits,
+            rm_simulator_world::Caliber::Mm42 => self.hero_weapon_limits,
+        }
+    }
+    /// The caps a chassis' pilot may configure within, by its caliber.
+    pub fn weapon_limits_for(&self, chassis: u32) -> crate::protocol::WeaponLimits {
+        self.limits_for_caliber(self.caliber(chassis))
     }
     /// The scene clients need to predict, or None when the field was not built
     /// from a verifiable CAD package.
@@ -466,14 +522,19 @@ impl Simulation {
             .map_or(self.weapon.shot.caliber, Robot::caliber)
     }
     /// The weapon a chassis fires with: the pilot's admitted settings, else
-    /// the host defaults, always at the chassis' own caliber.
+    /// the host defaults for its caliber (the Hero's for 42 mm), always at the
+    /// chassis' own caliber.
     pub fn weapon_for(&self, chassis: u32) -> WeaponConfig {
+        let caliber = self.caliber(chassis);
         let mut weapon = self
             .pilot_weapons
             .get(&chassis)
             .copied()
-            .unwrap_or(self.weapon);
-        weapon.shot.caliber = self.caliber(chassis);
+            .unwrap_or(match caliber {
+                rm_simulator_world::Caliber::Mm17 => self.weapon,
+                rm_simulator_world::Caliber::Mm42 => self.hero_weapon,
+            });
+        weapon.shot.caliber = caliber;
         weapon
     }
 
@@ -804,7 +865,11 @@ impl Simulation {
             .chassis_muzzle_pose(shooter)
             .ok_or("no chassis with that id")?;
         let muzzle = weapon.spread.apply(muzzle, shooter, intended_ns);
-        let shot = weapon.sample_shot(shooter, intended_ns, self.weapon_limits.max_speed_m_s);
+        let shot = weapon.sample_shot(
+            shooter,
+            intended_ns,
+            self.weapon_limits_for(shooter).max_speed_m_s,
+        );
         let projectile_id = self
             .field
             .fire(muzzle, shot, Some(shooter))
@@ -842,7 +907,7 @@ impl Simulation {
                     return Err("no chassis with that id".into());
                 }
                 let weapon = self
-                    .weapon_limits
+                    .weapon_limits_for(*chassis)
                     .admit(self.caliber(*chassis), *weapon)
                     .map_err(str::to_string)?;
                 self.pilot_weapons.insert(*chassis, weapon);
@@ -1287,7 +1352,9 @@ mod tests {
         assert_eq!(kind(hero), RobotKind::Hero);
         assert_eq!(kind(infantry), RobotKind::Infantry);
 
-        let mut weapon = sim.weapon();
+        // The hero starts on its own weapon, slower than the host default.
+        assert_eq!(sim.weapon_for(hero), WeaponConfig::hero());
+        let mut weapon = sim.weapon_for(hero);
         weapon.shot = rm_simulator_world::Shot::at_limit(rm_simulator_world::Caliber::Mm17);
         assert_eq!(
             sim.apply(&Command::ConfigureWeapon {
