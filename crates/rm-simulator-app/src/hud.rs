@@ -923,7 +923,9 @@ pub fn update_hud(
         let value = match kind {
             Hud::AutoAim => assist.as_ref().map_or_else(String::new, |a| {
                 if a.status.is_empty() {
-                    String::new()
+                    // A hand-chosen class stays on screen while idle, so the
+                    // pilot knows what the next lock will look for.
+                    a.idle_status(ui.controls.manual_aim_mode)
                 } else {
                     format!("{} [{:.0}ms]", a.status, a.observation_age_ms.max(0.))
                 }

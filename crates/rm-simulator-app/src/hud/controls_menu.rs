@@ -52,6 +52,10 @@ pub(super) struct CaptureLabel;
 /// settings.
 #[derive(Component, Clone, Default)]
 pub(super) struct InvertLabel;
+/// Marks the auto-aim target choice caption, which `sync` rewrites from the
+/// controls settings.
+#[derive(Component, Clone, Default)]
+pub(super) struct AimModeLabel;
 /// Marks the preferences status line, which `sync` fills from the preference
 /// status message.
 #[derive(Component)]
@@ -75,6 +79,11 @@ pub(super) fn spawn(commands: &mut Commands, parent: Entity, shade: Entity) {
         @FeathersButton { @caption: bsn! { Text("Invert mouse Y: Off") ThemedText InvertLabel } }
         ActivateOnPress
         on(|_: On<Activate>, mut ui: ResMut<HudState>| { ui.controls.invert_y = !ui.controls.invert_y; ui.consumed = true; })
+    }).insert(ChildOf(parent));
+    commands.spawn_scene(bsn! {
+        @FeathersButton { @caption: bsn! { Text("Auto-aim target: Automatic") ThemedText AimModeLabel } }
+        ActivateOnPress
+        on(|_: On<Activate>, mut ui: ResMut<HudState>| { ui.controls.manual_aim_mode = !ui.controls.manual_aim_mode; ui.consumed = true; })
     }).insert(ChildOf(parent));
     for action in InputAction::ALL {
         let row = commands
@@ -350,10 +359,11 @@ pub(super) fn sync(
         Option<&BindingLabel>,
         Has<CaptureLabel>,
         Has<InvertLabel>,
+        Has<AimModeLabel>,
         Has<SaveLabel>,
     )>,
 ) {
-    for (mut text, binding, capturing, invert, save) in &mut labels {
+    for (mut text, binding, capturing, invert, aim_mode, save) in &mut labels {
         let next = if let Some(binding) = binding {
             ui.controls.slots(binding.0)[binding.1]
                 .map(Binding::label)
@@ -365,6 +375,15 @@ pub(super) fn sync(
                 "Invert mouse Y: {}",
                 if ui.controls.invert_y { "On" } else { "Off" }
             )
+        } else if aim_mode {
+            if ui.controls.manual_aim_mode {
+                format!(
+                    "Auto-aim target: Manual ({} switches)",
+                    ui.controls.label(InputAction::AimMode)
+                )
+            } else {
+                "Auto-aim target: Automatic".into()
+            }
         } else if save {
             status
                 .as_ref()

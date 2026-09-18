@@ -176,6 +176,7 @@ an NVIDIA laptop GPU; Mac performance still needs separate measurements.
 |---|---|
 | Left click | Operate visible controls; click the field to capture the mouse |
 | Right mouse (hold) | Auto Aim + Auto Fire; separately rebindable actions in Controls |
+| G | Switch the auto-aim target between armor and rune, when Controls sets the auto-aim target to Manual |
 | Mouse | Look |
 | Left button (held, once captured) | Fire from the barrel (driving) or just ahead of and below the eye (flying) |
 | W A S D | Drive forward/back and strafe left/right relative to the aim; the chassis heading follows the aim (driving) or move on the horizontal plane (flying) |

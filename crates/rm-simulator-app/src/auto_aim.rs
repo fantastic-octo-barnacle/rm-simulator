@@ -22,7 +22,14 @@ use rm_simulator_world::{
 // Assist tuning, not competition rules. Bound all prediction and acquisition work.
 const MAX_RANGE_M: f64 = 40.;
 const MAX_FLIGHT_S: f64 = 2.5;
-const AIM_CONE_RAD: f64 = 0.10;
+/// How far off the crosshair a target may sit and still be acquired, beyond
+/// its own angular size: `(yaw, pitch)` in radians, `None` for no pitch limit.
+type Tolerance = (f64, Option<f64>);
+/// Automatic target choice: any target class, so both axes stay bounded.
+const AUTO_TOLERANCE: Tolerance = (15f64.to_radians(), Some(12f64.to_radians()));
+/// A class chosen by hand leaves fewer candidates, so it takes a wide yaw
+/// window and ignores pitch: a rune overhead at close range still locks.
+const MANUAL_TOLERANCE: Tolerance = (40f64.to_radians(), None);
 /// The gimbal pitch range the player's manual aim is clamped to. Solving inside
 /// the same range keeps an assist solution reachable by hand.
 const PITCH_LIMIT: [f64; 2] = [
@@ -30,6 +37,29 @@ const PITCH_LIMIT: [f64; 2] = [
     crate::controls::DRIVE_PITCH_RAD.1 as f64,
 ];
 
+/// Target class auto aim looks for when [`ControlsSettings::manual_aim_mode`]
+/// is on; the [`InputAction::AimMode`] binding switches it.
+///
+/// [`ControlsSettings::manual_aim_mode`]: crate::bindings::ControlsSettings::manual_aim_mode
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AimMode {
+    /// Robot, outpost and base armor.
+    #[default]
+    Armor,
+    /// The team's activating rune.
+    Rune,
+}
+impl AimMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Armor => "ARMOR",
+            Self::Rune => "RUNE",
+        }
+    }
+    fn admits(self, id: TargetId) -> bool {
+        matches!(id, TargetId::Rune(_)) == (self == Self::Rune)
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TargetId {
     Base(usize),
@@ -70,6 +100,8 @@ pub struct AutoAim {
     pub blocked_frames: u64,
     /// Cumulative frames with `fire_ready` set.
     pub firing_frames: u64,
+    /// Target class chosen by hand; ignored while target choice is automatic.
+    pub mode: AimMode,
     proposed_rune: Option<RuneShot>,
     last_rune: Option<RuneShot>,
 }
@@ -88,6 +120,15 @@ struct RuneShot {
     flight_ns: u64,
 }
 impl AutoAim {
+    /// HUD line while the assist is not engaged: the chosen class when target
+    /// choice is manual, otherwise nothing.
+    pub fn idle_status(&self, manual: bool) -> String {
+        if manual {
+            format!("AUTO {}", self.mode.label())
+        } else {
+            String::new()
+        }
+    }
     fn clear_intent(&mut self) {
         self.target = None;
         self.fire_ready = false;
@@ -342,9 +383,6 @@ fn targets(session: &Session, caliber: Caliber) -> Vec<Target<'_>> {
 }
 
 /// Finite slab test; parallel rays and boxes behind the eye are handled explicitly.
-fn ray_aabb(origin: DVec3, direction: DVec3, low: DVec3, high: DVec3) -> bool {
-    ray_aabb_range(origin, direction, low, high, MAX_RANGE_M)
-}
 fn ray_aabb_range(origin: DVec3, direction: DVec3, low: DVec3, high: DVec3, range_m: f64) -> bool {
     let mut near: f64 = 0.;
     let mut far: f64 = range_m;
@@ -375,12 +413,17 @@ fn visible(geometry: Option<&StaticGeometry>, from: DVec3, to: DVec3) -> bool {
         )
     })
 }
+/// Score how well `direction` from `eye` points at `target`, lower is
+/// better, or `None` when it is out of range, behind, or further off than
+/// `tolerance` beyond the target's own angular size. Scenery is not consulted:
+/// the assist may lock through a grazing sight line and the fire gate
+/// decides whether the shot itself is clear.
 fn acquisition(
     target: &Target<'_>,
     eye: DVec3,
     direction: DVec3,
     retained: bool,
-    geometry: Option<&StaticGeometry>,
+    tolerance: Tolerance,
 ) -> Option<f64> {
     let mut low = DVec3::splat(f64::INFINITY);
     let mut high = DVec3::splat(f64::NEG_INFINITY);
@@ -392,38 +435,42 @@ fn acquisition(
     let center = (low + high) * 0.5;
     let delta = center - eye;
     let distance = delta.length();
-    if !(0.3..=MAX_RANGE_M).contains(&distance) || delta.dot(direction) <= 0. {
+    let flat = delta.truncate();
+    let view = direction.truncate();
+    if !(0.3..=MAX_RANGE_M).contains(&distance) || flat.dot(view) <= 0. {
         return None;
     }
-    let margin = 0.12 + distance * AIM_CONE_RAD.tan() * if retained { 1.5 } else { 1. };
-    if !ray_aabb(
-        eye,
-        direction,
-        low - DVec3::splat(margin),
-        high + DVec3::splat(margin),
-    ) {
+    let reach = flat.length().max(0.05);
+    let scale = if retained { 1.5 } else { 1. };
+    let yaw_error = view.angle_to(flat).abs();
+    let yaw_size = ((high - low).truncate().length() * 0.5 + 0.12).atan2(reach);
+    let yaw_excess = (yaw_error - yaw_size).max(0.);
+    if yaw_excess > tolerance.0 * scale {
         return None;
     }
-    if !target.faces.iter().any(|&face| {
-        visible(
-            geometry,
-            eye,
-            DVec3::from_array(target.pose(face, 0.).translation_m),
-        )
-    }) {
+    let pitch_error = (delta.z.atan2(reach) - direction.z.clamp(-1., 1.).asin()).abs();
+    let pitch_excess = (pitch_error - ((high.z - low.z) * 0.5 + 0.12).atan2(reach)).max(0.);
+    if tolerance
+        .1
+        .is_some_and(|limit| pitch_excess > limit * scale)
+    {
         return None;
     }
-    let angular = 1. - delta.normalize().dot(direction);
-    Some(angular + distance * 0.00001 - if retained { 0.01 } else { 0. })
+    Some(
+        yaw_excess + 0.5 * pitch_excess + yaw_error * 0.01 + distance * 0.00001
+            - if retained { 0.01 } else { 0. },
+    )
 }
 
-/// Crosshair acquisition takes priority; otherwise find the nearest visible enemy
-/// robot in range, even outside the view cone. `targets` filters team and health.
+/// Crosshair acquisition takes priority; otherwise find the nearest enemy robot
+/// in range with a clear sight line, even outside the view. `targets` filters
+/// team, health and the chosen class.
 fn select_target<'a, 'world>(
     targets: &'a [Target<'world>],
     eye: DVec3,
     direction: DVec3,
     retained: Option<TargetId>,
+    tolerance: Tolerance,
     geometry: Option<&StaticGeometry>,
 ) -> Option<&'a Target<'world>> {
     targets
@@ -434,7 +481,7 @@ fn select_target<'a, 'world>(
                 eye,
                 direction,
                 retained == Some(target.id),
-                geometry,
+                tolerance,
             )
             .map(|score| (score, target))
         })
@@ -454,8 +501,18 @@ fn select_target<'a, 'world>(
                     if !(0.3..=MAX_RANGE_M).contains(&distance) {
                         return None;
                     }
-                    // Reuse the same face visibility and range checks without the view cone.
-                    acquisition(target, eye, delta.normalize(), false, geometry)?;
+                    // Turning to a robot outside the view still needs a sight
+                    // line, so the assist never swings toward one behind a wall.
+                    acquisition(target, eye, delta.normalize(), false, AUTO_TOLERANCE)?;
+                    if !target.faces.iter().any(|&face| {
+                        visible(
+                            geometry,
+                            eye,
+                            DVec3::from_array(target.pose(face, 0.).translation_m),
+                        )
+                    }) {
+                        return None;
+                    }
                     Some((distance, target))
                 })
                 .min_by(|a, b| a.0.total_cmp(&b.0))
@@ -538,13 +595,8 @@ fn facing(pose: Pose, from: DVec3) -> f64 {
     (dquat(pose.rotation_wxyz) * DVec3::X)
         .dot((from - DVec3::from_array(pose.translation_m)).normalize_or_zero())
 }
-fn choose_solution(
-    target: &Target<'_>,
-    pivot: DVec3,
-    shot: Shot,
-    lead_s: f64,
-    geometry: Option<&StaticGeometry>,
-) -> Option<Solution> {
+/// The solvable face turned most squarely toward `pivot` at impact.
+fn choose_solution(target: &Target<'_>, pivot: DVec3, shot: Shot, lead_s: f64) -> Option<Solution> {
     target
         .faces
         .iter()
@@ -552,7 +604,7 @@ fn choose_solution(
             let solution = solve(target, face, pivot, shot, lead_s)?;
             let pose = target.pose(face, lead_s + solution.flight_s);
             let cosine = facing(pose, pivot);
-            if cosine < 0.25 || !visible(geometry, pivot, DVec3::from_array(pose.translation_m)) {
+            if cosine < 0.25 {
                 return None;
             }
             Some((cosine, solution))
@@ -611,13 +663,14 @@ fn fire_gate_reason(
             if local.y.abs() > half.x || local.z.abs() > half.y {
                 return Err("turning barrel");
             }
-            // Check the curved shot path as well as the acquisition sight line.
+            // Check the curved shot path for scenery. The last 15 cm is left
+            // out so a grazing shot past the target's own housing still fires.
             let mut previous = pivot + direction * f64::from(MUZZLE_FORWARD_M);
             for i in 1..=16 {
                 let (p, _) = flight(shot, pitch, time * i as f64 / 16.);
                 let point = pivot + horizontal * p.x + DVec3::Z * p.y;
                 let end = if i == 16 {
-                    point - (point - previous).normalize_or_zero() * 0.025
+                    point - (point - previous).normalize_or_zero() * 0.15
                 } else {
                     point
                 };
@@ -712,6 +765,24 @@ pub fn update(
         / 1e6;
     state.fire_ready = false;
     state.proposed_rune = None;
+    let manual = ui.controls.manual_aim_mode;
+    if manual
+        && !ui.blocks_input()
+        && ui
+            .controls
+            .just_pressed(InputAction::AimMode, &keys, Some(&buttons))
+    {
+        state.mode = match state.mode {
+            AimMode::Armor => AimMode::Rune,
+            AimMode::Rune => AimMode::Armor,
+        };
+        state.target = None;
+    }
+    let prefix = if manual {
+        format!("AUTO {}", state.mode.label())
+    } else {
+        "AUTO".to_owned()
+    };
     if state
         .last_rune
         .is_some_and(|shot| session.fire_time_ns() < shot.fired_ns)
@@ -739,7 +810,7 @@ pub fn update(
     }
     if !session.aim_observation_fresh() || state.observation_age_ms > 300. {
         state.target = None;
-        state.status = "AUTO: stale target observation".into();
+        state.status = format!("{prefix}: stale target observation");
         state.record_gate("stale");
         return;
     }
@@ -750,7 +821,10 @@ pub fn update(
     let direction = DQuat::from_rotation_z(f64::from(player.yaw_rad))
         * DQuat::from_rotation_y(-f64::from(player.pitch_rad))
         * DVec3::X;
-    let targets = targets(&session, gun.shot.caliber);
+    let mut targets = targets(&session, gun.shot.caliber);
+    if manual {
+        targets.retain(|target| state.mode.admits(target.id));
+    }
     let displayed: Vec<_> = session
         .snapshot
         .chassis
@@ -767,13 +841,18 @@ pub fn update(
         eye,
         direction,
         state.target,
+        if manual {
+            MANUAL_TOLERANCE
+        } else {
+            AUTO_TOLERANCE
+        },
         geometry.as_ref(),
     )
     .map(|target| target.id);
     let selected = targets.iter().find(|target| Some(target.id) == selected_id);
     let Some(target) = selected else {
         state.target = None;
-        state.status = "AUTO: searching".into();
+        state.status = format!("{prefix}: searching");
         state.record_gate("searching");
         return;
     };
@@ -783,8 +862,8 @@ pub fn update(
     } else {
         0.
     };
-    let Some(solution) = choose_solution(target, pivot, gun.shot, lead_s, geometry.as_ref()) else {
-        state.status = format!("AUTO: {} / no shot", target.description());
+    let Some(solution) = choose_solution(target, pivot, gun.shot, lead_s) else {
+        state.status = format!("{prefix}: {} / no shot", target.description());
         state.record_gate("no-shot");
         return;
     };
@@ -827,7 +906,7 @@ pub fn update(
         "firing"
     };
     state.fire_ready = reason == "firing";
-    state.status = format!("AUTO: {} / {}", target.description(), reason);
+    state.status = format!("{prefix}: {} / {}", target.description(), reason);
     state.record_gate(if reason == "stale target, tracking only" {
         "tracking-only"
     } else {
@@ -873,8 +952,8 @@ mod tests {
         }];
         let view = view_targets(&targets, &displayed);
         let eye = DVec3::new(0., 0., 1.);
-        assert!(acquisition(&targets[0], eye, DVec3::X, false, None).is_none());
-        assert!(acquisition(&view[0], eye, DVec3::X, false, None).is_some());
+        assert!(acquisition(&targets[0], eye, DVec3::X, false, AUTO_TOLERANCE).is_none());
+        assert!(acquisition(&view[0], eye, DVec3::X, false, AUTO_TOLERANCE).is_some());
         assert!(targets[0].pose(0, 0.2).translation_m[1] > 5.);
         assert!(view[0].pose(0, 0.).translation_m[1].abs() < 0.5);
     }
@@ -899,13 +978,13 @@ mod tests {
         ];
         let eye = DVec3::new(0., 0., 1.);
         assert_eq!(
-            select_target(&candidates, eye, -DVec3::X, None, None)
+            select_target(&candidates, eye, -DVec3::X, None, AUTO_TOLERANCE, None)
                 .unwrap()
                 .id,
             TargetId::Robot(1)
         );
         assert_eq!(
-            select_target(&candidates, eye, DVec3::X, None, None)
+            select_target(&candidates, eye, DVec3::X, None, AUTO_TOLERANCE, None)
                 .unwrap()
                 .id,
             TargetId::Robot(2)
@@ -919,22 +998,138 @@ mod tests {
             .unwrap();
         let geometry = field.static_geometry_snapshot();
         assert_eq!(
-            select_target(&candidates, eye, -DVec3::X, None, Some(&geometry))
-                .unwrap()
-                .id,
+            select_target(
+                &candidates,
+                eye,
+                -DVec3::X,
+                None,
+                AUTO_TOLERANCE,
+                Some(&geometry)
+            )
+            .unwrap()
+            .id,
             TargetId::Robot(2)
         );
-        assert!(select_target(&candidates[..1], eye, -DVec3::X, None, Some(&geometry)).is_none());
-        assert!(select_target(&candidates, DVec3::splat(100.), -DVec3::X, None, None).is_none());
+        assert!(
+            select_target(
+                &candidates[..1],
+                eye,
+                -DVec3::X,
+                None,
+                AUTO_TOLERANCE,
+                Some(&geometry)
+            )
+            .is_none()
+        );
+        assert!(
+            select_target(
+                &candidates,
+                DVec3::splat(100.),
+                -DVec3::X,
+                None,
+                AUTO_TOLERANCE,
+                None
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn manual_mode_ignores_pitch_and_both_modes_widen_yaw() {
+        let eye = DVec3::new(0., 0., 1.);
+        let within = |robot: &ChassisSnapshot, tolerance| {
+            let target = Target {
+                id: TargetId::Robot(robot.id),
+                motion: Motion::Robot(robot, 0.),
+                faces: (0..4).collect(),
+            };
+            acquisition(&target, eye, DVec3::X, false, tolerance)
+        };
+        let target_at = |robot| within(robot, AUTO_TOLERANCE);
+        let manual = |robot| within(robot, MANUAL_TOLERANCE);
+        // Close and high above the crosshair, like a rune at close range.
+        let mut overhead = robot();
+        overhead.pose.translation_m = [2., 0., 3.5];
+        assert!(target_at(&overhead).is_none());
+        assert!(manual(&overhead).is_some());
+        // 14 degrees off in yaw at 8 m: the old 6 degree cone missed it.
+        let mut aside = robot();
+        let yaw = 14f64.to_radians();
+        aside.pose.translation_m = [8. * yaw.cos(), 8. * yaw.sin(), 1.];
+        assert!(target_at(&aside).is_some());
+        // Far outside either window, or behind, never locks.
+        let mut wide = robot();
+        wide.pose.translation_m = [4., 6., 1.];
+        assert!(target_at(&wide).is_none());
+        assert!(manual(&wide).is_none());
+        let mut behind = robot();
+        behind.pose.translation_m = [-4., 0., 1.];
+        assert!(manual(&behind).is_none());
+    }
+
+    #[test]
+    fn a_target_in_view_locks_through_scenery_and_the_class_filters() {
+        let mut ahead = robot();
+        ahead.pose.translation_m = [8., 0., 1.];
+        let candidates = vec![Target {
+            id: TargetId::Robot(1),
+            motion: Motion::Robot(&ahead, 0.),
+            faces: (0..4).collect(),
+        }];
+        let mut field = Field::new(&FieldConfig::default()).unwrap();
+        field
+            .add_static_mesh(
+                vec![[4., -2., -2.], [4., 2., -2.], [4., 2., 4.], [4., -2., 4.]],
+                vec![[0, 1, 2], [0, 2, 3]],
+            )
+            .unwrap();
+        let geometry = field.static_geometry_snapshot();
+        let eye = DVec3::new(0., 0., 1.);
+        assert_eq!(
+            select_target(
+                &candidates,
+                eye,
+                DVec3::X,
+                None,
+                AUTO_TOLERANCE,
+                Some(&geometry)
+            )
+            .unwrap()
+            .id,
+            TargetId::Robot(1)
+        );
+        assert!(AimMode::Armor.admits(TargetId::Robot(1)));
+        assert!(AimMode::Armor.admits(TargetId::Outpost(0)));
+        assert!(!AimMode::Armor.admits(TargetId::Rune(0)));
+        assert!(AimMode::Rune.admits(TargetId::Rune(0)));
+        assert!(!AimMode::Rune.admits(TargetId::Base(0)));
     }
 
     #[test]
     fn slabs_reject_parallel_misses_and_boxes_behind_camera() {
         let low = DVec3::new(2., -1., -1.);
         let high = DVec3::new(3., 1., 1.);
-        assert!(ray_aabb(DVec3::ZERO, DVec3::X, low, high));
-        assert!(!ray_aabb(DVec3::ZERO, -DVec3::X, low, high));
-        assert!(!ray_aabb(DVec3::new(0., 2., 0.), DVec3::X, low, high));
+        assert!(ray_aabb_range(
+            DVec3::ZERO,
+            DVec3::X,
+            low,
+            high,
+            MAX_RANGE_M
+        ));
+        assert!(!ray_aabb_range(
+            DVec3::ZERO,
+            -DVec3::X,
+            low,
+            high,
+            MAX_RANGE_M
+        ));
+        assert!(!ray_aabb_range(
+            DVec3::new(0., 2., 0.),
+            DVec3::X,
+            low,
+            high,
+            MAX_RANGE_M
+        ));
     }
     #[test]
     fn leads_linear_and_spinning_armor_and_rejects_unreachable_shots() {
@@ -948,7 +1143,7 @@ mod tests {
         };
         let pivot = DVec3::new(0., 0., 1.);
         let shot = Shot::at_limit(Caliber::Mm17);
-        let solution = choose_solution(&target, pivot, shot, 0., None).unwrap();
+        let solution = choose_solution(&target, pivot, shot, 0.).unwrap();
         assert!(solution.yaw_rad > 0.02);
         assert!(solution.pitch_rad > 0.03);
         assert!(fire_gate(
@@ -968,7 +1163,7 @@ mod tests {
             None
         ));
         let far = DVec3::new(-100., 0., 1.);
-        assert!(choose_solution(&target, far, Shot::at_limit(Caliber::Mm42), 0., None).is_none());
+        assert!(choose_solution(&target, far, Shot::at_limit(Caliber::Mm42), 0.).is_none());
     }
     #[test]
     fn ballistic_solution_matches_actual_rapier_flight() {
@@ -981,7 +1176,7 @@ mod tests {
         let pivot = DVec3::new(0., 0., 1.);
         for caliber in [Caliber::Mm17, Caliber::Mm42] {
             let shot = Shot::at_limit(caliber);
-            let solution = choose_solution(&target, pivot, shot, 0., None).unwrap();
+            let solution = choose_solution(&target, pivot, shot, 0.).unwrap();
             let rotation = rotation(solution);
             let mut field = Field::new(&FieldConfig {
                 runes: vec![],
@@ -1034,7 +1229,7 @@ mod tests {
         };
         let pivot = DVec3::new(0., 0., 1.);
         let shot = Shot::at_limit(Caliber::Mm17);
-        let solution = choose_solution(&target, pivot, shot, 0., None).unwrap();
+        let solution = choose_solution(&target, pivot, shot, 0.).unwrap();
         assert!(fire_gate(
             &target,
             solution,
@@ -1055,7 +1250,7 @@ mod tests {
             motion: Motion::Rune(&snapshot, 0),
             faces: vec![snapshot.active_blade.unwrap() as usize],
         };
-        let solution = choose_solution(&target, pivot, shot, 0., None).unwrap();
+        let solution = choose_solution(&target, pivot, shot, 0.).unwrap();
         assert!(fire_gate(
             &target,
             solution,
@@ -1089,7 +1284,7 @@ mod tests {
             assert_eq!(runes.len(), 1);
             assert_eq!(runes[0].id, TargetId::Rune(index));
             let solution =
-                choose_solution(runes[0], eye, Shot::at_limit(Caliber::Mm17), 0., None).unwrap();
+                choose_solution(runes[0], eye, Shot::at_limit(Caliber::Mm17), 0.).unwrap();
             assert!(fire_gate(
                 runes[0],
                 solution,
@@ -1098,9 +1293,7 @@ mod tests {
                 Shot::at_limit(Caliber::Mm17),
                 None
             ));
-            assert!(
-                choose_solution(runes[0], -eye, Shot::at_limit(Caliber::Mm17), 0., None).is_none()
-            );
+            assert!(choose_solution(runes[0], -eye, Shot::at_limit(Caliber::Mm17), 0.).is_none());
             assert!(
                 targets(&session, Caliber::Mm42)
                     .iter()
@@ -1189,13 +1382,9 @@ mod tests {
                 faces: vec![snapshot.runes[0].active_blade.unwrap() as usize],
             };
             let pivot = DVec3::from_array(own.turret.translation_m);
-            if let Some(solution) = choose_solution(
-                &target,
-                pivot,
-                shot,
-                own.config.dynamics.gimbal_response_s,
-                None,
-            ) {
+            if let Some(solution) =
+                choose_solution(&target, pivot, shot, own.config.dynamics.gimbal_response_s)
+            {
                 field
                     .command_chassis(
                         0,
@@ -1274,13 +1463,9 @@ mod tests {
                 faces: (0..3).collect(),
             };
             let pivot = DVec3::from_array(own.turret.translation_m);
-            if let Some(solution) = choose_solution(
-                &target,
-                pivot,
-                shot,
-                own.config.dynamics.gimbal_response_s,
-                None,
-            ) {
+            if let Some(solution) =
+                choose_solution(&target, pivot, shot, own.config.dynamics.gimbal_response_s)
+            {
                 field
                     .command_chassis(
                         0,
@@ -1398,7 +1583,6 @@ mod tests {
                 DVec3::from_array(session.own_chassis().unwrap().turret.translation_m),
                 Shot::at_limit(Caliber::Mm17),
                 0.,
-                None,
             )
             .unwrap()
         };

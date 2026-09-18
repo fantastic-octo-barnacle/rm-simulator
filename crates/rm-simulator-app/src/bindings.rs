@@ -36,6 +36,9 @@ pub enum InputAction {
     /// Hold to let auto aim fire when its solution is clear, on the same cadence
     /// as a manual trigger.
     AutoFire,
+    /// Switch the auto-aim target class between armor and rune while
+    /// [`ControlsSettings::manual_aim_mode`] is on; does nothing otherwise.
+    AimMode,
     /// Buy one 17 mm round for the pilot's chassis from team gold. A client with
     /// no chassis, such as a spectator or the referee, sends nothing.
     Buy17,
@@ -69,7 +72,7 @@ pub enum InputAction {
 }
 impl InputAction {
     /// Every action, in the order the help panel and the controls menu list them.
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::Forward,
         Self::Backward,
         Self::Left,
@@ -82,6 +85,7 @@ impl InputAction {
         Self::Fire,
         Self::AutoAim,
         Self::AutoFire,
+        Self::AimMode,
         Self::Buy17,
         Self::Buy42,
         Self::Settings,
@@ -110,6 +114,7 @@ impl InputAction {
             Self::Fire => "Fire",
             Self::AutoAim => "Hold auto aim",
             Self::AutoFire => "Hold auto fire",
+            Self::AimMode => "Switch auto-aim mode",
             Self::Buy17 => "Buy 17 mm",
             Self::Buy42 => "Buy 42 mm",
             Self::Settings => "Settings",
@@ -132,7 +137,8 @@ impl InputAction {
             | Self::Buy17
             | Self::Buy42
             | Self::AutoAim
-            | Self::AutoFire => 1,
+            | Self::AutoFire
+            | Self::AimMode => 1,
             Self::Up | Self::Down => 6,
             Self::Pause | Self::Step | Self::Start | Self::Rune => 7, // local pilots referee too
             _ => 7,
@@ -152,6 +158,7 @@ impl InputAction {
             Self::Camera => KeyV,
             Self::Fire => return Binding::Mouse(MouseButton::Left),
             Self::AutoAim | Self::AutoFire => return Binding::Mouse(MouseButton::Right),
+            Self::AimMode => KeyG,
             Self::Buy17 => KeyO,
             Self::Buy42 => KeyI,
             Self::Settings => KeyP,
@@ -222,6 +229,9 @@ pub struct ControlsSettings {
     pub bindings: BTreeMap<InputAction, [Option<Binding>; 2]>,
     /// Negate vertical look sensitivity, so mouse motion down raises the gun.
     pub invert_y: bool,
+    /// Choose the auto-aim target class by hand with [`InputAction::AimMode`]
+    /// instead of letting auto aim pick any target; off by default.
+    pub manual_aim_mode: bool,
 }
 impl ControlsSettings {
     /// The two binding slots for `action`: the stored ones when the map has the
