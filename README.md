@@ -88,6 +88,7 @@ The essentials, for driving and for match control:
 | Mouse | Look |
 | Left button (held, once captured) | Fire from the barrel (driving) or just ahead of and below the eye (flying) |
 | Right mouse (hold) | Auto Aim + Auto Fire; separately rebindable actions in Controls |
+| G | Switch the auto-aim target between armor and rune, when Controls sets the auto-aim target to Manual |
 | W A S D | Drive forward/back and strafe left/right relative to the aim; the chassis heading follows the aim (driving) or move on the horizontal plane (flying) |
 | Left Ctrl | Fast: 5 m/s drive command, 8 m/s flight |
 | R | Toggle chassis spin (6 rad/s) while driving |
@@ -690,6 +691,12 @@ They may share a binding and both default to right mouse. Clear Auto Fire for
 assisted aiming with manual left-click shooting, or assign different buttons.
 Auto Fire by itself checks your current barrel alignment without steering it.
 The HUD reports searching, aim only, waiting, or firing.
+By default auto aim picks any target near the crosshair. Set **Auto-aim
+target** in Controls to Manual to choose the class yourself: **Switch auto-aim
+mode** (G) toggles between ARMOR (robots, outposts and bases) and RUNE, and the
+HUD shows the class. A chosen class gets a wide 40° yaw window and no pitch
+limit, so an overhead rune at close range still locks; the automatic window is
+15° of yaw and 12° of pitch beyond the target's own size.
 Rune auto-fire is limited to two shots per second and waits for flight time plus
 confirmation before another shot. An unchanged blade gets a slower retry after
 at least 1.2 seconds; releasing and repressing the button does not bypass this.
@@ -716,7 +723,8 @@ rune confirmation. Every shot samples current controls even between normal
 
 This is a simple game-data aid, inspired by Vision2027's selection, prediction,
 ballistics, and fire-control stages. It uses exact snapshot velocities instead
-of image detection or an EKF. Acquisition prioritizes targets near the crosshair, falling back to the closest
+of image detection or an EKF. Acquisition prioritizes targets near the crosshair
+without a line-of-sight check, falling back to the closest
 visible enemy robot within 40 m (including outside the view cone);
 constant-velocity robot prediction cannot anticipate collisions or a change of
 input. Scenery rays and conservative bounds for intervening robots can withhold

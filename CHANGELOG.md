@@ -4,6 +4,12 @@
 
 ## Unreleased
 
+- Widen auto-aim acquisition to 15° of yaw and 12° of pitch beyond the
+  target's size and drop its line-of-sight requirement; the fire gate still
+  checks the shot path, now short of the target's last 15 cm. Controls
+  gains an Auto-aim target setting: Manual picks ARMOR or RUNE with the new
+  Switch auto-aim mode action (G) and locks within 40° of yaw at any pitch.
+
 - Animate a base's protective armor over 2 s as it opens or closes, easing
   in and out and reversing smoothly from mid-travel; its collision follows
   the drawn position (protocol 46). A Hero now has its own weapon, 12 m/s at
