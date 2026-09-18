@@ -375,7 +375,7 @@ impl Field {
             .map(BaseSnapshot::new)
             .collect();
         let mut faces = Vec::new();
-        Self::write_target_faces(&runes, &outposts, &bases, 0, &mut faces);
+        Self::write_target_faces(&runes, &outposts, &bases, None, 0, &mut faces);
         let mut field = Self {
             bases,
             floor_height_m: config.floor_height_m,
@@ -410,10 +410,12 @@ impl Field {
         runes: &[Rune],
         outposts: &[Outpost],
         bases: &[BaseSnapshot],
+        dart_since_ns: Option<u64>,
         time_ns: u64,
         faces: &mut Vec<TargetFace>,
     ) {
         faces.clear();
+        let dart = referee::dart_target_position(dart_since_ns, time_ns);
         for (base, state) in bases.iter().enumerate() {
             for plate in 0..7 {
                 faces.push(TargetFace {
@@ -421,7 +423,7 @@ impl Field {
                         base: base as u32,
                         plate: plate as u32,
                     },
-                    pose: state.pose(plate, time_ns),
+                    pose: state.pose(plate, dart),
                 });
             }
         }
@@ -939,6 +941,9 @@ impl Field {
                             &self.runes,
                             &self.outposts,
                             &self.bases,
+                            self.referee
+                                .as_ref()
+                                .and_then(Referee::dart_target_since_ns),
                             prev_ns,
                             faces,
                         )
@@ -983,6 +988,9 @@ impl Field {
                         &self.runes,
                         &self.outposts,
                         &self.bases,
+                        self.referee
+                            .as_ref()
+                            .and_then(Referee::dart_target_since_ns),
                         next_ns,
                         faces,
                     )
@@ -1233,7 +1241,17 @@ impl Field {
             outpost.validate().map_err(FieldError::Outpost)?;
         }
         let mut faces = Vec::new();
-        Self::write_target_faces(&runes, &outposts, &snapshot.bases, time_ns, &mut faces);
+        Self::write_target_faces(
+            &runes,
+            &outposts,
+            &snapshot.bases,
+            rules
+                .referee
+                .as_ref()
+                .and_then(Referee::dart_target_since_ns),
+            time_ns,
+            &mut faces,
+        );
         let mut physics = WorldPhysics::new(&faces, floor_height_m);
         physics
             .set_projectile_policy(rules.projectile_policy)
@@ -1659,9 +1677,13 @@ mod tests {
         let mut field = Field::new(&FieldConfig {
             runes: Vec::new(),
             outposts: Vec::new(),
+            referee: Some(RefereeConfig::alternating(0, 0)),
             ..Default::default()
         })
         .unwrap();
+        field
+            .referee_command(RefereeCommand::SetDartTargetMoving { moving: true })
+            .unwrap();
         field
             .add_mechanism_mesh(
                 vec![[20., 0., 1.], [20., 1., 1.], [20., 0., 2.]],
@@ -1677,7 +1699,11 @@ mod tests {
         let (vertices, indices) = part.geometry.into_triangles();
         for ticks in [0, 16, 250, 1000, 2000] {
             field.step(ticks).unwrap();
-            let fraction = referee::dart_target_fraction(field.time_ns());
+            let fraction = field
+                .referee()
+                .unwrap()
+                .snapshot()
+                .dart_target_position(field.time_ns());
             let translation: [f64; 3] = std::array::from_fn(|i| {
                 part.translations_m[0][i]
                     + (part.translations_m[1][i] - part.translations_m[0][i]) * fraction
@@ -1693,9 +1719,29 @@ mod tests {
 
     #[test]
     fn dart_target_collision_sweeps_and_is_tick_partition_independent() {
+        // Without a referee, or until one starts the sweep, the target rests.
         for referee in [None, Some(RefereeConfig::alternating(1, 2))] {
-            let config = FieldConfig {
+            let mut field = Field::new(&FieldConfig {
                 referee,
+                ..Default::default()
+            })
+            .unwrap();
+            field
+                .add_mechanism_mesh(
+                    vec![[20., 0., 1.], [20., 1., 1.], [20., 0., 2.]],
+                    vec![[0, 1, 2]],
+                    referee::Mechanism::DartTarget,
+                    Team::Red,
+                    [[0., -0.28, 0.], [0., 0.28, 0.]],
+                )
+                .unwrap();
+            let initial = field.static_geometry();
+            field.step(ticks(2_000_000_000)).unwrap();
+            assert_eq!(field.static_geometry(), initial);
+        }
+        {
+            let config = FieldConfig {
+                referee: Some(RefereeConfig::alternating(1, 2)),
                 ..Default::default()
             };
             let make = || {
@@ -1708,6 +1754,9 @@ mod tests {
                         Team::Red,
                         [[0., -0.28, 0.], [0., 0.28, 0.]],
                     )
+                    .unwrap();
+                field
+                    .referee_command(RefereeCommand::SetDartTargetMoving { moving: true })
                     .unwrap();
                 field
             };
@@ -1994,6 +2043,7 @@ mod tests {
             &field.runes,
             &field.outposts,
             &field.bases,
+            None,
             now_ns,
             &mut expected,
         );

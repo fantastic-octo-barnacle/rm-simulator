@@ -161,6 +161,8 @@
       <button onclick="submit(()=>setMechanism('SetDartDoorOpen',false))">Close dart door</button>
       <button onclick="submit(()=>setMechanism('SetBaseOpen',true))">Open base</button>
       <button onclick="submit(()=>setMechanism('SetBaseOpen',false))">Close base</button>
+      <button onclick="submit(()=>referee({SetDartTargetMoving:{moving:true}}))">Sweep dart targets</button>
+      <button onclick="submit(()=>referee({SetDartTargetMoving:{moving:false}}))">Rest dart targets</button>
       <p id="mechanismState" class="muted"></p>
     </div>
     <form onsubmit="event.preventDefault(); submit(saveOpportunities)">
@@ -306,7 +308,7 @@ function render(state) {
      <td class="muted">${gameRobot(b.id) ? robotStatus(gameRobot(b.id), now) : ''}</td>
      <td><button onclick="referee({DamageRobot:{robot:${b.id},amount:Number($('dmg').value)}})">hit</button>
          <button onclick="referee({ReviveRobot:{robot:${b.id}}})">revive</button></td></tr>`).join('');
-  $('mechanismState').textContent = ['Red','Blue'].map((team,i)=>`${team}: base ${r.base_open[i]?'open':'closed'}, dart door ${r.dart_door_open[i]?'open':'closed'}`).join('; ');
+  $('mechanismState').textContent = ['Red','Blue'].map((team,i)=>`${team}: base ${r.base_open[i]?'open':'closed'}, dart door ${r.dart_door_open[i]?'open':'closed'}`).join('; ') + `; dart targets ${r.dart_target_since_ns == null ? 'resting' : 'sweeping'}`;
   $('bases').innerHTML = '<tr><th>Team</th><th>HP</th><th>Shield</th></tr>' + (s.bases || []).map(b=>`<tr><td>${b.config.team}</td><td>${b.hp}/5000</td><td>${b.shield_hp}</td></tr>`).join('');
   $('outposts').innerHTML = '<tr><th>#</th><th>team</th><th>HP</th></tr>' + s.outposts.map((o, i) =>
     `<tr><td>${i}</td><td class="${teamClass(r.outpost_teams[i])}">${r.outpost_teams[i]}</td>

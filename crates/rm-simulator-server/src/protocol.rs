@@ -82,7 +82,9 @@ use serde::{Deserialize, Serialize};
 /// reserve state to the gameplay record, the `TerrainCrossing` and
 /// `BaseArmorExpanded` events, and a field configuration's `zones`.
 /// Version 46 carries each base armor's travel stamp (`base_moved_ns`) in the
-/// referee, so peers animate it opening and closing.
+/// referee, so peers animate it opening and closing, and the stamp the Dart
+/// Detection Modules started sweeping (`dart_target_since_ns`); they rest by
+/// default.
 pub const PROTOCOL_VERSION: u32 = 46;
 
 /// Explains incompatible host and client wire versions and how to resolve them.

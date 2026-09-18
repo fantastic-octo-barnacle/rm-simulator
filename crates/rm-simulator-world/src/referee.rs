@@ -446,6 +446,10 @@ pub struct RefereeSnapshot {
     pub base_moved_ns: [Option<u64>; 2],
     /// Dart door overrides, indexed red then blue; open by default.
     pub dart_door_open: [bool; 2],
+    /// When both Dart Detection Modules started sweeping along their rails,
+    /// on the field clock; `None` while they rest, the default. See
+    /// [`Self::dart_target_position`].
+    pub dart_target_since_ns: Option<u64>,
     /// The gameplay engine's whole state: gold, HP, experience, heat,
     /// respawn timers, buffs and the round result.
     pub game: gp::Snapshot,
@@ -474,6 +478,7 @@ pub struct RefereeSnapshot {
 
 pub use rm_simulator_physics::motion::{
     BASE_TRAVEL_NS, DART_TARGET_PERIOD_NS, Mechanism, MechanismState, dart_target_fraction,
+    dart_target_position,
 };
 
 impl RefereeSnapshot {
@@ -485,6 +490,10 @@ impl RefereeSnapshot {
             self.base_moved_ns[index],
             time_ns,
         )
+    }
+    /// Dart rail position at field time `time_ns`, 0 at rest to 1.
+    pub fn dart_target_position(&self, time_ns: u64) -> f64 {
+        dart_target_position(self.dart_target_since_ns, time_ns)
     }
 }
 
@@ -501,7 +510,10 @@ pub fn mechanism_state(referee: Option<&Referee>, time_ns: u64) -> MechanismStat
             })
         }),
         dart_door_open: referee.map_or([true; 2], |r| r.dart_door_open),
-        dart_target_fraction: dart_target_fraction(time_ns),
+        dart_target_fraction: dart_target_position(
+            referee.and_then(|r| r.dart_target_since_ns),
+            time_ns,
+        ),
     }
 }
 /// Resolve public match state for presentation clearance queries.
@@ -511,7 +523,7 @@ pub fn mechanism_view(referee: Option<&RefereeSnapshot>, time_ns: u64) -> Mechan
             std::array::from_fn(|i| r.base_open_fraction(i, time_ns))
         }),
         dart_door_open: referee.map_or([true; 2], |r| r.dart_door_open),
-        dart_target_fraction: dart_target_fraction(time_ns),
+        dart_target_fraction: referee.map_or(0.0, |r| r.dart_target_position(time_ns)),
     }
 }
 
@@ -541,6 +553,14 @@ pub enum RefereeCommand {
         team: Team,
         /// Whether the door stands open.
         open: bool,
+    },
+    /// Start or stop both Dart Detection Modules sweeping along their rails.
+    /// They rest by default; a sweep sets off from rest, and stopping returns
+    /// them there. An app training control; the rulebook's dart target modes
+    /// are not modelled.
+    SetDartTargetMoving {
+        /// Whether the targets sweep.
+        moving: bool,
     },
     /// Set an outpost's HP directly. In training a restored tower spins
     /// again; in a match a stopped rotor stays stopped.
@@ -864,6 +884,8 @@ pub struct Referee {
     /// Field time each base set off toward `base_open`; `None` at rest.
     base_moved_ns: [Option<u64>; 2],
     dart_door_open: [bool; 2],
+    /// Field time the dart targets started sweeping; `None` at rest.
+    dart_target_since_ns: Option<u64>,
     game: gp::Game,
     /// Id of the first game event not yet translated into a referee event.
     game_events_seen: u64,
@@ -928,6 +950,7 @@ impl Referee {
             base_open: [false; 2],
             base_moved_ns: [None; 2],
             dart_door_open: [true; 2],
+            dart_target_since_ns: None,
             game,
             game_events_seen: 0,
             training_kinds: rune_kinds,
@@ -1088,6 +1111,9 @@ impl Referee {
                 for moved in self.base_moved_ns.iter_mut().flatten() {
                     visit(moved);
                 }
+                if let Some(since) = &mut self.dart_target_since_ns {
+                    visit(since);
+                }
                 for event in &mut self.events {
                     visit(&mut event.time_ns);
                 }
@@ -1109,6 +1135,11 @@ impl Referee {
                 }
             }
         }
+    }
+    /// When the dart targets started sweeping, on the field clock; `None`
+    /// while they rest.
+    pub fn dart_target_since_ns(&self) -> Option<u64> {
+        self.dart_target_since_ns
     }
     /// Send team's base armor toward `open` from where it is now, so a
     /// reversal mid-travel continues smoothly.
@@ -1531,6 +1562,14 @@ impl Referee {
                 self.dart_door_open[team.index()] = open;
                 Ok(())
             }
+            RefereeCommand::SetDartTargetMoving { moving } => {
+                if !moving {
+                    self.dart_target_since_ns = None;
+                } else if self.dart_target_since_ns.is_none() {
+                    self.dart_target_since_ns = Some(self.now_ns);
+                }
+                Ok(())
+            }
             RefereeCommand::SetOutpostHp { outpost, hp } => {
                 let team = *self
                     .config
@@ -1893,6 +1932,7 @@ impl Referee {
             base_open: self.base_open,
             base_moved_ns: self.base_moved_ns,
             dart_door_open: self.dart_door_open,
+            dart_target_since_ns: self.dart_target_since_ns,
             game: self.game.snapshot().clone(),
             phase: self.phase,
             match_time_ns,

@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- Base Dart Detection Modules rest at the start of their rails by default;
+  the referee panel's Sweep dart targets and Rest dart targets toggle the
+  four-second sweep (`SetDartTargetMoving`, protocol 46).
+
 - Armor detects 42 mm rounds above 8 m/s along its normal instead of Table
   5-1's 10 m/s, so a Hero's lob registers on the Base's steep upper plates.
 

@@ -591,8 +591,11 @@ semantic joints; older packages retain their fixed geometry. Match start/reset
 closes the base shields and opens the dart doors, matching the exported rest pose.
 Destroying an outpost opens its base shields. Base damage and training controls
 are described in the training section below.
-The base's upper dart target sweeps along its rail every four seconds, using
-simulation time and moving its collision mesh with it. The period is an
+The base's upper dart target rests at the rail's start by default. The
+referee panel's **Sweep dart targets** makes both sweep along their rails
+every four seconds, using simulation time and moving their collision meshes
+with them; **Rest dart targets** returns them. Projectile hits on it score as a
+training override (20 HP per 17 mm round, 200 per 42 mm round). The period is an
 illustrative app setting. It requires the `base.dart_target.slide` asset binding;
 see [the reproducible asset build](docs/semantic-assets.md).
 
