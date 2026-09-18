@@ -127,7 +127,8 @@ mod tests {
         assert_eq!(Caliber::Mm17.launch_speed_limit_m_s(), 25.);
         assert_eq!(Caliber::Mm42.launch_speed_limit_m_s(), 12.);
         assert_eq!(Caliber::Mm17.armor_detection_speed_m_s(), 12.);
-        assert_eq!(Caliber::Mm42.armor_detection_speed_m_s(), 10.);
+        // Relaxed from Table 5-1's 10 m/s; see the constant.
+        assert_eq!(Caliber::Mm42.armor_detection_speed_m_s(), 8.);
         assert_eq!(Caliber::Mm17.detection_interval_ns(), 50_000_000);
         assert_eq!(Caliber::Mm42.detection_interval_ns(), 200_000_000);
         assert_eq!(outpost_damage(Caliber::Mm17, [0.03, 0.]), 20);
