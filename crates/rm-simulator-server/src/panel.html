@@ -288,7 +288,9 @@ function render(state) {
   $('robotDetail').textContent = sel ? `LV ${sel.level}, XP ${(sel.experience_tenths / 10).toFixed(1)}, heat ${Math.floor(sel.heat_tenths / 10)}, ammo ${sel.allowance.join('/')}, fired ${sel.shots_launched.join('/')}` : '';
   if (!settingsLoaded) { $('enforceAmmo').checked = g.policy.enforce_allowance; $('exchangeZone').checked = g.policy.exchange_requires_zone; settingsLoaded = true; }
   if(options('editOutpost',s.outposts.map((o,i)=>[i,`${r.outpost_teams[i]} #${i}`]))) loadOutpost();
-  $('clock').textContent = r.phase === 'Idle' ? '--:--' : fmt(r.remaining_ns);
+  $('clock').textContent = r.phase === 'Idle' ? '--:--'
+    : r.phase === 'Countdown' ? String(Math.max(1, Math.ceil(r.countdown_remaining_ns / 1e9)))
+    : fmt(r.remaining_ns);
   $('phase').textContent = `${r.phase} · ${r.stage} rune stage`;
   $('runes').innerHTML = r.teams.map((t, i) => {
     const rune = s.runes[r.rune_teams.indexOf(t.team)];

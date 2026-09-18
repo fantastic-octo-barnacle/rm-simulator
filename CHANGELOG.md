@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+- Show the 5 s countdown's own seconds on the HUD clock and the referee panel
+  instead of the round clock; the referee view derives them from the phase
+  start it already carries, so the wire format is unchanged. An overheated
+  or locked barrel no longer begins local shots, so refused shots no longer
+  appear as provisional balls; the client also holds a shot while the last
+  snapshot's heat plus unconfirmed shots is past the limit.
+
 - Draw barrel heat as a ring around the reticle, filled clockwise by a UI
   shader, and stop Auto Fire before a shot would pass the heat limit (manual
   fire can still overheat). A Fortress banner counts down to the Fortress

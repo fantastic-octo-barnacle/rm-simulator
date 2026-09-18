@@ -340,23 +340,43 @@ impl Session {
             .filter(|f| f.reserved && f.flight.shot.caliber == caliber)
             .count() as u32
     }
-    /// The local robot's barrel heat in tenths, with the heat of shots the
-    /// host has not accepted yet added, and its heat limit in whole units;
-    /// `None` without a referee record for the local chassis.
-    pub fn predicted_heat(&self) -> Option<(u64, u32)> {
-        use rm_simulator_world::{Caliber, referee::game_caliber};
+    /// The local robot's gameplay record, when a referee runs the field.
+    fn own_game_robot(&self) -> Option<&rm_simulator_world::gameplay::RobotState> {
         let id = self.chassis_id?;
-        let state = self
-            .referee()?
+        self.referee()?
             .game
             .robots
             .iter()
-            .find(|r| r.config.id == id)?;
-        let pending: u64 = [Caliber::Mm17, Caliber::Mm42]
-            .into_iter()
-            .map(|c| u64::from(self.reserved_ammo(c)) * game_caliber(c).launch_heat_tenths())
-            .sum();
+            .find(|r| r.config.id == id)
+    }
+    /// The local robot's barrel heat in tenths, with the heat of shots the
+    /// host has not accepted yet added while the round runs (the only phase
+    /// that counts heat), and its heat limit in whole units; `None` without
+    /// a referee record for the local chassis.
+    pub fn predicted_heat(&self) -> Option<(u64, u32)> {
+        use rm_simulator_world::{Caliber, MatchPhase, referee::game_caliber};
+        let state = self.own_game_robot()?;
+        let pending: u64 = if self.referee()?.phase == MatchPhase::Running {
+            [Caliber::Mm17, Caliber::Mm42]
+                .into_iter()
+                .map(|c| u64::from(self.reserved_ammo(c)) * game_caliber(c).launch_heat_tenths())
+                .sum()
+        } else {
+            0
+        };
         Some((state.heat_tenths + pending, state.stats().heat_limit))
+    }
+    /// Whether the host would refuse a launch for heat (section 5.1.3), so no
+    /// local shot should begin: the latest snapshot has the barrel overheated
+    /// or locked for the round, or its heat plus the shots still on their way
+    /// to the host is already past the limit. The snapshot's heat predates
+    /// its cooling since, so under lag this errs toward holding a shot.
+    pub fn barrel_blocked(&self) -> bool {
+        self.own_game_robot()
+            .is_some_and(|r| r.overheated || r.heat_locked_for_round)
+            || self
+                .predicted_heat()
+                .is_some_and(|(tenths, limit)| tenths > u64::from(limit) * 10)
     }
     /// Flights with no authoritative outcome yet.
     pub fn pending_shots(&self) -> usize {

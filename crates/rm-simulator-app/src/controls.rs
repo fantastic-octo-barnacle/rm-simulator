@@ -423,7 +423,13 @@ pub fn fire_gun(
     let auto_fire = assist.as_ref().is_some_and(|assist| assist.fire_ready)
         && player.captured
         && !ui.blocks_input();
-    if (gun.trigger_held || auto_fire) && !session.paused && now_ns >= gun.next_shot_ns {
+    // An overheated barrel fires nothing locally, so a refused shot never
+    // shows as a provisional ball.
+    if (gun.trigger_held || auto_fire)
+        && !session.paused
+        && now_ns >= gun.next_shot_ns
+        && !session.barrel_blocked()
+    {
         gun.next_shot_ns = now_ns + gun.interval_ns;
         let command = session.chassis_id.map_or_else(
             || Command::SpawnProjectile {

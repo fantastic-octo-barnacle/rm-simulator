@@ -520,18 +520,29 @@ fn clock_text(session: &Session) -> String {
             MatchPhase::Finished => "FINISHED",
         }
     };
-    let elapsed_ns = if !session.paused && r.phase == MatchPhase::Running {
-        session
-            .presentation_time_ns()
-            .saturating_sub(session.snapshot.time_ns)
+    let elapsed_ns =
+        if !session.paused && matches!(r.phase, MatchPhase::Countdown | MatchPhase::Running) {
+            session
+                .presentation_time_ns()
+                .saturating_sub(session.snapshot.time_ns)
+        } else {
+            0
+        };
+    // Section 6.5: the countdown shows its own seconds, not the round clock.
+    let mut text = if r.phase == MatchPhase::Countdown {
+        let seconds = r
+            .countdown_remaining_ns
+            .saturating_sub(elapsed_ns)
+            .div_ceil(1_000_000_000)
+            .max(1);
+        format!("{phase}\n{seconds}")
     } else {
-        0
+        let seconds = r
+            .remaining_ns
+            .saturating_sub(elapsed_ns)
+            .div_ceil(1_000_000_000);
+        format!("{phase}\n{:02}:{:02}", seconds / 60, seconds % 60)
     };
-    let seconds = r
-        .remaining_ns
-        .saturating_sub(elapsed_ns)
-        .div_ceil(1_000_000_000);
-    let mut text = format!("{phase}\n{:02}:{:02}", seconds / 60, seconds % 60);
     if let Some(result) = &r.game.result {
         text.push('\n');
         text.push_str(&result_text(result));

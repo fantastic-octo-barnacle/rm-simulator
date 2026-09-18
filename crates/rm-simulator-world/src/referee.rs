@@ -451,6 +451,9 @@ pub struct RefereeSnapshot {
     pub match_time_ns: u64,
     /// Round time left, `round_ns` minus `match_time_ns`.
     pub remaining_ns: u64,
+    /// Section 6.5 countdown time left while in [`MatchPhase::Countdown`];
+    /// zero in every other phase.
+    pub countdown_remaining_ns: u64,
     /// Small Rune stage or Big Rune stage.
     pub stage: RuneStage,
     /// Both teams, indexed red then blue.
@@ -1830,6 +1833,13 @@ impl Referee {
             phase: self.phase,
             match_time_ns,
             remaining_ns: self.config.round_ns.saturating_sub(match_time_ns),
+            countdown_remaining_ns: if self.phase == MatchPhase::Countdown {
+                self.config
+                    .countdown_ns
+                    .saturating_sub(self.now_ns.saturating_sub(self.phase_started_ns))
+            } else {
+                0
+            },
             stage: self.stage,
             teams: std::array::from_fn(|i| {
                 let team = Team::BOTH[i];
@@ -2031,12 +2041,15 @@ mod tests {
                 .command(RefereeCommand::StartMatch, 2_000_000_000, &mut runes)
                 .is_err()
         );
+        referee.tick(4_500_000_000, &mut runes).unwrap();
+        assert_eq!(referee.snapshot().countdown_remaining_ns, 2_500_000_000);
         referee.tick(6_999_999_999, &mut runes).unwrap();
         assert_eq!(referee.phase(), MatchPhase::Countdown);
         referee.tick(7_000_000_000, &mut runes).unwrap();
         let snapshot = referee.snapshot();
         assert_eq!(snapshot.phase, MatchPhase::Running);
         assert_eq!(snapshot.match_time_ns, 0);
+        assert_eq!(snapshot.countdown_remaining_ns, 0);
         assert_eq!(snapshot.teams[0].rune_opportunities, 1);
         assert_eq!(snapshot.teams[1].rune_opportunities, 1);
         assert_eq!(snapshot.stage, RuneStage::Small);
