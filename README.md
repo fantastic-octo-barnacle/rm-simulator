@@ -697,7 +697,9 @@ area, sufficient normal impact speed, and a clear shot path. The host still
 checks fire cadence, ammo, heat, and match rules through the normal fire command.
 Auto Fire also holds any shot that would take the barrel past its heat limit
 (the HUD shows `heat limit`), counting shots the host has not confirmed yet;
-manual fire can still overheat.
+manual fire can still overheat. Once the barrel is over its limit the
+client fires nothing until the host reports it cooled, so a refused shot
+never appears as a ball.
 Releasing the actions, opening a menu, defeat, or stale observations stop the
 assist. Manual fire remains independent.
 
