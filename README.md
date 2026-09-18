@@ -608,7 +608,9 @@ Elevated Ground, Launch Ramp and Tunnel crossings; and the Fortress capture
 that expands the opponent's base armor. Their areas were read off Figure 5-24;
 see `docs/referee-rules.md`. The HUD's ZONE line shows the points a pilot
 occupies, a crossing in progress, crossing defense, tunnel cooling and
-Fortress capture time.
+Fortress capture time. A banner above the reticle counts down to 3:00 while
+a team's outpost is down, then shows each Fortress capture's seconds until
+the base opens; the team card marks an expanded base `OPEN`.
 
 The HTTP panel also sets the rule policy (allowance enforcement, off by
 default; zone-only exchanges, off), team gold, a robot's allowance and
@@ -693,6 +695,9 @@ at least 1.2 seconds; releasing and repressing the button does not bypass this.
 Automatic shots wait for the actual motor pose to align with a predicted scoring
 area, sufficient normal impact speed, and a clear shot path. The host still
 checks fire cadence, ammo, heat, and match rules through the normal fire command.
+Auto Fire also holds any shot that would take the barrel past its heat limit
+(the HUD shows `heat limit`), counting shots the host has not confirmed yet;
+manual fire can still overheat.
 Releasing the actions, opening a menu, defeat, or stale observations stop the
 assist. Manual fire remains independent.
 

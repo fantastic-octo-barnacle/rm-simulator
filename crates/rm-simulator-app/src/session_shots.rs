@@ -340,6 +340,24 @@ impl Session {
             .filter(|f| f.reserved && f.flight.shot.caliber == caliber)
             .count() as u32
     }
+    /// The local robot's barrel heat in tenths, with the heat of shots the
+    /// host has not accepted yet added, and its heat limit in whole units;
+    /// `None` without a referee record for the local chassis.
+    pub fn predicted_heat(&self) -> Option<(u64, u32)> {
+        use rm_simulator_world::{Caliber, referee::game_caliber};
+        let id = self.chassis_id?;
+        let state = self
+            .referee()?
+            .game
+            .robots
+            .iter()
+            .find(|r| r.config.id == id)?;
+        let pending: u64 = [Caliber::Mm17, Caliber::Mm42]
+            .into_iter()
+            .map(|c| u64::from(self.reserved_ammo(c)) * game_caliber(c).launch_heat_tenths())
+            .sum();
+        Some((state.heat_tenths + pending, state.stats().heat_limit))
+    }
     /// Flights with no authoritative outcome yet.
     pub fn pending_shots(&self) -> usize {
         self.shots
