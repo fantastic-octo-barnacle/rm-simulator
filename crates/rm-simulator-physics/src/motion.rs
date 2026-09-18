@@ -129,6 +129,23 @@ pub fn dart_target_fraction(time_ns: u64) -> f64 {
     let phase = (time_ns % DART_TARGET_PERIOD_NS) as f64 / DART_TARGET_PERIOD_NS as f64;
     0.5 - 0.5 * (phase * std::f64::consts::TAU).cos()
 }
+/// Dart rail position at `time_ns` for a target that started sweeping at
+/// `since_ns`, or rests at 0 while `since_ns` is `None`. The sweep always
+/// sets off from rest, so switching it on never makes the target jump.
+///
+/// ```
+/// use rm_simulator_physics::motion::{dart_target_position, DART_TARGET_PERIOD_NS};
+///
+/// assert_eq!(dart_target_position(None, 123), 0.0);
+/// assert_eq!(dart_target_position(Some(7), 7), 0.0);
+/// let far = dart_target_position(Some(7), 7 + DART_TARGET_PERIOD_NS / 2);
+/// assert!((far - 1.0).abs() < 1e-12);
+/// ```
+pub fn dart_target_position(since_ns: Option<u64>, time_ns: u64) -> f64 {
+    since_ns.map_or(0.0, |since| {
+        dart_target_fraction(time_ns.saturating_sub(since))
+    })
+}
 
 /// Section 5.5.1: after the match begins the outpost reaches its speed within
 /// five seconds. The linear ramp over the whole window is an assumption.

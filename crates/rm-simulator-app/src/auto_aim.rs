@@ -205,7 +205,7 @@ fn rune_fire_allowed(previous: Option<RuneShot>, target: &Target<'_>, now_ns: u6
 
 #[derive(Clone, Copy)]
 enum Motion<'a> {
-    Base(&'a rm_simulator_world::BaseSnapshot, u64),
+    Base(&'a rm_simulator_world::BaseSnapshot, Option<u64>, u64),
     Robot(&'a ChassisSnapshot, f64),
     Outpost(&'a OutpostSnapshot, f64),
     Rune(&'a RuneSnapshot, u64),
@@ -218,9 +218,13 @@ struct Target<'a> {
 impl Target<'_> {
     fn pose(&self, face: usize, future_s: f64) -> Pose {
         match self.motion {
-            Motion::Base(base, now) => {
-                base.pose(face, now.saturating_add((future_s.max(0.) * 1e9) as u64))
-            }
+            Motion::Base(base, dart_since, now) => base.pose(
+                face,
+                rm_simulator_world::referee::dart_target_position(
+                    dart_since,
+                    now.saturating_add((future_s.max(0.) * 1e9) as u64),
+                ),
+            ),
             Motion::Robot(robot, age) => {
                 let dt = age + future_s;
                 let omega = DVec3::from_array(robot.angular_velocity_rad_s);
@@ -348,7 +352,11 @@ fn targets(session: &Session, caliber: Caliber) -> Vec<Target<'_>> {
         }
         result.push(Target {
             id: TargetId::Base(index),
-            motion: Motion::Base(base, now),
+            motion: Motion::Base(
+                base,
+                session.referee().and_then(|r| r.dart_target_since_ns),
+                now,
+            ),
             faces: (0..7).collect(),
         });
     }

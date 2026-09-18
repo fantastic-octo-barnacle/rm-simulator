@@ -64,12 +64,13 @@ impl BaseSnapshot {
             shield_hp: INITIAL_SHIELD_HP,
         }
     }
-    /// Scoring face pose of `plate` (0 to 6) at `time_ns`. Plate 6 is the dart
-    /// detector, whose translation slides between the two rail stops.
-    pub fn pose(&self, plate: usize, time_ns: u64) -> Pose {
+    /// Scoring face pose of `plate` (0 to 6). Plate 6 is the dart detector,
+    /// whose translation slides between the two rail stops: `dart_position`
+    /// runs from 0 at rest to 1 (see [`crate::referee::dart_target_position`]).
+    pub fn pose(&self, plate: usize, dart_position: f64) -> Pose {
         let mut pose = self.config.plates[plate];
         if plate == 6 {
-            let fraction = crate::referee::dart_target_fraction(time_ns);
+            let fraction = dart_position;
             for (i, point) in pose.translation_m.iter_mut().enumerate() {
                 *point += self.config.dart_offsets_m[0][i] * (1. - fraction)
                     + self.config.dart_offsets_m[1][i] * fraction;
@@ -149,7 +150,12 @@ mod tests {
     }
     fn shoot(field: &mut Field, plate: usize) {
         let center = field.snapshot().bases[0]
-            .pose(plate, field.time_ns())
+            .pose(
+                plate,
+                field
+                    .referee()
+                    .map_or(0., |r| r.snapshot().dart_target_position(field.time_ns())),
+            )
             .translation_m;
         field
             .fire(
@@ -246,11 +252,41 @@ mod tests {
     fn dart_scoring_pose_follows_the_same_rail_fraction() {
         let mut b = field().snapshot().bases.remove(0);
         b.config.dart_offsets_m = [[0., -0.28, 0.], [0., 0.28, 0.]];
-        assert_eq!(b.pose(0, 0), b.pose(0, 2_000_000_000));
+        assert_eq!(b.pose(0, 0.), b.pose(0, 1.));
         assert!(
-            (b.pose(6, 2_000_000_000).translation_m[1] - b.pose(6, 0).translation_m[1] - 0.56)
-                .abs()
-                < 1e-9
+            (b.pose(6, 1.).translation_m[1] - b.pose(6, 0.).translation_m[1] - 0.56).abs() < 1e-9
         );
+    }
+    #[test]
+    fn dart_detector_rests_by_default_takes_hits_and_sweeps_on_command() {
+        let mut f = field();
+        f.referee_command(RefereeCommand::SetOutpostHp { outpost: 0, hp: 0 })
+            .ok();
+        let rest = f.snapshot().bases[0].pose(6, 0.);
+        f.step(256).unwrap();
+        let referee = f.referee().unwrap().snapshot();
+        assert_eq!(referee.dart_target_since_ns, None);
+        assert_eq!(referee.dart_target_position(f.time_ns()), 0.);
+        // A resting detector takes projectile hits, as a training override.
+        let hits = f.snapshot().hits_detected;
+        shoot(&mut f, 6);
+        assert_eq!(f.snapshot().hits_detected, hits + 1);
+        f.referee_command(RefereeCommand::SetDartTargetMoving { moving: true })
+            .unwrap();
+        let started = f.time_ns();
+        f.step((crate::referee::DART_TARGET_PERIOD_NS / 4).div_ceil(crate::tick_ns()) as _)
+            .unwrap();
+        let position = f
+            .referee()
+            .unwrap()
+            .snapshot()
+            .dart_target_position(f.time_ns());
+        assert!(position > 0.3 && position < 0.7, "{position}");
+        assert_eq!(f.referee().unwrap().dart_target_since_ns(), Some(started));
+        f.referee_command(RefereeCommand::SetDartTargetMoving { moving: false })
+            .unwrap();
+        let referee = f.referee().unwrap().snapshot();
+        assert_eq!(referee.dart_target_position(f.time_ns()), 0.);
+        assert_eq!(f.snapshot().bases[0].pose(6, 0.), rest);
     }
 }

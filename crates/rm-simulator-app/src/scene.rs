@@ -620,6 +620,10 @@ fn scene_state_with_hits(
             ArmorTarget::Chassis { .. } | ArmorTarget::Base { .. } => {}
         }
     }
+    let dart_position = snapshot
+        .referee
+        .as_ref()
+        .map_or(0., |r| r.dart_target_position(presentation_ns));
     SceneState {
         bases: snapshot
             .bases
@@ -627,7 +631,7 @@ fn scene_state_with_hits(
             .enumerate()
             .map(|(index, base)| rm_simulator_render::sync::BaseAppearance {
                 disabled: base.hp == 0,
-                plates: std::array::from_fn(|plate| pose_flu(base.pose(plate, presentation_ns))),
+                plates: std::array::from_fn(|plate| pose_flu(base.pose(plate, dart_position))),
                 hit_flash: std::array::from_fn(|plate| {
                     hits.iter().any(|hit| {
                         hit.target
@@ -639,8 +643,7 @@ fn scene_state_with_hits(
                 }),
             })
             .collect(),
-        dart_target_fraction: rm_simulator_world::referee::dart_target_fraction(presentation_ns)
-            as f32,
+        dart_target_fraction: dart_position as f32,
         base_open_fraction: snapshot.referee.as_ref().map_or([0.0; 2], |r| {
             std::array::from_fn(|i| r.base_open_fraction(i, presentation_ns) as f32)
         }),

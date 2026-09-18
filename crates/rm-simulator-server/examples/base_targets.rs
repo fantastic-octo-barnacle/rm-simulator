@@ -31,7 +31,10 @@ fn main() -> anyhow::Result<()> {
         let mut failures = 0;
         for base in 0..config.bases.len() {
             for plate in 0..7 {
-                let target = field.snapshot().bases[base].pose(plate, field.time_ns());
+                let dart = field
+                    .referee()
+                    .map_or(0., |r| r.snapshot().dart_target_position(field.time_ns()));
+                let target = field.snapshot().bases[base].pose(plate, dart);
                 let normal = math::rotate(target.rotation_wxyz, [1., 0., 0.]);
                 let muzzle = Pose {
                     translation_m: std::array::from_fn(|i| {
