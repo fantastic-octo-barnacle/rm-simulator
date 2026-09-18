@@ -238,12 +238,15 @@ impl Caliber {
             Self::Mm42 => 12.0,
         }
     }
-    /// Table 5-1: normal contact speed above which robot, base and outpost armor
-    /// detects the projectile. The Power Rune detects only 17 mm.
+    /// Normal contact speed above which robot, base and outpost armor detects
+    /// the projectile. The Power Rune detects only 17 mm. 17 mm follows
+    /// Table 5-1 (12 m/s). 42 mm is relaxed from Table 5-1's 10 m/s to 8 m/s,
+    /// an app setting: a Hero's 12 m/s lob onto the Base's steep upper plates
+    /// arrives at only about 10.5 m/s along their normal.
     pub fn armor_detection_speed_m_s(self) -> f64 {
         match self {
             Self::Mm17 => 12.0,
-            Self::Mm42 => 10.0,
+            Self::Mm42 => 8.0,
         }
     }
     /// Section 5.1.1 minimum detection interval per armor module.

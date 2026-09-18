@@ -148,7 +148,7 @@ the team's living robots.
 | Rotor speed | 0.8π rad/s after a 5 s spin-up from the round start |
 | Rotor stop | At first destruction (holds the angle) or at 3:00 while alive (returns to its initial position over 10 s) |
 | Detection area | 101 × 94 mm effective rectangle of the middle armor |
-| Detection speed | > 12 m/s (17 mm), > 10 m/s (42 mm) normal speed |
+| Detection speed | > 12 m/s (17 mm), > 8 m/s (42 mm) normal speed; Table 5-1 gives 10 m/s for 42 mm, relaxed here so Hero lobs register on the Base's upper plates |
 | Detection interval | 50 ms (17 mm), 200 ms (42 mm) per module |
 | Damage | 20 HP (17 mm), 200 HP (42 mm); ×1.5 in the 10 mm centre square |
 
@@ -219,8 +219,8 @@ maximum HP gained.
 A chassis carries four small armor modules (front, left, back, right) on its
 body sides, leaning back 15° (an assumption; the manual gives no single
 angle). They detect like the outpost's small armor: the 101 × 94 mm area of
-Figure 5-16, above the Table 5-1 normal speeds (12 m/s for 17 mm, 10 m/s for
-42 mm), at most once per 50 ms (17 mm) or 200 ms (42 mm) per module. A
+Figure 5-16, above the normal speeds (12 m/s for 17 mm per Table 5-1, 8 m/s for
+42 mm, relaxed from its 10 m/s), at most once per 50 ms (17 mm) or 200 ms (42 mm) per module. A
 detected strike removes 20 HP (17 mm) or 200 HP (42 mm, Table 5-2), scaled by
 the shooter's attack buff and the target's defense buff; `RobotDamaged` names
 the chassis that fired. 42 mm strikes score only while the attacking team

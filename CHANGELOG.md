@@ -4,6 +4,9 @@
 
 ## Unreleased
 
+- Armor detects 42 mm rounds above 8 m/s along its normal instead of Table
+  5-1's 10 m/s, so a Hero's lob registers on the Base's steep upper plates.
+
 - Widen auto-aim acquisition to 15° of yaw and 12° of pitch beyond the
   target's size and drop its line-of-sight requirement; the fire gate still
   checks the shot path, now short of the target's last 15 cm. Controls
