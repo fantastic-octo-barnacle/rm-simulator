@@ -55,11 +55,11 @@ accounts for the projection onto that direction. This extends the existing
 ideal roller/suspension model; it does not model each roller contact or motor
 controller. Renderer wheel centers follow suspension contacts when grounded.
 
-Each pilot names its robot in `Hello` (protocol 33): the Hero, the Infantry 3
-or the Infantry 4. The host spawns the matching chassis, records its kind
+Each pilot names its robot in `Hello` (protocol 33): the Hero, or the
+Infantry 3, 4 or 5. The host spawns the matching chassis, records its kind
 with the referee (which keeps the one configured HP) and fixes its caliber,
 42 mm for the Hero and 17 mm for the infantries; a weapon update naming
-another caliber is refused. The two infantries differ only in the number
+another caliber is refused. The three infantries differ only in the number
 painted on their armor, which the roster carries to every client; a chassis
 the roster has not described yet shows 1 on a mecanum body and 3 otherwise
 and is repainted when the roster arrives. The serialized chassis

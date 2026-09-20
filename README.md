@@ -106,7 +106,7 @@ The essentials, for driving and for match control:
 | M | Toggle the large team map; click it to place a marker, A / B / I pick attack / defend / alert and other letters a custom marker |
 | Left Alt (hold) | Free the cursor, for example to click a marker on the small map |
 | F12 (hold) | Show controls |
-| Escape | Close the current panel or open Pause; on the robot page, return to the page its choice came from; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |
+| Escape | Close the current panel or open Pause; on the seat page, return to the page its choice came from; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |
 
 The complete command-line reference for both binaries, the weapon settings, the
 HUD and interface behavior, the graphics presets and the full controls table are
@@ -121,11 +121,13 @@ and Quit. Single Player starts a local practice field and never asks for a
 name. Multiplayer asks for the player name, then lists LAN lobbies on the left
 and creates a named, optionally
 password-protected lobby on the right. Select a listing, enter its password if needed, and press Join lobby / address.
-Every way in then opens the robot page: blue seats on the left, red on the
-right, offering Hero, Engineer, Infantry 3, Infantry 4, Sentry or a spectating
-camera, with the referee seat below. Continue to chassis selection, then Start
-match or Join lobby. Infantry offers omni or balance; Hero and Engineer use
-mecanum, and Sentry uses omni. Spectators and referees skip chassis selection.
+Every way in then opens the seat page, a lobby board with five spectator slots
+across the top, the blue line-up on the left and the red on the right, and three
+referee slots underneath. Each team column holds one Hero, one Engineer,
+Infantry 3, 4 and 5, one Sentry and one Drone. Continue to chassis selection,
+then Start match or Join lobby. Infantry offers omni or balance; Hero and
+Engineer use mecanum, and Sentry uses omni. Spectators and referees skip chassis
+selection.
 You can also enter a direct address. The page and lobby list scroll with the
 mouse wheel, trackpad or scrollbar; narrow windows stack the two columns. Public is greyed out pending public connectivity support.
 The firewall tip recommends allowing the app on private networks. Lobby names
@@ -766,7 +768,7 @@ an SM11-sized housing; Infantry uses SM01. HP segments and defeat state follow
 the referee. FI02 detection and speed-monitor LED sequences are not simulated.
 
 Every pilot names its robot when it joins, and the host builds that chassis
-and fixes its caliber: the Hero fires 42 mm, Drone, Sentry and the Infantry 3 and Infantry 4
+and fixes its caliber: the Hero fires 42 mm, and the Drone, Sentry and Infantry 3, 4 and 5
 fire 17 mm. Muzzle speed and firing rate defaults come from the host. The
 robot does not change HP, heat or power policies, and two pilots may pick the
 same robot. The visible equipment is decorative;
@@ -819,7 +821,7 @@ The comparison stages Hero HP at 60%. `hit` freezes a front armor flash;
 
 Chassis and outpost armor use the shared [SVG-derived sprite atlas](assets/armor-atlas/README.md).
 It includes numbers 1–5, guard, outpost and base identifiers with small/large
-variants. Hero uses 1, Infantry 3 uses 3, Infantry 4 uses 4, and outpost uses O.
+variants. Hero uses 1, Infantry 3, 4 and 5 use 3, 4 and 5, and outpost uses O.
 Textures preserve the source aspect ratio and face outward. Patterns are passive
 white printing; only the light bars stop emitting with disabled armor and remain
 white plastic. The external base package uses the base sprite on its moving dart

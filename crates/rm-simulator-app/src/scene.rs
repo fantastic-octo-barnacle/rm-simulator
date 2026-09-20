@@ -392,6 +392,7 @@ fn armor_pattern(
         Some(Robot::Drone) => ArmorPattern::Three,
         Some(Robot::Infantry3) => ArmorPattern::Three,
         Some(Robot::Infantry4) => ArmorPattern::Four,
+        Some(Robot::Infantry5) => ArmorPattern::Five,
         None if chassis.config.mecanum => ArmorPattern::One,
         None => ArmorPattern::Three,
     }

@@ -18,7 +18,7 @@ joined with `--connect` takes those from the server.
 | `--play` | Skip the title screen and start a local practice match at once |
 | `--console [ADDR]` | App automation console on localhost, default `127.0.0.1:7790`; see [console commands](console.md) |
 | `--window-mode normal\|unfocused\|headless` | Normal visible window, visible without requesting focus, or GPU rendering without an OS window |
-| `--robot hero\|engineer\|infantry-3\|infantry-4\|sentry\|drone` | Robot you drive on any host. Hero fires 42 mm; Infantry (default), Sentry and Drone fire 17 mm. Engineer has a fixed decorative arm; Drone flies at fixed altitude. Engineer has no launcher |
+| `--robot hero\|engineer\|infantry-3\|infantry-4\|infantry-5\|sentry\|drone` | Robot you drive on any host. Hero fires 42 mm; Infantry (default), Sentry and Drone fire 17 mm. Engineer has a fixed decorative arm; Drone flies at fixed altitude. Engineer has no launcher |
 | `--chassis auto\|omni\|balance\|mecanum\|flight` | Default `auto`: Infantry/Sentry use omni, Hero/Engineer use mecanum; Drone uses fixed-altitude flight. Infantry also offers balance (two wheels, mock balance assist and jump). Incompatible choices are rejected |
 | `--performance TYPE` | Section 5.4.2 performance type requested after joining: `long-range` or `melee` for the Hero, `hp-cooling`, `hp-burst`, `power-cooling` or `power-burst` for an infantry. Unset keeps the rulebook default; a host refuses a type for the other class or during a running round |
 | `--cad-assets DIR` | Extracted RMUC CAD directory; relative paths start at the working directory for both manifests and meshes |
@@ -89,17 +89,25 @@ Settings keeps its tabs and Reset / Close buttons visible while the selected
 page scrolls. The active tab is underlined; switching tabs starts at the top of
 that page.
 
-## Robot and chassis pages
+## Seat and chassis pages
 
-Single Player, Join lobby / address and Create lobby all open the robot page
-before the match starts. The blue column is on the left and the red column on
-the right; each offers Hero, Engineer, Infantry 3, Infantry 4, Sentry and a
-spectating free camera. The Referee seat sits below them. Continue (or Enter)
-opens chassis selection for pilots; spectators and referees join directly.
-Choose a supported chassis, then Start match or Join lobby. Escape returns to
-robot selection without losing the pending lobby. The robot and chassis are
-remembered with the other fields; the referee seat is not. Two pilots may drive the same robot: a host has no seat list to
-show before the connection is made.
+Single Player, Join lobby / address and Create lobby all open the seat page
+before the match starts. It is laid out as a lobby board, the same one for
+single player and multiplayer: a row of five SPECTATORS slots across the top,
+the blue column on the left and the red column on the right, and a row of three
+REFEREE slots underneath. Each team column is the competition line-up, one slot
+each for Hero, Engineer, Infantry 3, Infantry 4, Infantry 5, Sentry and Drone.
+Back and Continue sit below the board, apart from it, so a seat is never
+mistaken for a page button.
+
+Continue (or Enter) opens chassis selection for pilots; spectators and referees
+join directly. Choose a supported chassis, then Start match or Join lobby.
+Escape returns to seat selection without losing the pending lobby. The robot,
+chassis and spectator slot are remembered with the other fields; the referee
+seat is not. Slots do not yet show who holds them, and two pilots may drive the
+same robot: a host has no seat list to show before the connection is made. A
+spectator still joins on the remembered team, which the protocol requires; the
+slot number is the board position only.
 
 ## Balance stabilization and Drone flight
 
@@ -251,4 +259,4 @@ an NVIDIA laptop GPU; Mac performance still needs separate measurements.
 | Left Alt (hold) | Free the cursor, for example to click a marker on the small map |
 | F12 (hold) | Show controls |
 | Toolbar | Mouse-driven Settings, Map, Team, Help, Close and Leave match; appears with the cursor released |
-| Escape | Close the current panel or open Pause; on the chassis page, return to robots; on the robot page, return to the page its choice came from; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |
+| Escape | Close the current panel or open Pause; on the chassis page, return to the seat board; on the seat page, return to the page its choice came from; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |

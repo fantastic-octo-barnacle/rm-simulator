@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+- The robot page is now a seat board, the same one in single player and
+  multiplayer: five spectator slots across the top, the blue line-up on the
+  left and the red on the right, and three referee slots underneath, with Back
+  and Continue moved below the board so a seat is no longer mistaken for a page
+  button. Each team column is the competition line-up, so Infantry 5 joins
+  Infantry 3 and 4 as `--robot infantry-5` and wears armor number 5. Slots do
+  not yet show who holds them (protocol 51).
+
 - The title screen, the loading splash and a running match are now a Bevy
   `Screen` state instead of the presence of a resource, and the title screen's
   pages are a sub-state of it. Leaving the title screen takes its pages with it,

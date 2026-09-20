@@ -93,7 +93,7 @@ use serde::{Deserialize, Serialize};
 /// Version 49 adds the live prototype air-support policy and armed Drone preset.
 /// Version 50 adds the Drone's Aerial Safety Rope to the chassis configuration
 /// and the `MapMarker` command.
-pub const PROTOCOL_VERSION: u32 = 50;
+pub const PROTOCOL_VERSION: u32 = 51;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///
@@ -447,7 +447,9 @@ impl Role {
 /// The robot role a pilot asks to drive. It fixes the armor identifier and
 /// launcher: Hero fires 42 mm, Infantry/Sentry/Drone fire 17 mm, and Engineer
 /// has no launcher. A separate [`Chassis`] choice selects a supported drive.
-/// The two infantry roles differ only in their number.
+/// The three infantry roles differ only in their number, so a team fields the
+/// competition line-up of one Hero, one Engineer, three Infantry, one Sentry
+/// and one Drone.
 ///
 /// ```
 /// use rm_simulator_server::protocol::Robot;
@@ -462,6 +464,8 @@ impl Role {
 /// assert_eq!(Robot::Infantry4.number(), 4);
 /// assert_eq!(Robot::parse("infantry-4"), Some(Robot::Infantry4));
 /// assert_eq!(Robot::parse("infantry"), Some(Robot::Infantry3));
+/// assert_eq!(Robot::parse("infantry-5"), Some(Robot::Infantry5));
+/// assert_eq!(Robot::Infantry5.number(), 5);
 /// assert_eq!(Robot::parse(Robot::Hero.id()), Some(Robot::Hero));
 /// assert_eq!(Robot::Hero.name(), "Hero");
 /// ```
@@ -478,6 +482,9 @@ pub enum Robot {
     /// Infantry number 4 with the same launcher and chassis choices as number 3.
     #[value(name = "infantry-4")]
     Infantry4,
+    /// Infantry number 5 with the same launcher and chassis choices as number 3.
+    #[value(name = "infantry-5")]
+    Infantry5,
     /// Engineer number 2, with a fixed decorative arm and no launcher.
     Engineer,
     /// Manually driven sentry with a 17 mm launcher.
@@ -487,11 +494,12 @@ pub enum Robot {
 }
 impl Robot {
     /// Every robot a pilot can choose, in menu order.
-    pub const ALL: [Robot; 6] = [
+    pub const ALL: [Robot; 7] = [
         Robot::Hero,
         Robot::Engineer,
         Robot::Infantry3,
         Robot::Infantry4,
+        Robot::Infantry5,
         Robot::Sentry,
         Robot::Drone,
     ];
@@ -501,6 +509,7 @@ impl Robot {
             Robot::Hero => "Hero",
             Robot::Infantry3 => "Infantry 3",
             Robot::Infantry4 => "Infantry 4",
+            Robot::Infantry5 => "Infantry 5",
             Robot::Engineer => "Engineer",
             Robot::Sentry => "Sentry",
             Robot::Drone => "Drone",
@@ -513,6 +522,7 @@ impl Robot {
             Robot::Hero => "hero",
             Robot::Infantry3 => "infantry-3",
             Robot::Infantry4 => "infantry-4",
+            Robot::Infantry5 => "infantry-5",
             Robot::Engineer => "engineer",
             Robot::Sentry => "sentry",
             Robot::Drone => "drone",
@@ -524,6 +534,7 @@ impl Robot {
             "hero" => Some(Robot::Hero),
             "infantry" | "infantry-3" => Some(Robot::Infantry3),
             "infantry-4" => Some(Robot::Infantry4),
+            "infantry-5" => Some(Robot::Infantry5),
             "engineer" => Some(Robot::Engineer),
             "sentry" => Some(Robot::Sentry),
             "drone" => Some(Robot::Drone),
@@ -537,6 +548,7 @@ impl Robot {
             Robot::Hero => rm_simulator_world::Caliber::Mm42,
             Robot::Infantry3
             | Robot::Infantry4
+            | Robot::Infantry5
             | Robot::Engineer
             | Robot::Sentry
             | Robot::Drone => rm_simulator_world::Caliber::Mm17,
@@ -546,7 +558,9 @@ impl Robot {
     pub fn kind(self) -> rm_simulator_world::RobotKind {
         match self {
             Robot::Hero => rm_simulator_world::RobotKind::Hero,
-            Robot::Infantry3 | Robot::Infantry4 => rm_simulator_world::RobotKind::Infantry,
+            Robot::Infantry3 | Robot::Infantry4 | Robot::Infantry5 => {
+                rm_simulator_world::RobotKind::Infantry
+            }
             Robot::Engineer => rm_simulator_world::RobotKind::Engineer,
             Robot::Sentry => rm_simulator_world::RobotKind::Sentry,
             Robot::Drone => rm_simulator_world::RobotKind::Drone,
@@ -558,6 +572,7 @@ impl Robot {
             Robot::Hero => 1,
             Robot::Infantry3 => 3,
             Robot::Infantry4 => 4,
+            Robot::Infantry5 => 5,
             Robot::Engineer => 2,
             Robot::Sentry => 7,
             Robot::Drone => 6,
@@ -567,7 +582,7 @@ impl Robot {
     pub fn chassis_config(self) -> rm_simulator_world::ChassisConfig {
         match self {
             Robot::Hero => rm_simulator_world::ChassisConfig::hero(),
-            Robot::Infantry3 | Robot::Infantry4 | Robot::Sentry => {
+            Robot::Infantry3 | Robot::Infantry4 | Robot::Infantry5 | Robot::Sentry => {
                 rm_simulator_world::ChassisConfig::default()
             }
             Robot::Engineer => rm_simulator_world::ChassisConfig::engineer(),
@@ -639,7 +654,9 @@ impl Robot {
     /// Supported chassis in menu order, with the default first.
     pub fn chassis_choices(self) -> &'static [Chassis] {
         match self {
-            Self::Infantry3 | Self::Infantry4 => &[Chassis::Omni, Chassis::Balance],
+            Self::Infantry3 | Self::Infantry4 | Self::Infantry5 => {
+                &[Chassis::Omni, Chassis::Balance]
+            }
             Self::Hero | Self::Engineer => &[Chassis::Mecanum],
             Self::Sentry => &[Chassis::Omni],
             Self::Drone => &[Chassis::Flight],

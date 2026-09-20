@@ -5,9 +5,10 @@
 //! lobbies. Every
 //! choice is turned into the same arguments the command line would have
 //! given, so the lifecycle in `loading.rs` has one entry. A choice that enters
-//! a match first opens the robot page, where the seat (a robot on a team, a
-//! spectating camera or the referee) is picked and confirmed. The last name,
-//! addresses and robot are remembered in the user's configuration directory.
+//! a match first opens the seat page, a lobby board of spectator slots, the two
+//! teams' competition line-ups and referee slots, where one slot is picked and
+//! confirmed. The last name, addresses and seat are remembered in the user's
+//! configuration directory.
 mod password;
 
 use crate::{
@@ -48,23 +49,37 @@ pub const DEFAULT_LISTEN: &str = "0.0.0.0:7700";
 /// never asks for one, and the multiplayer page starts from it.
 pub const DEFAULT_NAME: &str = "pilot";
 
-/// The seat a player takes in a match, as the robot page offers it.
+/// Spectator slots the seat picker offers, above the two team columns.
+pub const SPECTATOR_SLOTS: u8 = 5;
+/// Referee slots the seat picker offers, under the two team columns.
+pub const REFEREE_SLOTS: u8 = 3;
+
+/// The seat a player takes in a match, as the seat picker offers it. The
+/// picker is a lobby board: one slot per competition robot on each team, a row
+/// of spectator slots above them and a row of referee slots below.
+///
+/// A spectator slot and a referee slot carry only their position on the board.
+/// The protocol puts a spectator on a team, so the remembered team travels with
+/// the join; the slot itself never reaches the wire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Seat {
-    /// Drive `robot` for `team`; the Hero fires 42 mm, the infantries 17 mm.
+    /// Drive `robot` for `team`; the Hero fires 42 mm, the others 17 mm.
     Pilot {
         /// Team whose half the robot spawns on.
         team: Team,
         /// Robot driven, which fixes the caliber and the painted number.
         robot: Robot,
     },
-    /// Watch with the free camera on `team`'s side, with no robot.
+    /// Watch with the free camera and no robot, from this spectator slot.
     Spectator {
-        /// Team the spectator counts for.
-        team: Team,
+        /// Position in the spectator row, below [`SPECTATOR_SLOTS`].
+        slot: u8,
     },
     /// The referee: no robot, the free camera and the match keys.
-    Referee,
+    Referee {
+        /// Position in the referee row, below [`REFEREE_SLOTS`].
+        slot: u8,
+    },
 }
 impl Default for Seat {
     fn default() -> Self {
@@ -75,7 +90,7 @@ impl Default for Seat {
     }
 }
 impl Seat {
-    /// The seat in words, as the robot page's selection line shows it.
+    /// The seat in words, as the seat picker's selection line shows it.
     pub fn describe(self) -> String {
         match self {
             Seat::Pilot {
@@ -92,8 +107,8 @@ impl Seat {
                 robot.name(),
                 caliber_mm(robot)
             ),
-            Seat::Spectator { team } => format!("{} spectator", team.name()),
-            Seat::Referee => "the referee".into(),
+            Seat::Spectator { slot } => format!("spectator {}", slot + 1),
+            Seat::Referee { slot } => format!("referee {}", slot + 1),
         }
     }
 }
@@ -204,6 +219,10 @@ pub struct TitleFields {
     /// Join with the free camera and no robot.
     #[serde(default)]
     pub spectate: bool,
+    /// Which spectator slot on the seat picker was taken, below
+    /// [`SPECTATOR_SLOTS`]. The board position only; the wire carries the team.
+    #[serde(default)]
+    pub spectator_slot: u8,
     /// Robot the pilot drives, by its `Robot::id`; blank means the Infantry 3.
     #[serde(default)]
     pub robot: String,
@@ -214,6 +233,10 @@ pub struct TitleFields {
     /// Skipped by serde, so no later match starts refereed by accident.
     #[serde(skip)]
     pub referee: bool,
+    /// Which referee slot on the seat picker was taken, below
+    /// [`REFEREE_SLOTS`]. Skipped with `referee`, for the same reason.
+    #[serde(skip)]
+    pub referee_slot: u8,
     /// Remembered host weapon fire rate text.
     #[serde(default)]
     pub fire_rate: String,
@@ -270,6 +293,12 @@ impl TitleFields {
             host: pick(remembered.host, base.host.listen.clone(), DEFAULT_LISTEN),
             blue: base.team == crate::args::TeamArg::Blue || remembered.blue,
             spectate: base.fly || remembered.spectate,
+            // A slot a shrinking board no longer has falls back to the first.
+            spectator_slot: if remembered.spectator_slot < SPECTATOR_SLOTS {
+                remembered.spectator_slot
+            } else {
+                0
+            },
             robot: if base.robot != Robot::default() {
                 base.robot.id().into()
             } else {
@@ -281,6 +310,7 @@ impl TitleFields {
                 remembered.chassis
             },
             referee: base.referee,
+            referee_slot: 0,
             max_fire_rate: pick(
                 remembered.max_fire_rate,
                 Some(base.host.max_fire_rate_hz.to_string()),
@@ -334,36 +364,36 @@ impl TitleFields {
             ),
         }
     }
-    /// The seat the team, spectate, referee and robot fields describe. An
+    /// The seat the spectate, referee, slot and robot fields describe. An
     /// unknown robot text is the default robot.
     pub fn seat(&self) -> Seat {
-        let team = if self.blue { Team::Blue } else { Team::Red };
         if self.referee {
-            Seat::Referee
+            Seat::Referee {
+                slot: self.referee_slot,
+            }
         } else if self.spectate {
-            Seat::Spectator { team }
+            Seat::Spectator {
+                slot: self.spectator_slot,
+            }
         } else {
             Seat::Pilot {
-                team,
+                team: if self.blue { Team::Blue } else { Team::Red },
                 robot: Robot::parse(self.robot.trim()).unwrap_or_default(),
             }
         }
     }
-    /// Write a seat into the fields `seat` reads. The referee keeps the
-    /// remembered team and robot, so leaving that seat restores them.
+    /// Write a seat into the fields `seat` reads. A spectator and the referee
+    /// keep the remembered team and robot, so leaving that seat restores them.
     pub fn set_seat(&mut self, seat: Seat) {
-        self.referee = seat == Seat::Referee;
+        self.referee = matches!(seat, Seat::Referee { .. });
+        self.spectate = matches!(seat, Seat::Spectator { .. });
         match seat {
             Seat::Pilot { team, robot } => {
                 self.blue = team == Team::Blue;
-                self.spectate = false;
                 self.robot = robot.id().into();
             }
-            Seat::Spectator { team } => {
-                self.blue = team == Team::Blue;
-                self.spectate = true;
-            }
-            Seat::Referee => {}
+            Seat::Spectator { slot } => self.spectator_slot = slot,
+            Seat::Referee { slot } => self.referee_slot = slot,
         }
     }
 }
@@ -398,8 +428,9 @@ pub fn join_args(base: &Args, fields: &TitleFields, choice: Choice) -> Result<Ar
     args.robot = if fields.robot.trim().is_empty() {
         Robot::default()
     } else {
-        Robot::parse(fields.robot.trim())
-            .ok_or("Pick a robot: hero, engineer, infantry-3, infantry-4 or sentry")?
+        Robot::parse(fields.robot.trim()).ok_or(
+            "Pick a robot: hero, engineer, infantry-3, infantry-4, infantry-5, sentry or drone",
+        )?
     };
     args.chassis = fields.chassis;
     if !args.fly && !args.referee {
@@ -777,8 +808,65 @@ fn button(commands: &mut Commands, parent: Entity, title: &str, choice: Choice) 
         .id()
 }
 
+/// A titled band of the seat board, returning the wrapping row its slots go
+/// in. The spectators sit in one above the team columns and the referees in
+/// one below, so neither is mistaken for the page's own buttons.
+fn seat_section(commands: &mut Commands, parent: Entity, title: &str, color: Color) -> Entity {
+    let section = commands
+        .spawn((
+            ChildOf(parent),
+            Node {
+                width: percent(100),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(6),
+                ..default()
+            },
+        ))
+        .id();
+    commands.spawn((
+        ChildOf(section),
+        Text::new(title.to_owned()),
+        TextFont {
+            font_size: FontSize::Px(16.0),
+            ..default()
+        },
+        TextColor(color),
+    ));
+    commands
+        .spawn((
+            ChildOf(section),
+            Node {
+                column_gap: px(8),
+                row_gap: px(8),
+                flex_wrap: FlexWrap::Wrap,
+                ..default()
+            },
+        ))
+        .id()
+}
+
+/// One numbered slot in a [`seat_section`] row, sized to its number rather
+/// than stretched like the team columns' named robots.
+fn seat_slot(commands: &mut Commands, parent: Entity, title: &str, seat: Seat) {
+    let card = seat_frame(commands, parent, title, seat);
+    commands
+        .entity(card)
+        .entry::<Node>()
+        .and_modify(|mut node| node.min_width = px(56));
+}
+
 /// A seat button in a frame that lights up while its seat is the chosen one.
 fn seat_card(commands: &mut Commands, parent: Entity, title: &str, seat: Seat) {
+    let card = seat_frame(commands, parent, title, seat);
+    commands
+        .entity(card)
+        .entry::<Node>()
+        .and_modify(|mut node| node.width = percent(100));
+}
+
+/// The frame and button shared by every seat on the board. The button fills
+/// the frame, so the caller sizes the frame alone.
+fn seat_frame(commands: &mut Commands, parent: Entity, title: &str, seat: Seat) -> Entity {
     let card = commands
         .spawn((
             ChildOf(parent),
@@ -797,6 +885,7 @@ fn seat_card(commands: &mut Commands, parent: Entity, title: &str, seat: Seat) {
         .entity(button)
         .entry::<Node>()
         .and_modify(|mut node| node.width = percent(100));
+    card
 }
 
 fn scrollbar(commands: &mut Commands, parent: Entity, target: Entity) {
@@ -1286,7 +1375,7 @@ fn spawn_title(
         .id();
     commands.spawn((
         ChildOf(robot_page),
-        Text::new("Choose your robot"),
+        Text::new("Choose your seat"),
         TextFont {
             font_size: FontSize::Px(24.0),
             ..default()
@@ -1294,13 +1383,27 @@ fn spawn_title(
     ));
     commands.spawn((
         ChildOf(robot_page),
-        Text::new("Choose a team and robot, then choose its chassis. Engineer has a fixed arm; Sentry is manually driven."),
+        Text::new("Take one slot: a robot on a team, a spectator seat or the referee. A pilot then chooses a chassis. Engineer has a fixed arm; Sentry is manually driven."),
         TextFont {
             font_size: FontSize::Px(14.0),
             ..default()
         },
         TextColor(Color::srgb(0.55, 0.65, 0.72)),
     ));
+    let spectators = seat_section(
+        &mut commands,
+        robot_page,
+        "SPECTATORS",
+        Color::srgb(0.62, 0.72, 0.78),
+    );
+    for slot in 0..SPECTATOR_SLOTS {
+        seat_slot(
+            &mut commands,
+            spectators,
+            &(slot + 1).to_string(),
+            Seat::Spectator { slot },
+        );
+    }
     let teams = commands
         .spawn((
             ChildOf(robot_page),
@@ -1352,13 +1455,32 @@ fn spawn_title(
                 Seat::Pilot { team, robot },
             );
         }
-        seat_card(
+    }
+    let referees = seat_section(
+        &mut commands,
+        robot_page,
+        "REFEREE",
+        Color::srgb(0.62, 0.72, 0.78),
+    );
+    for slot in 0..REFEREE_SLOTS {
+        seat_slot(
             &mut commands,
-            column,
-            "Spectate (free camera)",
-            Seat::Spectator { team },
+            referees,
+            &(slot + 1).to_string(),
+            Seat::Referee { slot },
         );
     }
+    commands.spawn((
+        ChildOf(robot_page),
+        SeatText,
+        Text::new(String::new()),
+        TextFont {
+            font_size: FontSize::Px(14.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.55, 0.65, 0.72)),
+    ));
+    // The board is what is picked from, so Back and Continue sit apart from it.
     let bottom = commands
         .spawn((
             ChildOf(robot_page),
@@ -1372,22 +1494,11 @@ fn spawn_title(
             },
         ))
         .id();
-    seat_card(&mut commands, bottom, "Referee", Seat::Referee);
     button(&mut commands, bottom, "Back", Choice::Back);
     let start = button(&mut commands, bottom, "Continue", Choice::Confirm);
     commands.entity(start).insert(WhenHosting(true));
     let join = button(&mut commands, bottom, "Continue", Choice::Confirm);
     commands.entity(join).insert(WhenHosting(false));
-    commands.spawn((
-        ChildOf(robot_page),
-        SeatText,
-        Text::new(String::new()),
-        TextFont {
-            font_size: FontSize::Px(14.0),
-            ..default()
-        },
-        TextColor(Color::srgb(0.55, 0.65, 0.72)),
-    ));
 
     let chassis_page = commands
         .spawn((
@@ -2343,14 +2454,17 @@ mod tests {
     fn seat_cards_light_the_chosen_seat_and_the_confirm_button_matches_the_origin() {
         let mut app = App::new();
         app.insert_resource(TitleState {
-            seat: Seat::Referee,
+            seat: Seat::Referee { slot: 1 },
             pending: Some(Choice::Connect),
             ..default()
         })
         .add_systems(Update, show_seats);
         let world = app.world_mut();
         let referee = world
-            .spawn((SeatCard(Seat::Referee), BorderColor::all(Color::NONE)))
+            .spawn((
+                SeatCard(Seat::Referee { slot: 1 }),
+                BorderColor::all(Color::NONE),
+            ))
             .id();
         let red = world
             .spawn((SeatCard(Seat::default()), BorderColor::all(Color::NONE)))
@@ -2364,7 +2478,7 @@ mod tests {
         assert!(lit(&app, referee) && !lit(&app, red));
         assert_eq!(
             app.world().get::<Text>(text).unwrap().0,
-            "Selected: the referee"
+            "Selected: referee 2"
         );
         let shown =
             |app: &App, button| app.world().get::<Node>(button).unwrap().display == Display::Flex;
@@ -2387,10 +2501,7 @@ mod tests {
             .describe(),
             "blue driving Hero (42 mm)"
         );
-        assert_eq!(
-            Seat::Spectator { team: Team::Blue }.describe(),
-            "blue spectator"
-        );
+        assert_eq!(Seat::Spectator { slot: 0 }.describe(), "spectator 1");
     }
 
     #[test]
@@ -2552,7 +2663,56 @@ mod tests {
         let hero = Args::try_parse_from(["rm-simulator", "--robot", "hero", "--referee"]).unwrap();
         let fields = TitleFields::initial(&hero, remembered);
         assert_eq!(fields.robot, "hero");
-        assert_eq!(fields.seat(), Seat::Referee);
+        assert_eq!(fields.seat(), Seat::Referee { slot: 0 });
+    }
+
+    /// Every slot the seat board lays out, in its reading order: the
+    /// spectator row, each team's line-up, then the referee row.
+    fn board() -> Vec<Seat> {
+        let mut seats: Vec<Seat> = (0..SPECTATOR_SLOTS)
+            .map(|slot| Seat::Spectator { slot })
+            .collect();
+        for team in [Team::Blue, Team::Red] {
+            seats.extend(Robot::ALL.map(|robot| Seat::Pilot { team, robot }));
+        }
+        seats.extend((0..REFEREE_SLOTS).map(|slot| Seat::Referee { slot }));
+        seats
+    }
+
+    #[test]
+    fn the_board_offers_one_slot_per_competition_robot_and_no_two_are_the_same() {
+        let seats = board();
+        // 5 spectators, a full line-up on each team, 3 referees.
+        assert_eq!(seats.len(), 5 + 2 * 7 + 3);
+        for team in [Team::Blue, Team::Red] {
+            let line_up: Vec<Robot> = seats
+                .iter()
+                .filter_map(|seat| match seat {
+                    Seat::Pilot { team: t, robot } if *t == team => Some(*robot),
+                    _ => None,
+                })
+                .collect();
+            let count = |kind| line_up.iter().filter(|robot| robot.kind() == kind).count();
+            use rm_simulator_world::RobotKind;
+            assert_eq!(count(RobotKind::Hero), 1);
+            assert_eq!(count(RobotKind::Engineer), 1);
+            assert_eq!(count(RobotKind::Infantry), 3);
+            assert_eq!(count(RobotKind::Sentry), 1);
+            assert_eq!(count(RobotKind::Drone), 1);
+        }
+        // A slot is what identifies a seat, so two of them must never match.
+        for (index, seat) in seats.iter().enumerate() {
+            assert!(!seats[..index].contains(seat), "{seat:?} appears twice");
+        }
+    }
+
+    #[test]
+    fn every_board_slot_survives_the_fields_it_is_remembered_in() {
+        let mut fields = TitleFields::default();
+        for seat in board() {
+            fields.set_seat(seat);
+            assert_eq!(fields.seat(), seat);
+        }
     }
 
     #[test]
@@ -2565,20 +2725,22 @@ mod tests {
             },
             Seat::Pilot {
                 team: Team::Red,
-                robot: Robot::Infantry4,
+                robot: Robot::Infantry5,
             },
-            Seat::Spectator { team: Team::Blue },
-            Seat::Referee,
+            Seat::Spectator { slot: 4 },
+            Seat::Referee { slot: 2 },
+            Seat::Spectator { slot: 0 },
         ] {
             fields.set_seat(seat);
             assert_eq!(fields.seat(), seat);
         }
-        assert!(fields.spectate && fields.blue);
+        // The last pilot slot survives a spectator or referee seat, so going
+        // back to a robot restores it rather than the board's default.
         fields.set_seat(Seat::Pilot {
             team: Team::Red,
             robot: Robot::Infantry4,
         });
-        fields.set_seat(Seat::Referee);
+        fields.set_seat(Seat::Referee { slot: 0 });
         assert_eq!(fields.robot, "infantry-4");
         assert!(!fields.spectate && !fields.blue);
         fields.referee = false;
@@ -2616,7 +2778,7 @@ mod tests {
             rm_simulator_server::protocol::Role::Spectator
         );
         let mut referee = fields.clone();
-        referee.set_seat(Seat::Referee);
+        referee.set_seat(Seat::Referee { slot: 0 });
         let referee = join_args(&base(), &referee, Choice::Connect).unwrap();
         assert!(referee.referee);
         assert_eq!(referee.role(), rm_simulator_server::protocol::Role::Referee);
