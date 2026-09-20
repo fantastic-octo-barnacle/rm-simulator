@@ -116,9 +116,10 @@ and graphics choices are edited from **Settings** or the toolbar and saved in
 
 ## Title screen and LAN lobbies
 
-A bare launch opens Single Player and Multiplayer choices with a player name.
-Single Player starts a local practice field.
-Multiplayer lists LAN lobbies on the left and creates a named, optionally
+A bare launch opens a vertical main menu: Single Player, Multiplayer, Settings
+and Quit. Single Player starts a local practice field and never asks for a
+name. Multiplayer asks for the player name, then lists LAN lobbies on the left
+and creates a named, optionally
 password-protected lobby on the right. Select a listing, enter its password if needed, and press Join lobby / address.
 Every way in then opens the robot page: blue seats on the left, red on the
 right, offering Hero, Engineer, Infantry 3, Infantry 4, Sentry or a spectating

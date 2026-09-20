@@ -69,6 +69,12 @@ join from the title screen starts from.
 
 ## Menu feedback and navigation
 
+The main menu is one vertical stack: Single Player, Multiplayer, Settings and
+Quit. The player name is asked for on the Multiplayer page, above the lobby
+columns, because only joining and hosting send it; a local practice match uses
+`--name` or `pilot`. An empty name is reported beside the Join or Create lobby
+action that needed it.
+
 In Multiplayer, Enter submits the form containing the focused input: lobby
 creation fields create a lobby, while the address and join-password fields join
 one. Passwords start masked; each field has its own Show password checkbox.

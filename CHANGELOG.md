@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- The main menu is a vertical stack of Single Player, Multiplayer, Settings and
+  Quit. The player name moved onto the Multiplayer page, where it is sent:
+  Single Player no longer asks for one and uses `--name` or `pilot`.
+
 - Drone flies on its own keys: W/S forward and back, A/D sideways in the body
   frame, Q/E rotate the body, and the mouse aims the gimbal independently. It
   spawns 2.0 m above its team's landing pad and is held by the section 4.5

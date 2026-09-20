@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
-//! The title screen: a name, an address and the ways into a match. Every
+//! The title screen: a vertical main menu of Single Player, Multiplayer,
+//! Settings and Quit, and under Multiplayer the name, an address and the
+//! lobbies. Every
 //! choice is turned into the same arguments the command line would have
 //! given, so the lifecycle in `loading.rs` has one entry. A choice that enters
 //! a match first opens the robot page, where the seat (a robot on a team, a
@@ -39,6 +41,9 @@ pub struct TitleScreen {
 pub struct BaseArgs(pub Args);
 /// The address a host binds when the field is left empty.
 pub const DEFAULT_LISTEN: &str = "0.0.0.0:7700";
+/// The player name a match starts with when none was given: Single Player
+/// never asks for one, and the multiplayer page starts from it.
+pub const DEFAULT_NAME: &str = "pilot";
 
 /// The seat a player takes in a match, as the robot page offers it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -255,7 +260,7 @@ impl TitleFields {
             ),
             password: base.password.clone(),
             join_password: base.password.clone(),
-            name: pick(remembered.name, Some(base.name.clone()), "pilot"),
+            name: pick(remembered.name, Some(base.name.clone()), DEFAULT_NAME),
             address: pick(remembered.address, base.connect.clone(), ""),
             host: pick(remembered.host, base.host.listen.clone(), DEFAULT_LISTEN),
             blue: base.team == crate::args::TeamArg::Blue || remembered.blue,
@@ -362,9 +367,12 @@ impl TitleFields {
 pub fn join_args(base: &Args, fields: &TitleFields, choice: Choice) -> Result<Args, String> {
     let mut args = base.clone();
     let name = fields.name.trim();
-    if name.is_empty() {
-        return Err("Enter a name".into());
-    }
+    // Only multiplayer asks for a name, so a local match falls back instead.
+    let name = match (name.is_empty(), choice) {
+        (false, _) => name,
+        (true, Choice::Practice) => DEFAULT_NAME,
+        (true, _) => return Err("Enter a name".into()),
+    };
     args.name = name.into();
     args.password = if choice == Choice::Connect {
         fields.join_password.clone()
@@ -986,14 +994,16 @@ fn sync_title(
         ))
         .id();
     status_text(&mut commands, card, StatusLocation::General);
-    field(&mut commands, card, "Name", fields.name.clone(), NameInput);
+    // The main menu is one vertical stack; the name belongs to multiplayer.
     let row = commands
         .spawn((
             ChildOf(card),
+            MenuPage(Page::Main),
             Node {
-                column_gap: px(10),
+                width: percent(100),
                 margin: UiRect::top(px(10)),
-                flex_wrap: FlexWrap::Wrap,
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Stretch,
                 row_gap: px(10),
                 ..default()
             },
@@ -1001,8 +1011,6 @@ fn sync_title(
         .id();
     button(&mut commands, row, "Single Player", Choice::Practice);
     button(&mut commands, row, "Multiplayer", Choice::Multiplayer);
-    button(&mut commands, row, "Quit", Choice::Quit);
-    commands.entity(row).insert(MenuPage(Page::Main));
     commands.spawn_scene(bsn! {
         @FeathersButton { @caption: bsn! { Text("Settings") ThemedText } }
         Node { height: px(38), flex_shrink: 0.0, padding: UiRect::horizontal(px(18)) }
@@ -1012,23 +1020,54 @@ fn sync_title(
             ui.close(); ui.settings = true; ui.consumed = true; focus.clear();
         })
     }).insert(ChildOf(row));
+    button(&mut commands, row, "Quit", Choice::Quit);
 
     let multiplayer = commands
         .spawn((
             ChildOf(card),
             MenuPage(Page::Multiplayer),
+            Node {
+                width: percent(100),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(12),
+                display: Display::None,
+                ..default()
+            },
+        ))
+        .id();
+    // The name is asked for here, where it is sent: joining or hosting.
+    let identity = commands
+        .spawn((
+            ChildOf(multiplayer),
+            Node {
+                width: percent(50),
+                min_width: px(0),
+                flex_direction: FlexDirection::Column,
+                ..default()
+            },
+        ))
+        .id();
+    field(
+        &mut commands,
+        identity,
+        "Name",
+        fields.name.clone(),
+        NameInput,
+    );
+    let columns = commands
+        .spawn((
+            ChildOf(multiplayer),
             Columns,
             Node {
                 width: percent(100),
                 column_gap: px(24),
-                display: Display::None,
                 ..default()
             },
         ))
         .id();
     let left = commands
         .spawn((
-            ChildOf(multiplayer),
+            ChildOf(columns),
             LobbyColumn,
             Node {
                 width: percent(50),
@@ -1156,7 +1195,7 @@ fn sync_title(
     status_text(&mut commands, left, StatusLocation::Join);
     let right = commands
         .spawn((
-            ChildOf(multiplayer),
+            ChildOf(columns),
             LobbyColumn,
             Node {
                 width: percent(50),
@@ -2046,9 +2085,7 @@ fn title_input(
             commands.insert_resource(JoinRequest(args));
         }
         Err(message) => {
-            let location = if fields.name.trim().is_empty() {
-                StatusLocation::General
-            } else if choice == Choice::Connect {
+            let location = if choice == Choice::Connect {
                 StatusLocation::Join
             } else if choice == Choice::Host {
                 StatusLocation::Host
@@ -2106,22 +2143,29 @@ mod tests {
             app.update();
         };
         // The fields come from the inputs, which this app has none of, so
-        // the name is missing: the page stays put and the status says why.
+        // the name is missing. Single Player does not ask for one and opens
+        // the robot page anyway; joining reports it against its own status.
         press(&mut app, Choice::Practice);
-        assert_eq!(app.world().resource::<TitleState>().page, Page::Main);
+        let state = app.world().resource::<TitleState>();
+        assert_eq!(state.page, Page::Robot);
+        assert!(state.feedback.is_none());
+        app.world_mut().resource_mut::<TitleState>().page = Page::Multiplayer;
+        app.world_mut()
+            .spawn((AddressInput, EditableText::new("localhost:7700")));
+        press(&mut app, Choice::Connect);
+        assert_eq!(app.world().resource::<TitleState>().page, Page::Multiplayer);
         assert!(
             app.world()
                 .resource::<TitleState>()
                 .feedback
                 .as_ref()
-                .is_some_and(
-                    |(location, error, text)| *location == StatusLocation::General
-                        && *error
-                        && text.contains("name")
-                )
+                .is_some_and(|(location, error, text)| *location == StatusLocation::Join
+                    && *error
+                    && text.contains("name"))
         );
         app.world_mut()
             .spawn((NameInput, EditableText::new("dave")));
+        app.world_mut().resource_mut::<TitleState>().page = Page::Main;
         press(&mut app, Choice::Practice);
         let state = app.world().resource::<TitleState>();
         assert_eq!(state.page, Page::Robot);
@@ -2523,10 +2567,21 @@ mod tests {
                 .contains("address")
         );
         fields.name.clear();
+        // Only multiplayer asks for a name; Single Player falls back to one.
         assert!(
-            join_args(&base(), &fields, Choice::Practice)
+            join_args(&base(), &fields, Choice::Host)
                 .unwrap_err()
                 .contains("name")
+        );
+        fields.address = "localhost:7700".into();
+        assert!(
+            join_args(&base(), &fields, Choice::Connect)
+                .unwrap_err()
+                .contains("name")
+        );
+        assert_eq!(
+            join_args(&base(), &fields, Choice::Practice).unwrap().name,
+            DEFAULT_NAME
         );
     }
 
