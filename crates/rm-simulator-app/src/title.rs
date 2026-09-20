@@ -10,7 +10,10 @@
 //! addresses and robot are remembered in the user's configuration directory.
 mod password;
 
-use crate::{args::Args, loading::JoinRequest};
+use crate::{
+    args::Args,
+    loading::{JoinRequest, Screen},
+};
 use bevy::{
     feathers::{
         controls::{
@@ -101,8 +104,10 @@ fn caliber_mm(robot: Robot) -> u32 {
         Caliber::Mm17 => 17,
     }
 }
-/// The pages of the title screen.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The pages of the title screen. It is a sub-state of [`Screen::Title`], so
+/// leaving the title screen removes it and returning starts at `Main`.
+#[derive(SubStates, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[source(Screen = Screen::Title)]
 pub enum Page {
     /// Single Player, Multiplayer, Settings and Quit.
     #[default]
@@ -680,7 +685,6 @@ type DiscoveryResult = (Vec<rm_simulator_server::lobby::Listing>, String, bool);
 /// search in flight and the buttons pressed this frame.
 #[derive(Resource, Default)]
 pub(crate) struct TitleState {
-    page: Page,
     pending: Option<Choice>,
     seat: Seat,
     chassis: Chassis,
@@ -696,61 +700,64 @@ pub(crate) struct TitleState {
 }
 
 impl TitleState {
-    /// Leave the open page for the one under it: the robot page for the page
-    /// its choice was pressed on, the multiplayer page for the main menu.
+    /// Leave `page` for the one under it: the robot page for the page its
+    /// choice was pressed on, the multiplayer page for the main menu.
     /// Returns whether a page was open, so Escape offers to quit only from the
     /// main page.
-    pub(crate) fn escape_back(&mut self) -> bool {
-        if self.tip && self.page == Page::Multiplayer {
+    pub(crate) fn escape_back(&mut self, page: Page, next: &mut NextState<Page>) -> bool {
+        if self.tip && page == Page::Multiplayer {
             self.tip = false;
             return true;
         }
         self.feedback = None;
-        match self.page {
+        match page {
             Page::Main => false,
             Page::Multiplayer => {
-                self.page = Page::Main;
+                next.set(Page::Main);
                 true
             }
             Page::Chassis => {
-                self.page = Page::Robot;
+                next.set(Page::Robot);
                 true
             }
             Page::Robot => {
-                self.page = self.pending.take().map_or(Page::Main, Choice::origin);
+                next.set(self.pending.take().map_or(Page::Main, Choice::origin));
                 true
             }
         }
     }
 }
 
-/// Installs the title resources and the chained update systems that build the
-/// screen and act on its buttons. Only the input system requires the
-/// `TitleScreen` resource.
+/// Installs the title resources, the `Page` sub-state, the systems that build
+/// and tear the screen down with [`Screen::Title`], and the chained update
+/// systems that dress it and act on its buttons.
 pub struct TitlePlugin;
 impl Plugin for TitlePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(password::PasswordPlugin)
             .init_resource::<TitleState>()
+            .init_resource::<TitleScreen>()
             .init_resource::<TitleBackground>()
+            .add_sub_state::<Page>()
+            .add_systems(OnEnter(Screen::Title), spawn_title)
+            .add_systems(OnExit(Screen::Title), despawn_title)
             .add_systems(
                 Update,
                 (
-                    sync_title,
+                    update_status,
                     poll_lobbies,
                     show_page,
-                    sync_page_navigation,
+                    sync_page_navigation.run_if(state_changed::<Page>),
                     show_seats,
                     show_chassis,
                     fit_columns,
                     fit_scrollbars,
                     prefill,
                     fit_background,
-                    title_input
-                        .after(crate::hud::panel_input)
-                        .run_if(resource_exists::<TitleScreen>),
+                    title_input.after(crate::hud::panel_input),
                 )
-                    .chain(),
+                    .chain()
+                    .run_if(in_state(Screen::Title)),
             );
     }
 }
@@ -835,24 +842,21 @@ fn field<M: Component + Default + Clone>(
         .id()
 }
 
-/// Show the title screen while `TitleScreen` exists and take it down when
-/// a join starts.
-fn sync_title(
-    mut commands: Commands,
-    screen: Option<Res<TitleScreen>>,
-    base: Option<Res<BaseArgs>>,
-    roots: Query<Entity, With<TitleRoot>>,
+/// The title screen belongs to [`Screen::Title`] and never outlives it.
+fn despawn_title(mut commands: Commands, roots: Query<Entity, With<TitleRoot>>) {
+    for root in &roots {
+        commands.entity(root).despawn();
+    }
+}
+
+/// Write the reason the last match ended, the form errors and the search
+/// progress into the status line each belongs to.
+fn update_status(
+    screen: Res<TitleScreen>,
+    state: Res<TitleState>,
     mut status: Query<(&StatusText, &mut Text, &mut TextColor, &mut Node)>,
-    mut state: ResMut<TitleState>,
-    background: Res<TitleBackground>,
 ) {
-    let Some(screen) = screen else {
-        for root in &roots {
-            commands.entity(root).despawn();
-        }
-        return;
-    };
-    if !roots.is_empty() {
+    {
         for (location, mut text, mut color, mut node) in &mut status {
             let feedback = state
                 .feedback
@@ -885,18 +889,24 @@ fn sync_title(
                 Display::Flex
             };
         }
-        return;
     }
-    let Some(base) = base else {
-        return;
-    };
+}
+
+/// Build the whole title screen on entering [`Screen::Title`]: every page is
+/// spawned and `show_page` displays the current one, so a choice made on one
+/// page can still read the fields of another.
+fn spawn_title(
+    mut commands: Commands,
+    base: Res<BaseArgs>,
+    mut state: ResMut<TitleState>,
+    background: Res<TitleBackground>,
+) {
     let fields = TitleFields::initial(
         &base.0,
         remembered_path().and_then(|path| load_remembered(&path)),
     );
     state.feedback = None;
     state.search_status = None;
-    state.page = Page::Main;
     state.pending = None;
     state.public = fields.public;
     state.seat = fields.seat();
@@ -1540,6 +1550,7 @@ fn sync_title(
 
 #[allow(clippy::type_complexity)]
 fn show_page(
+    current: Res<State<Page>>,
     state: Res<TitleState>,
     mut pages: Query<
         (&MenuPage, &mut Node),
@@ -1553,9 +1564,10 @@ fn show_page(
     mut cards: Query<&mut Node, (With<TitleCard>, Without<HostSettings>)>,
     mut settings: Query<&mut Node, With<HostSettings>>,
 ) {
-    let multiplayer = state.page == Page::Multiplayer;
+    let current = *current.get();
+    let multiplayer = current == Page::Multiplayer;
     for mut node in &mut cards {
-        let width = px(match state.page {
+        let width = px(match current {
             Page::Main => 480.0,
             Page::Multiplayer => 1100.0,
             Page::Robot | Page::Chassis => 760.0,
@@ -1582,7 +1594,7 @@ fn show_page(
         }
     }
     for mut node in &mut settings {
-        let display = if matches!(state.page, Page::Robot | Page::Chassis) {
+        let display = if matches!(current, Page::Robot | Page::Chassis) {
             Display::None
         } else {
             Display::Flex
@@ -1593,7 +1605,7 @@ fn show_page(
     }
 
     for (page, mut node) in &mut pages {
-        let display = if page.0 == state.page {
+        let display = if page.0 == current {
             Display::Flex
         } else {
             Display::None
@@ -1605,16 +1617,11 @@ fn show_page(
 }
 
 /// New pages start at the top and cannot keep typing into an input they hide.
+/// Runs only when the `Page` sub-state changed.
 fn sync_page_navigation(
-    state: Res<TitleState>,
-    mut previous: Local<Option<Page>>,
     mut focus: ResMut<bevy::input_focus::InputFocus>,
     mut scrolls: Query<&mut ScrollPosition, With<TitleScroll>>,
 ) {
-    if *previous == Some(state.page) {
-        return;
-    }
-    *previous = Some(state.page);
     focus.clear();
     for mut scroll in &mut scrolls {
         *scroll = default();
@@ -1834,6 +1841,9 @@ fn title_input(
     keys: Res<ButtonInput<KeyCode>>,
     base: Res<BaseArgs>,
     mut screen: ResMut<TitleScreen>,
+    page: Res<State<Page>>,
+    mut next_page: ResMut<NextState<Page>>,
+    mut next_screen: ResMut<NextState<Screen>>,
     mut ui: Option<ResMut<crate::hud::HudState>>,
     inputs: Query<(
         Entity,
@@ -1846,12 +1856,13 @@ fn title_input(
     focus: Res<bevy::input_focus::InputFocus>,
     controls: Query<(), Or<(With<bevy::ui_widgets::Checkbox>, With<FeathersButton>)>>,
 ) {
+    let page = *page.get();
     if ui.as_ref().is_some_and(|ui| ui.blocks_input()) {
         state.actions.clear();
         return;
     }
     if keys.just_pressed(KeyCode::Escape) {
-        let choice = if state.page == Page::Main {
+        let choice = if page == Page::Main {
             Choice::Quit
         } else {
             Choice::Back
@@ -1861,7 +1872,7 @@ fn title_input(
     if (keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter))
         && !focus.get().is_some_and(|entity| controls.contains(entity))
     {
-        let choice = match state.page {
+        let choice = match page {
             Page::Main => Choice::Practice,
             Page::Multiplayer => {
                 let hosting = focus
@@ -1911,7 +1922,7 @@ fn title_input(
     }
     if choice == Choice::Back {
         state.feedback = None;
-        state.escape_back();
+        state.escape_back(page, &mut next_page);
         return;
     }
     if let Choice::Seat(seat) = choice {
@@ -1933,17 +1944,17 @@ fn title_input(
     }
     if choice == Choice::Confirm
         && state.pending.is_some()
-        && state.page == Page::Robot
+        && page == Page::Robot
         && let Seat::Pilot { robot, .. } = state.seat
     {
         if state.chassis.config(robot).is_err() {
             state.chassis = Chassis::Auto;
         }
-        state.page = Page::Chassis;
+        next_page.set(Page::Chassis);
         return;
     }
     if choice == Choice::Multiplayer {
-        state.page = Page::Multiplayer;
+        next_page.set(Page::Multiplayer);
         state.tip = false;
         choice = Choice::Refresh;
     }
@@ -2068,7 +2079,7 @@ fn title_input(
     match join_args(&base, &fields, choice) {
         Ok(_) if !confirming => {
             state.pending = Some(choice);
-            state.page = Page::Robot;
+            next_page.set(Page::Robot);
             screen.status = None;
         }
         Ok(args) => {
@@ -2083,6 +2094,7 @@ fn title_input(
             }
             screen.status = None;
             commands.insert_resource(JoinRequest(args));
+            next_screen.set(Screen::Loading);
         }
         Err(message) => {
             let location = if choice == Choice::Connect {
@@ -2125,6 +2137,74 @@ mod tests {
     use super::*;
     use clap::Parser;
 
+    /// The screen states a title-screen system needs, without the rest of the
+    /// app. `Screen::Title` brings the `Page` sub-state up at `Main`.
+    fn with_screens(app: &mut App) -> &mut App {
+        app.add_plugins(bevy::state::app::StatesPlugin)
+            .insert_state(Screen::Title)
+            .add_sub_state::<Page>()
+    }
+    /// Apply a queued transition without running `Update` again, so a test
+    /// that holds a key down does not act on it twice.
+    fn settle(app: &mut App) {
+        app.world_mut()
+            .run_schedule(bevy::state::state::StateTransition);
+    }
+    fn page(app: &App) -> Page {
+        *app.world().resource::<State<Page>>().get()
+    }
+    /// Open `to` as if its button had been pressed.
+    fn open(app: &mut App, to: Page) {
+        app.world_mut().resource_mut::<NextState<Page>>().set(to);
+        settle(app);
+    }
+
+    #[test]
+    fn the_pages_belong_to_the_title_screen_and_reopen_at_the_main_menu() {
+        let mut app = App::new();
+        with_screens(&mut app);
+        app.update();
+        assert_eq!(page(&app), Page::Main);
+        open(&mut app, Page::Multiplayer);
+        assert_eq!(page(&app), Page::Multiplayer);
+        // Joining leaves the title screen, which takes its pages with it.
+        app.world_mut()
+            .resource_mut::<NextState<Screen>>()
+            .set(Screen::Loading);
+        settle(&mut app);
+        assert!(app.world().get_resource::<State<Page>>().is_none());
+        // Returning opens the main menu, whatever page was last shown.
+        app.world_mut()
+            .resource_mut::<NextState<Screen>>()
+            .set(Screen::Title);
+        settle(&mut app);
+        assert_eq!(page(&app), Page::Main);
+    }
+
+    #[test]
+    fn only_the_current_page_is_displayed() {
+        let mut app = App::new();
+        with_screens(&mut app)
+            .init_resource::<TitleState>()
+            .add_systems(Update, show_page);
+        let main = app
+            .world_mut()
+            .spawn((MenuPage(Page::Main), Node::default()))
+            .id();
+        let multiplayer = app
+            .world_mut()
+            .spawn((MenuPage(Page::Multiplayer), Node::default()))
+            .id();
+        let display = |app: &App, entity| app.world().get::<Node>(entity).unwrap().display;
+        app.update();
+        assert_eq!(display(&app, main), Display::Flex);
+        assert_eq!(display(&app, multiplayer), Display::None);
+        open(&mut app, Page::Multiplayer);
+        app.update();
+        assert_eq!(display(&app, main), Display::None);
+        assert_eq!(display(&app, multiplayer), Display::Flex);
+    }
+
     #[test]
     fn a_join_choice_opens_the_robot_page_and_the_seat_is_taken_there() {
         let mut app = App::new();
@@ -2135,25 +2215,26 @@ mod tests {
             .insert_resource(BaseArgs(base()))
             .add_message::<AppExit>()
             .add_systems(Update, title_input);
+        with_screens(&mut app);
         let press = |app: &mut App, choice| {
             app.world_mut()
                 .resource_mut::<TitleState>()
                 .actions
                 .push(choice);
             app.update();
+            settle(app);
         };
         // The fields come from the inputs, which this app has none of, so
         // the name is missing. Single Player does not ask for one and opens
         // the robot page anyway; joining reports it against its own status.
         press(&mut app, Choice::Practice);
-        let state = app.world().resource::<TitleState>();
-        assert_eq!(state.page, Page::Robot);
-        assert!(state.feedback.is_none());
-        app.world_mut().resource_mut::<TitleState>().page = Page::Multiplayer;
+        assert_eq!(page(&app), Page::Robot);
+        assert!(app.world().resource::<TitleState>().feedback.is_none());
+        open(&mut app, Page::Multiplayer);
         app.world_mut()
             .spawn((AddressInput, EditableText::new("localhost:7700")));
         press(&mut app, Choice::Connect);
-        assert_eq!(app.world().resource::<TitleState>().page, Page::Multiplayer);
+        assert_eq!(page(&app), Page::Multiplayer);
         assert!(
             app.world()
                 .resource::<TitleState>()
@@ -2165,11 +2246,13 @@ mod tests {
         );
         app.world_mut()
             .spawn((NameInput, EditableText::new("dave")));
-        app.world_mut().resource_mut::<TitleState>().page = Page::Main;
+        open(&mut app, Page::Main);
         press(&mut app, Choice::Practice);
-        let state = app.world().resource::<TitleState>();
-        assert_eq!(state.page, Page::Robot);
-        assert_eq!(state.pending, Some(Choice::Practice));
+        assert_eq!(page(&app), Page::Robot);
+        assert_eq!(
+            app.world().resource::<TitleState>().pending,
+            Some(Choice::Practice)
+        );
         assert!(app.world().resource::<TitleScreen>().status.is_none());
         assert!(!app.world().contains_resource::<JoinRequest>());
         let hero = Seat::Pilot {
@@ -2180,8 +2263,9 @@ mod tests {
         assert_eq!(app.world().resource::<TitleState>().seat, hero);
         // Back returns to the page the choice was pressed on and forgets it.
         press(&mut app, Choice::Back);
+        assert_eq!(page(&app), Page::Main);
         let state = app.world().resource::<TitleState>();
-        assert_eq!((state.page, state.pending), (Page::Main, None));
+        assert_eq!(state.pending, None);
         assert_eq!(state.seat, hero);
         // Confirm with nothing pending is ignored.
         press(&mut app, Choice::Confirm);
@@ -2200,6 +2284,7 @@ mod tests {
             .insert_resource(BaseArgs(base()))
             .add_message::<AppExit>()
             .add_systems(Update, title_input);
+        with_screens(&mut app);
         app.world_mut()
             .spawn((NameInput, EditableText::new("pilot")));
         let press = |app: &mut App, choice| {
@@ -2208,14 +2293,15 @@ mod tests {
                 .actions
                 .push(choice);
             app.update();
+            settle(app);
         };
         press(&mut app, Choice::Practice);
         press(&mut app, Choice::Confirm);
-        assert_eq!(app.world().resource::<TitleState>().page, Page::Chassis);
+        assert_eq!(page(&app), Page::Chassis);
         assert!(!app.world().contains_resource::<JoinRequest>());
         press(&mut app, Choice::Chassis(Chassis::Balance));
         press(&mut app, Choice::Back);
-        assert_eq!(app.world().resource::<TitleState>().page, Page::Robot);
+        assert_eq!(page(&app), Page::Robot);
         assert_eq!(
             app.world().resource::<TitleState>().pending,
             Some(Choice::Practice)
@@ -2241,6 +2327,7 @@ mod tests {
         .insert_resource(BaseArgs(base()))
         .add_message::<AppExit>()
         .add_systems(Update, title_input);
+        with_screens(&mut app);
         app.world_mut()
             .resource_mut::<TitleState>()
             .actions
@@ -2316,7 +2403,8 @@ mod tests {
                 .init_resource::<bevy::input_focus::InputFocus>()
                 .insert_resource(BaseArgs(base()))
                 .add_systems(Update, title_input);
-            app.world_mut().resource_mut::<TitleState>().page = Page::Multiplayer;
+            with_screens(&mut app);
+            open(&mut app, Page::Multiplayer);
             app.world_mut()
                 .spawn((NameInput, EditableText::new("pilot")));
             app.world_mut()
@@ -2339,6 +2427,7 @@ mod tests {
                 .resource_mut::<ButtonInput<KeyCode>>()
                 .press(KeyCode::Enter);
             app.update();
+            settle(&mut app);
             let state = app.world().resource::<TitleState>();
             assert_eq!(
                 state.pending,
@@ -2348,7 +2437,7 @@ mod tests {
                     Choice::Connect
                 })
             );
-            assert_eq!(state.page, Page::Robot);
+            assert_eq!(page(&app), Page::Robot);
         }
     }
 
@@ -2357,7 +2446,8 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<TitleState>()
             .init_resource::<bevy::input_focus::InputFocus>()
-            .add_systems(Update, sync_page_navigation);
+            .add_systems(Update, sync_page_navigation.run_if(state_changed::<Page>));
+        with_screens(&mut app);
         let scroll = app
             .world_mut()
             .spawn((TitleScroll, ScrollPosition::default()))
@@ -2370,7 +2460,7 @@ mod tests {
             .set(input, bevy::input_focus::FocusCause::Pressed);
         app.update();
         assert_eq!(app.world().get::<ScrollPosition>(scroll).unwrap().y, 250.);
-        app.world_mut().resource_mut::<TitleState>().page = Page::Robot;
+        open(&mut app, Page::Robot);
         app.update();
         assert_eq!(app.world().get::<ScrollPosition>(scroll).unwrap().y, 0.);
         assert!(
@@ -2410,6 +2500,7 @@ mod tests {
             .insert_resource(BaseArgs(base()))
             .add_message::<AppExit>()
             .add_systems(Update, title_input);
+        with_screens(&mut app);
         let checkbox = app.world_mut().spawn(bevy::ui_widgets::Checkbox).id();
         app.world_mut()
             .resource_mut::<bevy::input_focus::InputFocus>()
@@ -2592,11 +2683,12 @@ mod tests {
             .init_resource::<crate::hud::HudState>()
             .init_resource::<ButtonInput<KeyCode>>()
             .insert_resource(TitleState {
-                page: Page::Robot,
                 pending: Some(Choice::Connect),
                 ..default()
             })
             .add_systems(Update, crate::hud::panel_input);
+        with_screens(&mut app);
+        open(&mut app, Page::Robot);
         let escape = |app: &mut App| {
             let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
             keys.reset_all();
@@ -2605,17 +2697,18 @@ mod tests {
                 .resource_mut::<crate::hud::HudState>()
                 .consumed = false;
             app.update();
+            settle(app);
         };
         escape(&mut app);
-        let state = app.world().resource::<TitleState>();
-        assert_eq!((state.page, state.pending), (Page::Multiplayer, None));
+        assert_eq!(page(&app), Page::Multiplayer);
+        assert_eq!(app.world().resource::<TitleState>().pending, None);
         assert!(!app.world().resource::<crate::hud::HudState>().quit_confirm);
         app.world_mut().resource_mut::<TitleState>().tip = true;
         escape(&mut app);
-        assert_eq!(app.world().resource::<TitleState>().page, Page::Multiplayer);
+        assert_eq!(page(&app), Page::Multiplayer);
         assert!(!app.world().resource::<TitleState>().tip);
         escape(&mut app);
-        assert_eq!(app.world().resource::<TitleState>().page, Page::Main);
+        assert_eq!(page(&app), Page::Main);
         assert!(!app.world().resource::<crate::hud::HudState>().quit_confirm);
         escape(&mut app);
         assert!(app.world().resource::<crate::hud::HudState>().quit_confirm);

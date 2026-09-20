@@ -28,12 +28,29 @@ use rm_simulator_render::{
 use rm_simulator_server::{cad_assets, layout::default_spawn};
 use std::sync::{Arc, Mutex, mpsc};
 
-/// Inserting this starts a join; the worker is spawned on the next frame.
+/// Which screen the window is showing. Exactly one is current, so the title
+/// screen, the loading splash and the gameplay systems cannot run at once.
+#[derive(States, Clone, Copy, Default, Debug, PartialEq, Eq, Hash)]
+pub enum Screen {
+    /// The title screen and its pages; no match is running.
+    #[default]
+    Title,
+    /// A join is being prepared on a worker behind the splash.
+    Loading,
+    /// A match is running and the gameplay systems are unlocked.
+    InMatch,
+}
+/// Whether a match is running, for the exclusive systems that cannot carry a
+/// run condition. Equivalent to the `in_state(Screen::InMatch)` condition.
+pub fn in_match(world: &World) -> bool {
+    world
+        .get_resource::<State<Screen>>()
+        .is_some_and(|screen| *screen.get() == Screen::InMatch)
+}
+/// Insert this and enter [`Screen::Loading`] to start a join; the worker is
+/// spawned when the transition runs.
 #[derive(Resource)]
 pub struct JoinRequest(pub Args);
-/// A match is running and the gameplay systems are unlocked.
-#[derive(Resource)]
-pub struct Ready;
 /// Inserting this ends the running match at the end of the frame. The reason
 /// is shown on the title screen; a deliberate leave has none.
 #[derive(Resource)]
@@ -70,24 +87,30 @@ struct Loading {
     cancelled: bool,
     ready_frames: u32,
 }
-/// Adds the join start and splash poll systems to `Update`, chained so a
-/// request inserted this frame is polled in the same frame, and the leave
-/// system to `Last`.
+/// Starts the join when [`Screen::Loading`] is entered, polls the splash in
+/// `Update` while it is current and clears it on the way out, and adds the
+/// leave system to `Last`. Entering the state runs before `Update`, so a join
+/// requested this frame is still polled in the same frame.
 pub struct LoadingPlugin;
 impl Plugin for LoadingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            bevy::prelude::Update,
-            (
-                start.run_if(resource_exists::<JoinRequest>),
-                poll.run_if(resource_exists::<Loading>),
+        app.add_systems(OnEnter(Screen::Loading), start)
+            .add_systems(OnExit(Screen::Loading), despawn_splash)
+            .add_systems(
+                bevy::prelude::Update,
+                // A failed start leaves the state until the next transition.
+                poll.run_if(in_state(Screen::Loading).and_then(resource_exists::<Loading>)),
             )
-                .chain(),
-        )
-        .add_systems(
-            Last,
-            leave_requested.run_if(resource_exists::<LeaveRequest>),
-        );
+            .add_systems(
+                Last,
+                leave_requested.run_if(resource_exists::<LeaveRequest>),
+            );
+    }
+}
+/// The splash belongs to the loading screen and never outlives it.
+fn despawn_splash(mut commands: Commands, splash: Query<Entity, With<Splash>>) {
+    for entity in &splash {
+        commands.entity(entity).despawn();
     }
 }
 fn start(world: &mut World) {
@@ -96,7 +119,7 @@ fn start(world: &mut World) {
         .expect("join request")
         .0;
     let multiplayer = args.connect.is_some() || args.host.listen.is_some();
-    world.remove_resource::<TitleScreen>();
+    world.resource_mut::<TitleScreen>().status = None;
     let cached = world.get_resource::<CadCache>().cloned();
     let (sender, receiver) = mpsc::channel();
     let worker = std::thread::Builder::new()
@@ -348,8 +371,7 @@ fn poll(world: &mut World) {
                 if let Some(session) = world.get_resource::<Session>() {
                     session.ready();
                 }
-                despawn_all::<Splash>(world);
-                world.insert_resource(Ready);
+                enter(world, Screen::InMatch);
                 return;
             }
         }
@@ -387,7 +409,6 @@ fn leave_requested(world: &mut World) {
 /// screenshot mode there is nobody to read the title screen, so a failure
 /// exits instead.
 pub fn to_title(world: &mut World, status: Option<String>) {
-    world.remove_resource::<Ready>();
     world.remove_resource::<Loading>();
     world.remove_resource::<LeaveRequest>();
     world.remove_resource::<Session>();
@@ -418,6 +439,14 @@ pub fn to_title(world: &mut World, status: Option<String>) {
         world.write_message(AppExit::error());
     }
     world.insert_resource(TitleScreen { status });
+    enter(world, Screen::Title);
+}
+
+/// Queue a screen transition from an exclusive system. It is applied before
+/// the next `Update`, so the systems of the screen being left do not run again.
+fn enter(world: &mut World, screen: Screen) {
+    world.init_resource::<NextState<Screen>>();
+    world.resource_mut::<NextState<Screen>>().set(screen);
 }
 
 /// Despawn everything a match or a join put on screen. The CAD scenery, the
@@ -461,10 +490,26 @@ mod tests {
     use super::*;
     use clap::Parser;
 
+    /// The screen `poll` or `to_title` queued. A bare test world runs no
+    /// state transitions, so nothing applies it.
+    fn queued(world: &World) -> Option<Screen> {
+        match world.get_resource::<NextState<Screen>>() {
+            Some(NextState::Pending(screen)) => Some(*screen),
+            _ => None,
+        }
+    }
+    /// Apply what a transition would have done to the splash.
+    fn leave_loading(world: &mut World) {
+        world
+            .run_system_cached(despawn_splash)
+            .expect("despawn the splash");
+    }
+
     fn loading_world(prepared: bool) -> (World, mpsc::Sender<Update>) {
         let (sender, receiver) = mpsc::channel();
         let mut world = World::new();
         world.init_resource::<ButtonInput<KeyCode>>();
+        world.insert_resource(TitleScreen::default());
         world.insert_resource(CadSceneStatus {
             expected: 2,
             loaded: 0,
@@ -489,11 +534,11 @@ mod tests {
             .unwrap();
         poll(&mut world);
         assert_eq!(world.resource::<Loading>().progress, 0.3);
-        assert!(!world.contains_resource::<Ready>());
+        assert_ne!(queued(&world), Some(Screen::InMatch));
         drop(sender);
         poll(&mut world);
         assert!(!world.contains_resource::<Loading>());
-        assert!(!world.contains_resource::<Ready>());
+        assert_ne!(queued(&world), Some(Screen::InMatch));
         assert!(failure(&world).unwrap().contains("stopped unexpectedly"));
     }
 
@@ -504,13 +549,14 @@ mod tests {
         for _ in 0..4 {
             poll(&mut world);
         }
-        assert!(!world.contains_resource::<Ready>());
+        assert_ne!(queued(&world), Some(Screen::InMatch));
         world.resource_mut::<CadSceneStatus>().loaded = 2;
         for _ in 0..3 {
             poll(&mut world);
         }
-        assert!(world.contains_resource::<Ready>());
+        assert_eq!(queued(&world), Some(Screen::InMatch));
         assert!(!world.contains_resource::<Loading>());
+        leave_loading(&mut world);
         assert!(world.get_entity(splash).is_err());
     }
 
@@ -524,7 +570,7 @@ mod tests {
         for _ in 0..3 {
             poll(&mut world);
         }
-        assert!(world.contains_resource::<Ready>());
+        assert_eq!(queued(&world), Some(Screen::InMatch));
         crate::session::wait_for_session(&mut world.resource_mut::<Session>(), |session| {
             session.snapshot.tick > 0
         });
@@ -538,7 +584,7 @@ mod tests {
         world.resource_mut::<CadSceneStatus>().failed = Some("missing.glb".into());
         poll(&mut world);
         assert!(failure(&world).unwrap().contains("missing.glb"));
-        assert!(!world.contains_resource::<Ready>());
+        assert_ne!(queued(&world), Some(Screen::InMatch));
         assert!(!world.contains_resource::<Session>());
         assert!(
             world
@@ -562,7 +608,7 @@ mod tests {
             poll(&mut world);
             assert!(world.contains_resource::<TitleScreen>());
             assert!(!world.contains_resource::<Loading>());
-            assert!(!world.contains_resource::<Ready>());
+            assert_ne!(queued(&world), Some(Screen::InMatch));
             assert!(!world.contains_resource::<Session>());
             assert!(world.get_entity(splash).is_err());
             assert_eq!(failure(&world), None);
@@ -600,7 +646,7 @@ mod tests {
             Args::try_parse_from(["rm-simulator", "--cad-assets", "/nonexistent/field"]).unwrap();
         world.insert_resource(JoinRequest(args));
         start(&mut world);
-        assert!(!world.contains_resource::<TitleScreen>());
+        assert_eq!(failure(&world), None);
         assert!(world.contains_resource::<Loading>());
         let started = std::time::Instant::now();
         while world.contains_resource::<Loading>() {
@@ -609,13 +655,13 @@ mod tests {
             poll(&mut world);
         }
         assert!(failure(&world).unwrap().contains("Startup failed"));
-        assert!(!world.contains_resource::<Ready>());
+        assert_ne!(queued(&world), Some(Screen::InMatch));
     }
 
     #[test]
     fn leaving_a_match_tears_everything_down() {
         let mut world = World::new();
-        world.insert_resource(Ready);
+        world.insert_resource(TitleScreen::default());
         world.insert_resource(crate::session::test_session(false));
         world.insert_resource(Drive::new(1, false));
         world.insert_resource(Player::at(Vec3::ZERO, 0.0, 0.0));
@@ -638,7 +684,7 @@ mod tests {
         let light = world.spawn(ChildOf(rune)).id();
         world.insert_resource(LeaveRequest(Some("link lost".into())));
         leave_requested(&mut world);
-        assert!(!world.contains_resource::<Ready>());
+        assert_ne!(queued(&world), Some(Screen::InMatch));
         assert!(!world.contains_resource::<Session>());
         assert!(!world.contains_resource::<Drive>());
         assert!(!world.contains_resource::<LeaveRequest>());

@@ -28,7 +28,7 @@ impl Plugin for DebugPanelPlugin {
             respawn_menu
                 .after(crate::session::advance_world)
                 .before(crate::controls::mouse_capture)
-                .run_if(resource_exists::<crate::loading::Ready>),
+                .run_if(in_state(crate::loading::Screen::InMatch)),
         )
         .init_resource::<DebugOptions>()
         .add_plugins((
@@ -43,7 +43,7 @@ impl Plugin for DebugPanelPlugin {
                 .after(crate::hud::menu_input)
                 .after(crate::hud::panel_input)
                 .before(crate::debug::collision_view)
-                .run_if(resource_exists::<crate::loading::Ready>),
+                .run_if(in_state(crate::loading::Screen::InMatch)),
         );
     }
 }

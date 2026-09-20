@@ -480,7 +480,7 @@ pub fn sync_menus(
     player: Option<Res<crate::controls::Player>>,
     mut panels: Query<&mut Node, (With<Settings>, Without<Toolbar>)>,
     mut toolbar: Query<&mut Node, (With<Toolbar>, Without<Settings>)>,
-    ready: Option<Res<crate::loading::Ready>>,
+    screen: Option<Res<State<crate::loading::Screen>>>,
     checks: Query<
         (Entity, Has<Checked>, Has<ReticleSetting>),
         Or<(With<ReticleSetting>, With<MapSetting>)>,
@@ -498,7 +498,9 @@ pub fn sync_menus(
     for mut node in &mut toolbar {
         node.display = if ui.pause_menu
             || ui.quit_confirm
-            || ready.is_none()
+            || !screen
+                .as_deref()
+                .is_some_and(|screen| *screen.get() == crate::loading::Screen::InMatch)
             || (player.as_ref().is_some_and(|p| p.captured) && !ui.modal_open())
         {
             Display::None
@@ -1115,7 +1117,9 @@ mod escape_tests {
     #[test]
     fn homepage_escape_requires_explicit_quit_and_can_cancel() {
         let mut app = app();
-        app.init_resource::<crate::title::TitleScreen>();
+        // The page sub-state is what tells the HUD the title screen is up.
+        app.insert_resource(State::new(crate::title::Page::Main))
+            .init_resource::<NextState<crate::title::Page>>();
         escape(&mut app);
         assert!(app.world().resource::<HudState>().quit_confirm);
         assert!(app.world().resource::<Messages<AppExit>>().is_empty());

@@ -157,7 +157,7 @@ fn main() -> AppExit {
                 publish_scene,
             )
                 .chain()
-                .run_if(resource_exists::<loading::Ready>)
+                .run_if(in_state(loading::Screen::InMatch))
                 .before(SceneSyncSet)
                 .before(mouse_capture)
                 .before(update_hud)
@@ -178,7 +178,7 @@ fn main() -> AppExit {
                 network_hud::update,
                 hud::update_panel_rows,
             )
-                .run_if(resource_exists::<loading::Ready>),
+                .run_if(in_state(loading::Screen::InMatch)),
         )
         .add_systems(
             Update,
@@ -186,7 +186,7 @@ fn main() -> AppExit {
                 .after(collision_view)
                 .after(SceneSyncSet)
                 .run_if(resource_exists::<ScreenshotRequest>)
-                .run_if(resource_exists::<loading::Ready>),
+                .run_if(in_state(loading::Screen::InMatch)),
         );
     if let Some(path) = &args.screenshot {
         app.insert_resource(ScreenshotRequest::new(path.clone()));
@@ -203,10 +203,12 @@ fn main() -> AppExit {
             }
         }
     }
+    // A command line that already names a match starts on the splash.
     if args.auto_join() {
-        app.insert_resource(loading::JoinRequest(args.clone()));
+        app.insert_resource(loading::JoinRequest(args.clone()))
+            .insert_state(loading::Screen::Loading);
     } else {
-        app.insert_resource(title::TitleScreen::default());
+        app.insert_state(loading::Screen::Title);
     }
     app.insert_resource(title::BaseArgs(args));
     app.run()

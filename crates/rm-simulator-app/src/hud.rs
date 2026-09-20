@@ -125,7 +125,9 @@ impl HudState {
 pub fn panel_input(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Option<Res<ButtonInput<MouseButton>>>,
-    title: Option<Res<crate::title::TitleScreen>>,
+    // The page sub-state exists only while the title screen is up.
+    page: Option<Res<State<crate::title::Page>>>,
+    mut next_page: Option<ResMut<NextState<crate::title::Page>>>,
     mut title_state: Option<ResMut<crate::title::TitleState>>,
     mut ui: ResMut<HudState>,
 ) {
@@ -136,11 +138,12 @@ pub fn panel_input(
     if keys.just_pressed(KeyCode::Escape) {
         if ui.modal_open() {
             ui.dismiss();
-        } else if title.is_some() {
-            if !title_state
-                .as_mut()
-                .is_some_and(|state| state.escape_back())
-            {
+        } else if let Some(page) = page.as_deref().map(State::get).copied() {
+            let left = match (title_state.as_mut(), next_page.as_mut()) {
+                (Some(state), Some(next)) => state.escape_back(page, next),
+                _ => false,
+            };
+            if !left {
                 ui.quit_confirm = true;
             }
         } else {
@@ -149,7 +152,7 @@ pub fn panel_input(
         ui.closed_with_escape = true;
         return;
     }
-    if title.is_some() || ui.pause_menu {
+    if page.is_some() || ui.pause_menu {
         return;
     }
     if ui
@@ -1528,7 +1531,9 @@ mod title_settings_tests {
     fn typing_a_settings_binding_on_title_does_not_open_a_panel() {
         let mut app = App::new();
         app.init_resource::<HudState>()
-            .init_resource::<crate::title::TitleScreen>()
+            // The page sub-state stands in for the title screen being up.
+            .insert_resource(State::new(crate::title::Page::Main))
+            .init_resource::<NextState<crate::title::Page>>()
             .init_resource::<ButtonInput<KeyCode>>()
             .add_systems(Update, panel_input);
         app.world_mut()

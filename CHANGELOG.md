@@ -4,6 +4,11 @@
 
 ## Unreleased
 
+- The title screen, the loading splash and a running match are now a Bevy
+  `Screen` state instead of the presence of a resource, and the title screen's
+  pages are a sub-state of it. Leaving the title screen takes its pages with it,
+  so returning always opens the main menu. No visible behaviour changes.
+
 - The main menu is a vertical stack of Single Player, Multiplayer, Settings and
   Quit. The player name moved onto the Multiplayer page, where it is sent:
   Single Player no longer asks for one and uses `--name` or `pilot`.

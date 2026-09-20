@@ -394,7 +394,7 @@ pub(crate) fn execute(world: &mut World, command: ConsoleCommand) -> Result<Wait
         // Handled as immediate queries by the completion stage, including during loading.
         return Ok(Wait::Applied(0));
     }
-    if !world.contains_resource::<crate::loading::Ready>() {
+    if !crate::loading::in_match(world) {
         return Err(crate::loading::failure(world)
             .unwrap_or_else(|| "scene is still loading; use ready".into()));
     }
@@ -660,7 +660,7 @@ fn complete(world: &mut World) {
                     }
                 }
                 Wait::Ready => {
-                    if world.contains_resource::<crate::loading::Ready>()
+                    if crate::loading::in_match(world)
                         && world.resource::<CaptureReadiness>().ready()
                         && world.resource::<Session>().commands_confirmed()
                     {
@@ -691,7 +691,7 @@ fn state(world: &mut World) -> Value {
     };
     let player = world.get_resource::<Player>();
     json!({
-        "ready": world.contains_resource::<crate::loading::Ready>(),
+        "ready": crate::loading::in_match(world),
         "tick": session.snapshot.tick, "paused":session.paused,
         "presentation_time_ns": session.presentation_time_ns(),
         "role":session.role, "chassis_id":session.chassis_id,
@@ -871,7 +871,7 @@ mod tests {
             .insert_resource(session)
             .insert_resource(drive)
             .insert_resource(Player::at(Vec3::ZERO, 0.0, 0.0))
-            .insert_resource(crate::loading::Ready)
+            .insert_resource(State::new(crate::loading::Screen::InMatch))
             .init_resource::<crate::hud::HudState>()
             .init_resource::<crate::presentation::CaptureTarget>()
             .init_resource::<ButtonInput<KeyCode>>()
