@@ -17,6 +17,7 @@ pub use menus::{HudPlugin, menu_input, sync_menus};
 /// Markers for the settings shade and the toolbar, so match teardown can despawn
 /// both without naming the menus module.
 pub(crate) use menus::{Settings, Toolbar};
+use rm_simulator_server::protocol::{Command, MapMarkerKind};
 use rm_simulator_world::{Caliber, MatchPhase, Team};
 
 use crate::controls::{Drive, Gun, Player};
@@ -71,6 +72,10 @@ pub struct HudState {
     pub balance_control: u8,
     /// Escape consumed by a panel must not also quit or release capture.
     pub closed_with_escape: bool,
+    /// Marker a map click sends, picked with a letter key on the large map.
+    pub map_marker: MapMarkerKind,
+    /// The last marker this client sent and where, drawn on the map.
+    pub last_marker: Option<(MapMarkerKind, [f64; 2])>,
 }
 impl Default for HudState {
     fn default() -> Self {
@@ -93,6 +98,8 @@ impl Default for HudState {
             sensitivity: 0.0025,
             balance_control: 100,
             closed_with_escape: false,
+            map_marker: MapMarkerKind::Attack,
+            last_marker: None,
         }
     }
 }
@@ -276,6 +283,17 @@ enum MapItem {
     Robot(u32),
     Outpost(usize),
     Rune(usize),
+    Marker,
+}
+const MARKER: Color = Color::srgb(1.0, 0.82, 0.25);
+/// Up to three characters for a marker on the map.
+fn marker_glyph(kind: MapMarkerKind) -> String {
+    match kind {
+        MapMarkerKind::Attack => "ATK".into(),
+        MapMarkerKind::Defend => "DEF".into(),
+        MapMarkerKind::Alert => "!".into(),
+        MapMarkerKind::Custom(_) => kind.label(),
+    }
 }
 
 /// Root node of the whole HUD overlay; every HUD widget is spawned under it.
@@ -459,6 +477,7 @@ pub fn spawn_hud(commands: &mut Commands) {
     commands
         .spawn((
             FieldMap,
+            bevy::ui::RelativeCursorPosition::default(),
             ChildOf(root),
             GlobalZIndex(3),
             ClassList::new("field-map"),
@@ -953,10 +972,17 @@ pub fn update_hud(
                     value.push_str(&robot_status(state, round_ticks));
                 }
                 if let Some(drive) = &drive {
-                    value.push_str(&format!(
-                        "\n{speed:.1} m/s    {}",
-                        if drive.spinning { "SPIN" } else { "FOLLOW" }
-                    ));
+                    let tether = session
+                        .own_chassis()
+                        .and_then(|c| Some((c.config.tether?, c.pose.translation_m)));
+                    let mode = match tether {
+                        Some((tether, hook)) => {
+                            format!("TETHER {:.1} m", tether.slack_m(hook).max(0.))
+                        }
+                        None if drive.spinning => "SPIN".into(),
+                        None => "FOLLOW".into(),
+                    };
+                    value.push_str(&format!("\n{speed:.1} m/s    {mode}"));
                 }
                 if let Some(r) = session.referee() {
                     if session.role != rm_simulator_server::protocol::Role::Referee {
@@ -1046,9 +1072,16 @@ pub fn update_hud(
             }
             Hud::MapLabel => {
                 if ui.large_map {
-                    "TEAM POSITIONS   |   Green: you   O: outpost   R: rune".into()
+                    format!(
+                        "CLICK TO MARK: {}   |   A attack   B defend   I alert   other letters custom   |   Green: you   O: outpost   R: rune",
+                        ui.map_marker.label().to_uppercase()
+                    )
                 } else {
-                    "FIELD / TEAM POSITIONS".into()
+                    format!(
+                        "FIELD / TEAM POSITIONS   |   {} + click: mark {}",
+                        ui.controls.label(InputAction::FreeCursor),
+                        ui.map_marker.label()
+                    )
                 }
             }
         };
@@ -1182,6 +1215,9 @@ pub fn update_map(
             "R".into(),
         ));
     }
+    if let Some((kind, [x, y])) = ui.last_marker {
+        items.push((MapItem::Marker, [x, y, 0.], MARKER, marker_glyph(kind)));
+    }
     for (entity, dot, _, _) in &mut dots {
         if !items.iter().any(|(id, _, _, _)| *id == dot.0) {
             commands.entity(entity).despawn();
@@ -1225,9 +1261,118 @@ pub fn update_map(
     }
 }
 
+/// Whether the cursor is over the visible field map.
+pub(crate) fn cursor_on_map(map: &(&bevy::ui::RelativeCursorPosition, &Node)) -> bool {
+    map.0.cursor_over && map.1.display != Display::None
+}
+
+/// Map clicks: on the large map a letter key picks the marker (A attack,
+/// B defend, I alert, any other letter a custom one, except the keys bound to
+/// the map and settings panels), and a left click on either map sends it to
+/// the host as a [`Command::MapMarker`] at the point under the cursor. The
+/// small map takes clicks only while the mouse is free, so aiming never marks.
+#[allow(clippy::too_many_arguments)]
+pub fn click_map(
+    mut ui: ResMut<HudState>,
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Option<Res<ButtonInput<MouseButton>>>,
+    player: Res<Player>,
+    map: Single<(&bevy::ui::RelativeCursorPosition, &Node), With<FieldMap>>,
+    artwork: Option<Res<crate::minimap::Minimap>>,
+    mut session: ResMut<Session>,
+) {
+    if ui.large_map && !ui.consumed {
+        let reserved = |key: KeyCode| {
+            [InputAction::Map, InputAction::Settings]
+                .into_iter()
+                .any(|action| {
+                    ui.controls
+                        .slots(action)
+                        .contains(&Some(crate::bindings::Binding::Key(key)))
+                })
+        };
+        if let Some(kind) = keys
+            .get_just_pressed()
+            .filter(|key| !reserved(**key))
+            .find_map(|key| key_letter(*key).and_then(MapMarkerKind::from_letter))
+        {
+            ui.map_marker = kind;
+        }
+    }
+    let clicked = buttons
+        .as_ref()
+        .is_some_and(|b| b.just_pressed(MouseButton::Left));
+    let open = ui.large_map || !ui.blocks_input();
+    if !clicked || !open || player.captured || ui.consumed || !cursor_on_map(&map) {
+        return;
+    }
+    let Some(normalized) = map.0.normalized else {
+        return;
+    };
+    let bounds = artwork
+        .as_ref()
+        .map_or([-15., -9., 15., 9.], |map| map.bounds_m);
+    let position_m = crate::minimap::point(normalized, bounds);
+    let kind = ui.map_marker;
+    ui.last_marker = Some((kind, position_m));
+    session.apply(Command::MapMarker { kind, position_m });
+}
+/// The letter a key types on a US layout, for picking a map marker.
+fn key_letter(key: KeyCode) -> Option<char> {
+    let name = format!("{key:?}");
+    let letter = name.strip_prefix("Key")?;
+    let mut chars = letter.chars();
+    let first = chars.next()?;
+    (chars.next().is_none() && first.is_ascii_uppercase()).then_some(first)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_map_click_sends_a_marker_the_host_records_without_capturing_the_mouse() {
+        let session = crate::session::test_session(true);
+        session.ready();
+        let mut app = App::new();
+        app.insert_resource(session)
+            .insert_resource(Player::at(Vec3::ZERO, 0., 0.))
+            .init_resource::<HudState>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .add_systems(Update, click_map);
+        app.world_mut().spawn((
+            FieldMap,
+            Node::default(),
+            bevy::ui::RelativeCursorPosition {
+                cursor_over: true,
+                normalized: Some(Vec2::new(-0.5, 0.0)),
+            },
+        ));
+        app.world_mut().resource_mut::<HudState>().large_map = true;
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyB);
+        app.update();
+        assert_eq!(
+            app.world().resource::<HudState>().map_marker,
+            MapMarkerKind::Defend
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+        let (kind, position_m) = app.world().resource::<HudState>().last_marker.unwrap();
+        assert_eq!(kind, MapMarkerKind::Defend);
+        // The left edge of the drawing is red's end of the field.
+        assert!(position_m[0] > 10.0 && position_m[1].abs() < 1e-9);
+        assert!(!app.world().resource::<Player>().captured);
+        let mut session = app.world_mut().resource_mut::<crate::session::Session>();
+        crate::session::wait_for_session(&mut session, crate::session::Session::commands_confirmed);
+        let markers = crate::session::host_map_markers(&session);
+        assert_eq!(markers.len(), 1, "{:?}", session.notices);
+        assert_eq!(markers[0].kind, MapMarkerKind::Defend);
+        assert_eq!(markers[0].position_m, position_m);
+    }
     #[test]
     fn hud_systems_render_practice_and_switch_panels_without_query_conflicts() {
         let mut app = App::new();

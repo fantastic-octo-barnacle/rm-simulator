@@ -1297,6 +1297,15 @@ pub(crate) fn test_cad_assets() -> CadAssets {
     }
 }
 
+/// The map markers the embedded host has recorded, in arrival order.
+#[cfg(test)]
+pub(crate) fn host_map_markers(
+    session: &Session,
+) -> Vec<rm_simulator_server::host::MapMarkerRecord> {
+    let host = session.host.as_ref().expect("embedded session");
+    host.server.handle().map_markers().unwrap()
+}
+
 #[cfg(test)]
 pub(crate) fn wait_for_session(session: &mut Session, done: impl Fn(&Session) -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

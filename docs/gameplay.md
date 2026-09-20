@@ -61,7 +61,8 @@ ammunition, pick its own performance type and fire.
 | Outpost and base HP | Set through the engine; zero outpost HP counts as a destruction. |
 | Rune opportunities and buff | Set a team's opportunity count; override or clear its rune buff. |
 
-The selectable Drone is a fixed-altitude flight prototype with a 17 mm launcher.
+The selectable Drone is a fixed-altitude flight prototype with a 17 mm launcher,
+tethered to its section 4.5 Aerial Safety Rope.
 The live referee starts with `enforce_air_support: false`, so the prototype
 can fire during a round without unsupported activation controls. Heat, caliber,
 allowance policy and firing cadence still apply. The standalone game defaults

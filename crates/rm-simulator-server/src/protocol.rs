@@ -91,7 +91,9 @@ use serde::{Deserialize, Serialize};
 /// Version 48 adds planar Drone flight and adjustable balance stabilization.
 /// RMI5/RMO8 carry the stabilization percentage.
 /// Version 49 adds the live prototype air-support policy and armed Drone preset.
-pub const PROTOCOL_VERSION: u32 = 49;
+/// Version 50 adds the Drone's Aerial Safety Rope to the chassis configuration
+/// and the `MapMarker` command.
+pub const PROTOCOL_VERSION: u32 = 50;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///
@@ -681,6 +683,89 @@ pub fn describe_seat(
     }
 }
 
+/// Which icon a map marker shows, after the July 2026 student client manual,
+/// panel 5 (M-key large map): A, B and I mark attack, defend and alert, and
+/// any other letter key sends a custom letter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MapMarkerKind {
+    /// Attack icon, the A key.
+    Attack,
+    /// Defend icon, the B key.
+    Defend,
+    /// Alert icon, the I key.
+    Alert,
+    /// A custom letter, as an uppercase ASCII byte other than A, B and I.
+    Custom(u8),
+}
+impl MapMarkerKind {
+    /// The marker a letter key selects: A, B and I pick the three icons and any
+    /// other ASCII letter a custom marker. Anything but a letter selects none.
+    ///
+    /// ```
+    /// use rm_simulator_server::protocol::MapMarkerKind;
+    ///
+    /// assert_eq!(MapMarkerKind::from_letter('a'), Some(MapMarkerKind::Attack));
+    /// assert_eq!(MapMarkerKind::from_letter('Q'), Some(MapMarkerKind::Custom(b'Q')));
+    /// assert_eq!(MapMarkerKind::from_letter('3'), None);
+    /// ```
+    pub fn from_letter(letter: char) -> Option<Self> {
+        if !letter.is_ascii_alphabetic() {
+            return None;
+        }
+        Some(match letter.to_ascii_uppercase() {
+            'A' => Self::Attack,
+            'B' => Self::Defend,
+            'I' => Self::Alert,
+            other => Self::Custom(other as u8),
+        })
+    }
+    /// Whether a received marker is one a client could have sent.
+    pub fn is_valid(self) -> bool {
+        match self {
+            Self::Custom(letter) => {
+                letter.is_ascii_uppercase() && !matches!(letter, b'A' | b'B' | b'I')
+            }
+            _ => true,
+        }
+    }
+    /// Short label for the HUD: the icon's name or the custom letter.
+    pub fn label(self) -> String {
+        match self {
+            Self::Attack => "Attack".into(),
+            Self::Defend => "Defend".into(),
+            Self::Alert => "Alert".into(),
+            Self::Custom(letter) => char::from(letter).to_string(),
+        }
+    }
+}
+
+/// Largest marker coordinates the host accepts, in metres: the 28 × 15 m
+/// field (Figure 4-5) with a metre of margin for its perimeter.
+pub const MAP_MARKER_REACH_M: [f64; 2] = [15.0, 8.5];
+/// Why a map marker is refused, or `Ok` for one a client could have sent: a
+/// valid kind at a finite point within [`MAP_MARKER_REACH_M`].
+///
+/// ```
+/// use rm_simulator_server::protocol::{MapMarkerKind, check_map_marker};
+///
+/// assert!(check_map_marker(MapMarkerKind::Alert, [3.0, -2.0]).is_ok());
+/// assert!(check_map_marker(MapMarkerKind::Alert, [40.0, 0.0]).is_err());
+/// assert!(check_map_marker(MapMarkerKind::Custom(b'A'), [0.0, 0.0]).is_err());
+/// ```
+pub fn check_map_marker(kind: MapMarkerKind, position_m: [f64; 2]) -> Result<(), &'static str> {
+    if !kind.is_valid() {
+        return Err("unknown map marker");
+    }
+    if position_m
+        .iter()
+        .zip(MAP_MARKER_REACH_M)
+        .any(|(v, reach)| !v.is_finite() || v.abs() > reach)
+    {
+        return Err("map marker is off the field");
+    }
+    Ok(())
+}
+
 /// Anything that changes the simulation.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Command {
@@ -807,6 +892,15 @@ pub enum Command {
         /// Ticks to advance, from 1 to 60,000. Each tick is one fixed 128 Hz
         /// physics tick of world time.
         ticks: u64,
+    },
+    /// A point marked on the minimap or large map. The host records it for
+    /// its team and leaves the simulation unchanged; no robot acts on it yet.
+    MapMarker {
+        /// Icon or custom letter chosen before the click.
+        kind: MapMarkerKind,
+        /// Marked point on the field floor in world FLU metres (x, y). The
+        /// host refuses a non-finite point or one off the field.
+        position_m: [f64; 2],
     },
 }
 impl Command {

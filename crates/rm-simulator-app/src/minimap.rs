@@ -82,6 +82,17 @@ fn read(root: &Path) -> anyhow::Result<(Image, [f64; 4])> {
     Ok((image, metadata.bounds_flu_m))
 }
 
+/// The world FLU point (x, y) in metres under a cursor on the map, from Bevy's
+/// centre-origin `RelativeCursorPosition` (-0.5 at the left and top edges,
+/// 0.5 at the right and bottom). The inverse of [`position`] without its clamp.
+pub fn point(normalized: Vec2, bounds_m: [f64; 4]) -> [f64; 2] {
+    let [xmin, ymin, xmax, ymax] = bounds_m;
+    [
+        xmax - (f64::from(normalized.x) + 0.5) * (xmax - xmin),
+        ymin + (f64::from(normalized.y) + 0.5) * (ymax - ymin),
+    ]
+}
+
 /// A world FLU position in metres as percentages into the artwork, measured
 /// from its left and top edges. The image is stored x-left-y-down, so red's +x
 /// half sits on the left. Both values are clamped to 1..99 to keep a marker
@@ -97,6 +108,19 @@ pub fn position(position_m: [f64; 3], bounds_m: [f64; 4]) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_click_on_the_map_returns_the_point_drawn_there() {
+        let bounds = [-14.755, -8.275, 14.795, 8.275];
+        for target in [[12.6, -5.8], [-3.0, 4.0], [0.0, 0.0]] {
+            let (left, top) = position([target[0], target[1], 0.0], bounds);
+            let normalized = Vec2::new(left / 100. - 0.5, top / 100. - 0.5);
+            let [x, y] = point(normalized, bounds);
+            assert!((x - target[0]).abs() < 1e-5 && (y - target[1]).abs() < 1e-5);
+        }
+        // Red's +x half is on the left of the artwork, and +y is down.
+        assert!(point(Vec2::new(-0.5, 0.0), bounds)[0] > 14.0);
+        assert!(point(Vec2::new(0.0, 0.5), bounds)[1] > 8.0);
+    }
     #[test]
     fn artwork_requires_matching_image_and_both_package_manifests() {
         let root = std::env::temp_dir().join(format!("rm-minimap-test-{}", std::process::id()));

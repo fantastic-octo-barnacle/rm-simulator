@@ -173,6 +173,7 @@ fn main() -> AppExit {
                     .after(publish_scene)
                     .before(SceneSyncSet),
                 update_hud,
+                hud::click_map.before(mouse_capture),
                 hud::update_map,
                 network_hud::update,
                 hud::update_panel_rows,

@@ -1090,6 +1090,10 @@ impl Simulation {
                 self.step_observed(*ticks, observer)
                     .map_err(|e| e.to_string())
             }
+            // Markers go to the host's record; the world is unchanged.
+            Command::MapMarker { kind, position_m } => {
+                crate::protocol::check_map_marker(*kind, *position_m).map_err(Into::into)
+            }
         }
     }
 }
@@ -1363,6 +1367,15 @@ mod tests {
             terrain: None,
         });
         let drone = sim.spawn_robot(Team::Blue, Robot::Drone).unwrap();
+        // It starts over blue's Landing Pad at flight height, on blue's rope.
+        let spawned = sim.snapshot().chassis[0].clone();
+        let (pad, _) = crate::layout::drone_slot(Team::Blue, 0);
+        assert_eq!(spawned.pose.translation_m, pad);
+        assert_eq!(
+            spawned.config.tether,
+            Some(crate::layout::drone_tether(Team::Blue))
+        );
+        assert!(spawned.config.tether.unwrap().slack_m(pad) > 0.0);
         sim.apply(&Command::Chassis {
             chassis: drone,
             command: rm_simulator_world::ChassisCommand {

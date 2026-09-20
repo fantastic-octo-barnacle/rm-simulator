@@ -522,7 +522,9 @@ fn prototype_body(
             Vec3::Z,
             accent,
         );
-        p.cylinder(0.025, 0.085, Vec3::new(0.0, -0.082, 0.0), Vec3::Y, metal);
+        // Gimbal hanger over the pivot, 0.20 m ahead of the body centre
+        // (`ChassisConfig::drone`'s `turret_center_m`).
+        p.cylinder(0.025, 0.085, Vec3::new(0.0, -0.082, -0.20), Vec3::Y, metal);
     } else if chassis.model == RobotModel::Balance {
         // Narrow electronics pod with coaxial hip and remote knee drives.
         for y in [-0.07, 0.065] {

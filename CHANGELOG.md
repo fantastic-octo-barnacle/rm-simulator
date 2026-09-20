@@ -4,6 +4,20 @@
 
 ## Unreleased
 
+- Drone flies on its own keys: W/S forward and back, A/D sideways in the body
+  frame, Q/E rotate the body, and the mouse aims the gimbal independently. It
+  spawns 2.0 m above its team's landing pad and is held by the section 4.5
+  Aerial Safety Rope: a 2.4 m tether slides along a rope from the team's edge
+  to the centre line, braking the drone at its reach and pulling it back
+  inside. The HUD robot card shows the remaining tether slack. The Drone's
+  gimbal now hangs 0.20 m ahead of the body centre, so forward shots aimed
+  upward no longer hit its own frame.
+- The minimap is clickable. Click the large map (M), or hold Left Alt to free
+  the cursor and click the small one, to place a marker; A/B/I choose attack,
+  defend or alert and other letters a custom marker, as in the competitor
+  client manual. Markers go to the host, which records them for team members
+  and does not act on them yet (protocol 50).
+
 - Improve menu navigation: settings tabs and footer stay visible, the active
   tab is underlined, and switching tabs resets scrolling. Multiplayer Enter
   submits the focused form, passwords are masked with individual Show toggles,

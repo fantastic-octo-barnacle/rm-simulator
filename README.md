@@ -89,7 +89,8 @@ The essentials, for driving and for match control:
 | Left button (held, once captured) | Fire from the barrel (driving) or just ahead of and below the eye (flying) |
 | Right mouse (hold) | Auto Aim + Auto Fire; separately rebindable actions in Controls |
 | G | Switch the auto-aim target between armor and rune, when Controls sets the auto-aim target to Manual |
-| W A S D | Drive forward/back and strafe left/right relative to the aim; the chassis heading follows the aim (driving) or move on the horizontal plane (flying) |
+| W A S D | Drive forward/back and strafe left/right relative to the aim; the chassis heading follows the aim (driving), fly forward/back and sideways in the body frame (Drone) or move on the horizontal plane (free camera) |
+| Q / E | Rotate the Drone's body left/right; the mouse aims its gimbal separately |
 | Left Ctrl | Fast: 5 m/s drive command, 8 m/s flight |
 | R | Toggle chassis spin (6 rad/s) while driving |
 | V | Toggle first- and third-person view while driving |
@@ -102,7 +103,8 @@ The essentials, for driving and for match control:
 | F | Activate the rune for your team when it has an opportunity (local world or referee) |
 | Tab (hold) | Show team robot status |
 | P | Toggle settings; 1 toggles reticle, 2 toggles minimap, - / = adjusts mouse sensitivity |
-| M | Toggle the large team map |
+| M | Toggle the large team map; click it to place a marker, A / B / I pick attack / defend / alert and other letters a custom marker |
+| Left Alt (hold) | Free the cursor, for example to click a marker on the small map |
 | F12 (hold) | Show controls |
 | Escape | Close the current panel or open Pause; on the robot page, return to the page its choice came from; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |
 
@@ -460,8 +462,9 @@ does not acknowledge its execution by the host.
 | 47 | Adds robot/chassis selection, Engineer and Sentry pilots, balance assist, jump inputs (`RMI4`) and the jump latch in owner anchors (`RMO7`). |
 | 48 | Adds fixed-altitude Drone and adjustable balance stabilization (`RMI5` inputs, `RMO8` anchors). |
 | 49 | Arms the Drone and carries the live prototype air-support policy. |
+| 50 | Adds the Drone's Aerial Safety Rope to the chassis configuration and the `MapMarker` command. |
 
-The current protocol version is 49, defined by `PROTOCOL_VERSION` in
+The current protocol version is 50, defined by `PROTOCOL_VERSION` in
 `crates/rm-simulator-server/src/protocol.rs`. GNS sends redundant controls
 and retried shot intents unreliably; scheduling receipts and terminal shot results
 remain reliable. There is no shooter-view fire path or input-acknowledgement
@@ -745,9 +748,11 @@ for the omni Infantry 3, or choose robot then chassis on the title screen.
 `--chassis balance` selects the two-wheel Infantry mock with balance assist and
 Space to jump (no strafing). `--robot sentry` drives the Sentry like Infantry;
 `--robot engineer` drives the Engineer with a fixed arm and no launcher.
-`--robot drone` flies a guarded quadcopter on a horizontal plane 1.6 m above
-its spawn ground: WASD moves, the mouse aims, left click fires its underslung
-17 mm launcher, and V switches view. It has no altitude controls. Balance's serial legs use a four-bar knee-drive
+`--robot drone` flies a guarded quadcopter on a horizontal plane 2.0 m above
+its team's landing pad: W/S and A/D fly in the body frame, Q/E rotate the body,
+the mouse aims the gimbal, left click fires its underslung 17 mm launcher, and
+V switches view. It has no altitude controls, and a 2.4 m tether on the
+section 4.5 Aerial Safety Rope limits where it can go. Balance's serial legs use a four-bar knee-drive
 linkage; **P > Controls > Balance stabilization** adjusts the reduced-model
 LQR assist from 0% (off) to 100% (full). The setting is remembered. The Sentry
 radar follows its gimbal above and behind the camera.

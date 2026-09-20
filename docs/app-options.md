@@ -104,9 +104,16 @@ and damping, so low settings can let the robot tip. The slider affects only
 Balance, and travels to the host through normal pilot inputs. Reset all settings
 restores 100%. Space still requests one jump per grounded press.
 
-Drone offers the Flight chassis. WASD moves in its horizontal spawn plane,
-mouse look steers, and V changes viewpoint. The initial plane is 1.6 m above
-the spawn ground; Space/Shift do not change altitude. Left click fires an
+Drone offers the Flight chassis. Flying and aiming are separate: W/S fly
+forward and back and A/D sideways in the body frame, Q/E rotate the body
+(1.5 rad/s, 3 rad/s with Left Ctrl), and the mouse aims the gimbal, which can
+pitch down to about 69°. Flight is 2 m/s, 4 m/s with Left Ctrl. V changes
+viewpoint. The drone starts 2.0 m above its team's landing pad; Space/Shift do
+not change altitude. A 2.4 m tether on the Aerial Safety Rope (rulebook
+section 4.5) runs from the team's edge to the centre line along the pad's
+side; the drone brakes at its reach and is pulled back inside, and the HUD
+robot card shows the remaining slack. The rope height is not in the rulebook;
+the simulator assumes 3.6 m, which leaves about 1.8 m of sideways reach. Left click fires an
 underslung 17 mm gimbal launcher, including when aiming downward. Live matches
 do not require activating air support for this prototype; normal cadence, heat
 and configured ammunition checks still apply.
@@ -178,7 +185,14 @@ Singleplayer pauses until you resume; multiplayer keeps running, including when
 you host. Settings opened from Pause return to that menu. A match that was
 already paused stays paused when you resume. On the title screen, Escape opens
 a quit confirmation with Cancel and Quit.
-Clicking the minimap also opens its expanded view. Settings, the expanded map, and toolbar-opened panels stop driving,
+Clicking the large map (M) places a marker at the clicked point; hold Left
+Alt to free the cursor and click the small map the same way. A, B and I select
+the attack, defend and alert markers while the large map is open, and other
+letters a custom lettered marker, following pages 24–25 of the competitor client
+manual. The newest marker is drawn on the map and sent to the host, which
+records it for team members; spectators and referees cannot mark. Markers
+are not shown to teammates or acted on yet.
+Clicking the small minimap without Left Alt still opens its expanded view. Settings, the expanded map, and toolbar-opened panels stop driving,
 aiming and firing and release the cursor. Hold Tab for both teams' players and HP;
 hold F12 for controls. Scroll the wheel to see longer lists while holding the key.
 These hold-to-peek panels do not pause gameplay. Close a panel, then click the field
@@ -212,7 +226,8 @@ an NVIDIA laptop GPU; Mac performance still needs separate measurements.
 | G | Switch the auto-aim target between armor and rune, when Controls sets the auto-aim target to Manual |
 | Mouse | Look |
 | Left button (held, once captured) | Fire from the barrel (driving) or just ahead of and below the eye (flying) |
-| W A S D | Drive forward/back and strafe left/right relative to the aim; the chassis heading follows the aim (driving) or move on the horizontal plane (flying) |
+| W A S D | Drive forward/back and strafe left/right relative to the aim; the chassis heading follows the aim (driving), fly forward/back and sideways in the body frame (Drone) or move on the horizontal plane (free camera) |
+| Q / E | Rotate the Drone's body left/right; the mouse aims its gimbal separately |
 | Left Ctrl | Fast: 5 m/s drive command, 8 m/s flight |
 | R | Toggle chassis spin (6 rad/s) while driving |
 | V | Toggle first- and third-person view while driving |
@@ -226,7 +241,8 @@ an NVIDIA laptop GPU; Mac performance still needs separate measurements.
 | F | Activate the rune for your team when it has an opportunity (local world or referee) |
 | Tab (hold) | Show team robot status |
 | P | Toggle settings; 1 toggles reticle, 2 toggles minimap, - / = adjusts mouse sensitivity |
-| M | Toggle the large team map |
+| M | Toggle the large team map; click it to place a marker, A / B / I pick attack / defend / alert and other letters a custom marker |
+| Left Alt (hold) | Free the cursor, for example to click a marker on the small map |
 | F12 (hold) | Show controls |
 | Toolbar | Mouse-driven Settings, Map, Team, Help, Close and Leave match; appears with the cursor released |
 | Escape | Close the current panel or open Pause; on the chassis page, return to robots; on the robot page, return to the page its choice came from; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |

@@ -121,7 +121,7 @@ The title flow selects the robot/team first, then a compatible chassis.
 `--chassis auto|omni|balance|mecanum|flight` exposes the same selection to the CLI.
 Infantry 3/4 offers omni or balance; Sentry uses omni; Hero and Engineer use
 mecanum; Drone uses Flight. The host validates the pairing. Hello, snapshots and owner anchors
-carry the selection and jump state in protocol 49 (`RMI5` input batches,
+carry the selection and jump state in protocol 50 (`RMI5` input batches,
 `RMO8` owner anchors); use matching builds.
 
 All new models are authored boxes, cylinders and wheel details. The supplied
@@ -175,11 +175,26 @@ three-blade propellers, landing skids, and twin guard hoops connected by a
 crossed-wire side mesh around each rotor. Its 0.8 m square collision envelope
 is approximate. Gravity, pitch/roll and vertical translation are locked for
 this planar prototype; velocity feedback accelerates horizontally up to
-4 m/s². The plane starts 1.6 m above the spawn ground and does not follow
-terrain. Walls still collide with the body. There is no rotor aerodynamics,
+4 m/s². The plane starts 2.0 m above the team's landing pad (read off
+Figure 4-4 and the minimap artwork) and does not follow terrain. Wish velocity
+is in the body frame: Q/E yaw the body and the gimbal aims separately.
+
+The section 4.5 Aerial Safety Rope is modelled as `ChassisConfig::tether`: the
+2.4 m tether's hook slides along a straight rope from the team's field edge to
+the centre line (Snap Ring about 14 m from the edge) over the landing pad's
+side of the field. The rope height is not given by the rulebook; 3.6 m is
+assumed. Inside the reach the drone's outward wish is limited to the speed it
+can shed at its 4 m/s² acceleration; past it, a horizontal spring-damper
+pulls it back, capped at 20 m/s². The tether travels in the exact chassis
+configuration, so restores and prediction hold it. The rope's elastic force
+under 5 N and jamming after repeated turns are not modelled. Walls still collide with the body. There is no rotor aerodynamics,
 altitude control or new drone-rule enforcement. A small two-axis 17 mm launcher
-is mounted 140 mm below the body centre, clear of the rotor plane, with the
-normal aim camera and muzzle. The live referee disables the air-support gate
+is mounted 140 mm below and 200 mm ahead of the body centre, clear of the rotor
+plane, with the normal aim camera and muzzle. Mounted ahead, a forward shot
+clears the 0.8 m frame at every pitch the flight controls allow; shots aimed
+sideways or backward and upward still meet the frame, as on a real underslung
+gimbal. The flying body keeps all its mass centred so its roll and pitch locks
+hold. The live referee disables the air-support gate
 for this prototype because its activation controls are not integrated; heat,
 ammunition policy and host firing cadence remain authoritative.
 

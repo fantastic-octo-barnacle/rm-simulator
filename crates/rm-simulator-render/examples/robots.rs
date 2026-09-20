@@ -61,6 +61,12 @@ fn robot(model: RobotModel, y: f64, effect: &str) -> ChassisAppearance {
         RobotModel::Balance => (0.18, 0.24, 0.09, 0.10, 0.045, 0.20, [0.06; 3]),
         _ => (0.26, 0.26, 0.05, 0.0765, 0.04, 0.20, [0.06; 3]),
     };
+    // The Drone's underslung gimbal hangs ahead of its body centre.
+    let turret_x = if model == RobotModel::Drone {
+        0.20
+    } else {
+        0.0
+    };
     let z = if model == RobotModel::Drone {
         0.4
     } else {
@@ -142,8 +148,8 @@ fn robot(model: RobotModel, y: f64, effect: &str) -> ChassisAppearance {
         })
         .collect(),
         armor,
-        yaw_stage: pose(0.0, y, z + pivot, 0.0),
-        turret: pose(0.0, y, z + pivot, 0.0),
+        yaw_stage: pose(turret_x, y, z + pivot, 0.0),
+        turret: pose(turret_x, y, z + pivot, 0.0),
         turret_half_m: turret,
         pivot_above_body_m: (pivot - hz) as f32,
         barrel_length_m: 0.35,
