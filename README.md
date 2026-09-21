@@ -124,10 +124,11 @@ password-protected lobby on the right. Select a listing, enter its password if n
 Every way in then opens the seat page, a lobby board with five spectator slots
 across the top, the blue line-up on the left and the red on the right, and three
 referee slots underneath. Each team column holds one Hero, one Engineer,
-Infantry 3, 4 and 5, one Sentry and one Drone. Continue to chassis selection,
-then Start match or Join lobby. Infantry offers omni or balance; Hero and
-Engineer use mecanum, and Sentry uses omni. Spectators and referees skip chassis
-selection.
+Infantry 3, 4 and 5, one Sentry and one Drone. Select the chassis in the adjacent loadout panel,
+then Enter field or Join lobby. Infantry offers omni or balance; Hero and
+Engineer use mecanum, and Sentry uses omni. Spectators and referees hide the loadout controls. Expand Advanced weapon
+settings in the same lobby to configure solo practice or a LAN host. Solo uses
+the same embedded host and client as LAN hosting, without a network listener.
 You can also enter a direct address. The page and lobby list scroll with the
 mouse wheel, trackpad or scrollbar; narrow windows stack the two columns. Public is greyed out pending public connectivity support.
 The firewall tip recommends allowing the app on private networks. Lobby names

@@ -89,7 +89,7 @@ Settings keeps its tabs and Reset / Close buttons visible while the selected
 page scrolls. The active tab is underlined; switching tabs starts at the top of
 that page.
 
-## Seat and chassis pages
+## Shared setup lobby
 
 Single Player, Join lobby / address and Create lobby all open the seat page
 before the match starts. It is laid out as a lobby board, the same one for
@@ -97,12 +97,15 @@ single player and multiplayer: a row of five SPECTATORS slots across the top,
 the blue column on the left and the red column on the right, and a row of three
 REFEREE slots underneath. Each team column is the competition line-up, one slot
 each for Hero, Engineer, Infantry 3, Infantry 4, Infantry 5, Sentry and Drone.
-Back and Continue sit below the board, apart from it, so a seat is never
-mistaken for a page button.
+The loadout panel sits alongside the board and includes a top-down drivetrain
+schematic. Narrow windows stack the panels. Back and Enter field / Join lobby
+sit below the complete form.
 
-Continue (or Enter) opens chassis selection for pilots; spectators and referees
-join directly. Choose a supported chassis, then Start match or Join lobby.
-Escape returns to seat selection without losing the pending lobby. The robot,
+Choose a supported chassis inline, then Enter field or Join lobby (or Enter).
+Spectators and referees hide the loadout panel. Advanced weapon settings are
+available only for solo practice and LAN hosting; remote joins use their host's
+settings. Solo runs the same embedded host and client without opening a network
+listener. Escape returns to the originating menu and preserves the loadout. The robot,
 chassis and spectator slot are remembered with the other fields; the referee
 seat is not. Slots do not yet show who holds them, and two pilots may drive the
 same robot: a host has no seat list to show before the connection is made. A
@@ -259,4 +262,4 @@ an NVIDIA laptop GPU; Mac performance still needs separate measurements.
 | Left Alt (hold) | Free the cursor, for example to click a marker on the small map |
 | F12 (hold) | Show controls |
 | Toolbar | Mouse-driven Settings, Map, Team, Help, Close and Leave match; appears with the cursor released |
-| Escape | Close the current panel or open Pause; on the chassis page, return to the seat board; on the seat page, return to the page its choice came from; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |
+| Escape | Close the current panel or open Pause; on the seat page, return to the page its choice came from; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |

@@ -4,6 +4,11 @@
 
 ## Unreleased
 
+- Solo practice, LAN hosting and remote joins share one setup lobby with
+  inline chassis selection, drivetrain schematics and a responsive loadout
+  panel. Host weapon settings are expandable inside solo and LAN setup;
+  one confirmation enters the field.
+
 - The robot page is now a seat board, the same one in single player and
   multiplayer: five spectator slots across the top, the blue line-up on the
   left and the red on the right, and three referee slots underneath, with Back
