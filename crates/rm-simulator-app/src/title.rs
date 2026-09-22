@@ -538,41 +538,51 @@ struct TitleScroll;
 #[derive(Component)]
 struct MenuScrollbar(Entity);
 
-#[derive(Resource)]
-struct TitleBackground(Handle<Image>);
-impl FromWorld for TitleBackground {
-    fn from_world(world: &mut World) -> Self {
-        use bevy::{
-            asset::RenderAssetUsages,
-            image::{CompressedImageFormats, ImageSampler, ImageType},
-        };
-        let image = Image::from_buffer(
-            include_bytes!("../../../assets/title/background.png"),
-            ImageType::Extension("png"),
-            CompressedImageFormats::NONE,
-            true,
-            ImageSampler::linear(),
-            RenderAssetUsages::default(),
-        )
-        .expect("embedded title screenshot decodes");
-        Self(world.resource_mut::<Assets<Image>>().add(image))
+#[derive(Component)]
+struct PreviewProgress;
+#[derive(Component)]
+struct PreviewCaption;
+
+/// A quiet pointer-controlled overview; it owns the camera only on the title screen.
+fn preview_camera(
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    mut cameras: Query<&mut Transform, With<crate::controls::PlayerCamera>>,
+    time: Res<Time>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let pointer = window.cursor_position().unwrap_or(window.size() * 0.5)
+        / window.size().max(Vec2::ONE)
+        - Vec2::splat(0.5);
+    let eye = rm_simulator_render::flu_position([
+        4.0 + pointer.x as f64 * 2.0,
+        -12.0,
+        9.0 + pointer.y as f64 * 1.5,
+    ]);
+    let target = Transform::from_translation(eye).looking_at(Vec3::ZERO, Vec3::Y);
+    for mut camera in &mut cameras {
+        let blend = 1.0 - (-3.0 * time.delta_secs()).exp();
+        camera.translation = camera.translation.lerp(target.translation, blend);
+        camera.rotation = camera.rotation.slerp(target.rotation, blend);
     }
 }
 
-/// Crop the screenshot to cover the window without stretching it.
-fn fit_background(mut roots: Query<(&ComputedNode, &mut ImageNode), With<TitleRoot>>) {
-    for (node, mut image) in &mut roots {
-        let size = node.size();
-        if size.x <= 0.0 || size.y <= 0.0 {
-            continue;
+fn preview_progress(world: &mut World) {
+    let (progress, caption) = crate::loading::preload_status(world);
+    for mut text in world
+        .query_filtered::<&mut Text, With<PreviewCaption>>()
+        .iter_mut(world)
+    {
+        if text.0 != caption {
+            text.0.clone_from(&caption);
         }
-        let source = Vec2::new(1280.0, 720.0);
-        let scale = (size.x / source.x).max(size.y / source.y);
-        let crop = size / scale;
-        let rect = Some(Rect::from_center_size(source / 2.0, crop));
-        if image.rect != rect {
-            image.rect = rect;
-        }
+    }
+    for mut node in world
+        .query_filtered::<&mut Node, With<PreviewProgress>>()
+        .iter_mut(world)
+    {
+        node.width = percent(progress * 100.0);
     }
 }
 #[derive(Component, Default, Clone)]
@@ -702,7 +712,6 @@ impl Plugin for TitlePlugin {
         app.add_plugins(password::PasswordPlugin)
             .init_resource::<TitleState>()
             .init_resource::<TitleScreen>()
-            .init_resource::<TitleBackground>()
             .add_sub_state::<Page>()
             .add_systems(OnEnter(Screen::Title), spawn_title)
             .add_systems(OnExit(Screen::Title), despawn_title)
@@ -716,7 +725,8 @@ impl Plugin for TitlePlugin {
                     fit_columns,
                     fit_scrollbars,
                     prefill,
-                    fit_background,
+                    preview_camera,
+                    preview_progress,
                     title_input.after(crate::hud::panel_input),
                 )
                     .chain()
@@ -836,12 +846,7 @@ fn update_status(
 /// Build the whole title screen on entering [`Screen::Title`]: every page is
 /// spawned and `show_page` displays the current one, so a choice made on one
 /// page can still read the fields of another.
-fn spawn_title(
-    mut commands: Commands,
-    base: Res<BaseArgs>,
-    mut state: ResMut<TitleState>,
-    background: Res<TitleBackground>,
-) {
+fn spawn_title(mut commands: Commands, base: Res<BaseArgs>, mut state: ResMut<TitleState>) {
     let fields = TitleFields::initial(
         &base.0,
         remembered_path().and_then(|path| load_remembered(&path)),
@@ -859,12 +864,6 @@ fn spawn_title(
     let root = commands
         .spawn((
             TitleRoot,
-            ImageNode {
-                image: background.0.clone(),
-                color: Color::srgb(0.32, 0.32, 0.32),
-                image_mode: bevy::ui::widget::NodeImageMode::Stretch,
-                ..default()
-            },
             GlobalZIndex(100),
             Node {
                 width: percent(100),
@@ -875,9 +874,36 @@ fn spawn_title(
                 row_gap: px(12),
                 ..default()
             },
-            BackgroundColor(Color::srgb(0.035, 0.05, 0.075)),
+            BackgroundColor(Color::srgba(0.035, 0.05, 0.075, 0.25)),
         ))
         .id();
+    commands.spawn((
+        ChildOf(root),
+        PreviewCaption,
+        Text::new("Preparing field preview…"),
+        TextFont {
+            font_size: FontSize::Px(13.0),
+            ..default()
+        },
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: px(14),
+            ..default()
+        },
+    ));
+    commands.spawn((
+        ChildOf(root),
+        PreviewProgress,
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: px(0),
+            left: px(0),
+            height: px(3),
+            width: percent(0),
+            ..default()
+        },
+        BackgroundColor(Color::srgb(0.1, 0.75, 0.85)),
+    ));
     commands.spawn((
         ChildOf(root),
         Text::new("RM SIMULATOR"),
@@ -901,7 +927,7 @@ fn spawn_title(
                 border_radius: BorderRadius::all(px(8)),
                 ..default()
             },
-            BackgroundColor(Color::srgb(0.035, 0.05, 0.065)),
+            BackgroundColor(Color::srgba(0.035, 0.05, 0.065, 0.90)),
             BorderColor::all(Color::srgb(0.19, 0.52, 0.56)),
         ))
         .id();
@@ -1224,7 +1250,7 @@ fn spawn_title(
         ))
         .id();
     commands.spawn_scene(bsn! {
-        @FeathersCheckbox { @caption: bsn! { Text("Advanced weapon settings") ThemedText } }
+        @FeathersCheckbox { @caption: bsn! { Text("Host weapon limits and defaults") ThemedText } }
         on(|change: On<ValueChange<bool>>, mut panels: Query<&mut Node, With<WeaponFields>>| {
             for mut panel in &mut panels { panel.display = if change.value { Display::Flex } else { Display::None }; }
         })
@@ -1356,7 +1382,11 @@ fn show_page(
         }
     }
     for mut node in &mut settings {
-        let display = Display::Flex;
+        let display = if multiplayer {
+            Display::Flex
+        } else {
+            Display::None
+        };
         if node.display != display {
             node.display = display;
         }
@@ -1826,14 +1856,17 @@ mod tests {
             .world_mut()
             .spawn((MenuPage(Page::Multiplayer), Node::default()))
             .id();
+        let settings = app.world_mut().spawn((HostSettings, Node::default())).id();
         let display = |app: &App, entity| app.world().get::<Node>(entity).unwrap().display;
         app.update();
+        assert_eq!(display(&app, settings), Display::None);
         assert_eq!(display(&app, main), Display::Flex);
         assert_eq!(display(&app, multiplayer), Display::None);
         open(&mut app, Page::Multiplayer);
         app.update();
         assert_eq!(display(&app, main), Display::None);
         assert_eq!(display(&app, multiplayer), Display::Flex);
+        assert_eq!(display(&app, settings), Display::Flex);
     }
 
     #[test]

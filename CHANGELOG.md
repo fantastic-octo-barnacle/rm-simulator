@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- The title screen preloads verified field assets and scenery for reuse on join,
+  with a bottom progress bar and a live, pointer-controlled arena background.
+  Host weapon limits and defaults now appear only on the Multiplayer page.
+
 - Joining solo or multiplayer now opens connected 3D staging: hover over and
   click an arena half to choose a side, preview a robot and chassis, then click
   a starting point in the outlined base ring. The tilted camera keeps the

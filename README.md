@@ -121,6 +121,10 @@ and Quit. Single Player starts a local practice field and never asks for a
 name. Multiplayer asks for the player name, then lists LAN lobbies on the left
 and creates a named, optionally
 password-protected lobby on the right. Select a listing, enter its password if needed, and press Join lobby / address.
+The menu preloads the field in the background, with a thin progress bar along
+the bottom. Its live arena backdrop follows the pointer gently; verified assets
+and scenery are reused when joining.
+
 Joining opens a connected 3D staging view of the real field. Hover over a half
 of the arena to highlight it and click to choose your side. Choose a robot and
 supported chassis, then click a starting position in the outlined ring around
@@ -128,8 +132,8 @@ your base. The camera switches to a top-down view for
 placement. Deploy creates your robot only after the host accepts the position;
 occupied points are refused. Drone uses its designated aerial pad. You can also
 enter as a spectator without a robot. Escape goes back a step or leaves staging.
-Advanced host weapon settings are available before starting solo practice or a
-LAN lobby. Solo uses the same embedded host and client as LAN hosting, without
+Host weapon limits and defaults are available on the Multiplayer page before
+creating a LAN lobby. In-game Settings > Weapon adjusts the player weapon. Solo uses the same embedded host and client as LAN hosting, without
 a network listener. Existing direct-play CLI commands still enter immediately;
 add `--staging` to use the connected setup flow.
 You can also enter a direct address. The page and lobby list scroll with the

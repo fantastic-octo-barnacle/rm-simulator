@@ -115,8 +115,8 @@ slots are enforced. Spectators and referees have no robot. `--referee --staging`
 opens a referee-only entry rather than offering pilot deployment.
 
 Escape goes back one step and leaves the lobby from the side-selection step.
-Deployment remembers the chosen team, robot and chassis. Host weapon settings
-remain in the connection form; remote joins use the host's configuration.
+Deployment remembers the chosen team, robot and chassis. Host weapon limits
+and defaults are on the Multiplayer page; remote joins use the host's configuration.
 Direct-play CLI commands preserve their immediate spawn behavior. Add
 `--staging` (alone, with `--connect`, or with `--listen`) to use this flow.
 
@@ -168,14 +168,20 @@ The client sends one reliable update when settings change and waits for its
 confirmation before sending new shots. A seed, chassis id and intended launch
 time determine the spread sample, so prediction can reproduce it.
 
-Expand **Host weapon settings** on the title screen to set the rate and speed
-limits and default spread before practice or creating a lobby. These
+Expand **Host weapon limits and defaults** on the Multiplayer page to set the rate and speed
+limits and default spread before creating a lobby. These
 fields are remembered. The caliber is not a setting: each pilot's robot fixes
 it, 42 mm for the Hero and 17 mm for the infantries, and the host refuses a
 weapon update that names another. Remote joins use the host's defaults; in-game adjustments
 last for the current session. The server binary accepts the same weapon flags.
 
 ## Interface and HUD
+
+The title screen verifies and loads the field in the background. A bottom bar
+reports loading stages; the live arena backdrop gently follows the pointer.
+Joining reuses the verified assets and imported scenery, including when selected
+before background loading finishes. Match physics and connections still start
+on join. The active graphics preset also applies to the menu backdrop.
 
 The HUD follows the July 2026 RMUC competitor client manual: red/blue team
 status and clock across the top, robot HP below left, ammunition beside the

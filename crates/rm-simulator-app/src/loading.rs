@@ -26,7 +26,7 @@ use rm_simulator_render::{
     sync::{SceneInput, SceneState},
 };
 use rm_simulator_server::{cad_assets, layout::default_spawn};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
 /// Which screen the window is showing. Exactly one is current, so the title
 /// screen, the loading splash and the gameplay systems cannot run at once.
@@ -60,6 +60,82 @@ pub struct LeaveRequest(pub Option<String>);
 /// The verified CAD package, loaded once per process and reused by every join.
 #[derive(Resource, Clone)]
 struct CadCache(Arc<cad_assets::CadAssets>);
+/// Shared verification job: joins wait on their worker, never on the UI thread.
+#[derive(Resource, Clone)]
+struct Preload(Arc<OnceLock<Result<Arc<cad_assets::CadAssets>, String>>>);
+
+fn preload(world: &mut World) {
+    if world.contains_resource::<Preload>() || world.contains_resource::<CadCache>() {
+        return;
+    }
+    let path = world
+        .resource::<crate::title::BaseArgs>()
+        .0
+        .host
+        .cad_assets
+        .clone();
+    let shared = Arc::new(OnceLock::new());
+    let worker = shared.clone();
+    if let Err(error) = std::thread::Builder::new()
+        .name("field-preload".into())
+        .spawn(move || {
+            worker.get_or_init(|| {
+                cad_assets::load(&path)
+                    .map(Arc::new)
+                    .map_err(|e| format!("{e:#}"))
+            });
+        })
+    {
+        warn!("Could not preload field: {error}");
+        return;
+    }
+    world.insert_resource(Preload(shared));
+}
+
+fn poll_preload(world: &mut World) {
+    if world.contains_resource::<CadCache>() {
+        return;
+    }
+    let Some(cad) = world
+        .get_resource::<Preload>()
+        .and_then(|job| job.0.get())
+        .cloned()
+    else {
+        return;
+    };
+    if let Ok(cad) = cad {
+        let args = &world.resource::<crate::title::BaseArgs>().0;
+        let instances = scene::cad_instances(&cad, !args.host.no_rune, true);
+        world.resource_mut::<CadSceneStatus>().expected = instances.len();
+        world.insert_resource(CadSceneConfig {
+            instances,
+            rendering: RenderingConfig::field(),
+        });
+        world.insert_resource(CadCache(cad));
+    }
+}
+
+/// Stage-based progress for the menu; verification and scene import are asynchronous.
+pub fn preload_status(world: &World) -> (f32, String) {
+    if let Some(Err(error)) = world.get_resource::<Preload>().and_then(|job| job.0.get()) {
+        return (0.0, format!("Field preview unavailable: {error}"));
+    }
+    let cad = world.resource::<CadSceneStatus>();
+    if let Some(error) = &cad.failed {
+        return (0.0, format!("Field preview unavailable: {error}"));
+    }
+    if !world.contains_resource::<CadCache>() {
+        return (0.05, "Verifying field files…".into());
+    }
+    if cad.ready() {
+        return (1.0, "Field ready · Move the pointer to look around".into());
+    }
+    (
+        0.2 + 0.8 * cad.loaded as f32 / cad.expected.max(1) as f32,
+        format!("Loading field scenery: {} / {}", cad.loaded, cad.expected),
+    )
+}
+
 #[derive(Component)]
 struct Splash;
 #[derive(Component)]
@@ -96,7 +172,9 @@ struct Loading {
 pub struct LoadingPlugin;
 impl Plugin for LoadingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(Screen::Loading), start)
+        app.add_systems(OnEnter(Screen::Title), preload)
+            .add_systems(bevy::prelude::Update, poll_preload.before(poll))
+            .add_systems(OnEnter(Screen::Loading), start)
             .add_systems(OnExit(Screen::Loading), despawn_splash)
             .add_systems(
                 bevy::prelude::Update,
@@ -123,6 +201,7 @@ fn start(world: &mut World) {
     let multiplayer = args.connect.is_some() || args.host.listen.is_some();
     world.resource_mut::<TitleScreen>().status = None;
     let cached = world.get_resource::<CadCache>().cloned();
+    let preload = world.get_resource::<Preload>().cloned();
     let (sender, receiver) = mpsc::channel();
     let worker = std::thread::Builder::new()
         .name("field-loading".into())
@@ -135,7 +214,18 @@ fn start(world: &mut World) {
                     Some(cache) => cache.0,
                     None => {
                         progress(0.05, "Verifying field files");
-                        Arc::new(cad_assets::load(&args.host.cad_assets)?)
+                        if let Some(job) = preload {
+                            job.0
+                                .get_or_init(|| {
+                                    cad_assets::load(&args.host.cad_assets)
+                                        .map(Arc::new)
+                                        .map_err(|e| format!("{e:#}"))
+                                })
+                                .clone()
+                                .map_err(anyhow::Error::msg)?
+                        } else {
+                            Arc::new(cad_assets::load(&args.host.cad_assets)?)
+                        }
                     }
                 };
                 let (side_spawn, side_yaw) = default_spawn(args.team.into());
@@ -291,8 +381,8 @@ fn poll(world: &mut World) {
                         opened.session.weapon.shot,
                         opened.session.weapon.interval_ns,
                     ));
-                    // The plugin starts with an empty config; the scenery is
-                    // spawned by the first join and kept for the later ones.
+                    // Direct CLI joins may skip title preloading; install scenery
+                    // here only when the preload has not already supplied it.
                     if !world.contains_resource::<CadCache>() {
                         let instances = scene::cad_instances(
                             &cad,
@@ -538,6 +628,21 @@ mod tests {
             ready_frames: 0,
         });
         (world, sender)
+    }
+
+    #[test]
+    fn unfinished_preload_keeps_the_ui_available_and_failure_is_reported() {
+        let (mut world, _sender) = loading_world(false);
+        let shared = Arc::new(OnceLock::new());
+        world.insert_resource(Preload(shared.clone()));
+        poll_preload(&mut world);
+        assert!(!world.contains_resource::<CadCache>());
+        assert!(preload_status(&world).1.contains("Verifying"));
+        assert!(shared.set(Err("missing field manifest".into())).is_ok());
+        poll_preload(&mut world);
+        assert!(preload_status(&world).1.contains("missing field manifest"));
+        assert!(!world.contains_resource::<Session>());
+        assert_eq!(queued(&world), None);
     }
 
     #[test]
