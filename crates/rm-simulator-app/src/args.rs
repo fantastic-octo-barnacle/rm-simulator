@@ -97,6 +97,9 @@ pub struct Args {
     /// Skip the title screen and start a local practice match at once.
     #[arg(long, conflicts_with_all = ["connect", "listen"])]
     pub play: bool,
+    /// Connect as a spectator and choose a robot and spawn in the 3D staging view.
+    #[arg(long)]
+    pub staging: bool,
     /// Disable local prediction and use host-driven chassis, aim and firing.
     #[arg(long)]
     pub no_prediction: bool,
@@ -242,6 +245,7 @@ impl Args {
     /// explicit connect, host or practice request go straight in.
     pub fn auto_join(&self) -> bool {
         self.play
+            || self.staging
             || self.connect.is_some()
             || self.host.listen.is_some()
             || self.screenshot.is_some()

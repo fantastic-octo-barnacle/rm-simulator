@@ -367,6 +367,7 @@ impl Observer {
                 event.kind = "welcome";
                 event.peer = Some(welcome.client_id);
             }
+            ServerMessage::Deployed(_) => event.kind = "deployed",
             ServerMessage::OwnerConfig(_) => event.kind = "owner_config",
             ServerMessage::Roster(_) => event.kind = "roster",
             ServerMessage::Rejected { .. } => event.kind = "rejected",

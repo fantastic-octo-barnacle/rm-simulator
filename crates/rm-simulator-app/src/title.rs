@@ -5,10 +5,9 @@
 //! lobbies. Every
 //! choice is turned into the same arguments the command line would have
 //! given, so the lifecycle in `loading.rs` has one entry. A choice that enters
-//! a match opens one setup lobby with team seats, inline drivetrain selection
-//! and host weapon settings. Solo and LAN hosting share this form; only LAN
-//! hosting opens a network listener. The last name, addresses and seat are remembered in the user's
-//! configuration directory.
+//! a match connects first, then opens the 3D staging view. Solo and LAN
+//! hosting share this form; only LAN hosting opens a network listener.
+//! Player preferences are remembered in the user's configuration directory.
 mod password;
 
 use crate::{
@@ -28,7 +27,9 @@ use bevy::{
     ui_widgets::{Activate, ActivateOnPress, ValueChange, checkbox_self_update},
 };
 use rm_simulator_server::protocol::{Chassis, Robot};
-use rm_simulator_world::{Caliber, Team};
+#[cfg(test)]
+use rm_simulator_world::Caliber;
+use rm_simulator_world::Team;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -52,6 +53,7 @@ pub const DEFAULT_NAME: &str = "pilot";
 /// Spectator slots the seat picker offers, above the two team columns.
 pub const SPECTATOR_SLOTS: u8 = 5;
 /// Referee slots the seat picker offers, under the two team columns.
+#[cfg(test)]
 pub const REFEREE_SLOTS: u8 = 3;
 
 /// The seat a player takes in a match, as the seat picker offers it. The
@@ -89,36 +91,6 @@ impl Default for Seat {
         }
     }
 }
-impl Seat {
-    /// The seat in words, as the seat picker's selection line shows it.
-    pub fn describe(self) -> String {
-        match self {
-            Seat::Pilot {
-                team,
-                robot: Robot::Engineer,
-            } => format!("{} driving Engineer (fixed arm)", team.name()),
-            Seat::Pilot {
-                team,
-                robot: Robot::Drone,
-            } => format!("{} flying Drone (17 mm, fixed altitude)", team.name()),
-            Seat::Pilot { team, robot } => format!(
-                "{} driving {} ({} mm)",
-                team.name(),
-                robot.name(),
-                caliber_mm(robot)
-            ),
-            Seat::Spectator { slot } => format!("spectator {}", slot + 1),
-            Seat::Referee { slot } => format!("referee {}", slot + 1),
-        }
-    }
-}
-/// The caliber a robot fires, in millimetres, for captions.
-fn caliber_mm(robot: Robot) -> u32 {
-    match robot.caliber() {
-        Caliber::Mm42 => 42,
-        Caliber::Mm17 => 17,
-    }
-}
 /// The pages of the title screen. It is a sub-state of [`Screen::Title`], so
 /// leaving the title screen removes it and returning starts at `Main`.
 #[derive(SubStates, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -129,8 +101,6 @@ pub enum Page {
     Main,
     /// The LAN lobby list, the direct address and the hosting fields.
     Multiplayer,
-    /// The seat picker that precedes every join.
-    Robot,
 }
 
 /// One of the buttons.
@@ -158,22 +128,6 @@ pub enum Choice {
     Practice,
     /// Ask the HUD to confirm quitting.
     Quit,
-    /// Take this seat on the robot page; the join waits for `Confirm`.
-    Seat(Seat),
-    /// Select a supported drivetrain in the lobby.
-    Chassis(Chassis),
-    /// Enter the match the robot page was opened for, in the chosen seat.
-    Confirm,
-}
-impl Choice {
-    /// The page a choice that enters a match was pressed on, which is where
-    /// Back from the robot page returns.
-    pub fn origin(self) -> Page {
-        match self {
-            Choice::Connect | Choice::Host => Page::Multiplayer,
-            _ => Page::Main,
-        }
-    }
 }
 /// What the fields say when a button is pressed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -398,17 +352,6 @@ impl TitleFields {
 
 /// The arguments a choice joins with, or what is missing for it.
 pub fn join_args(base: &Args, fields: &TitleFields, choice: Choice) -> Result<Args, String> {
-    setup_args(base, fields, choice, true)
-}
-
-/// Validate connection fields before opening setup, and the editable loadout
-/// only on confirmation so an invalid draft never locks the user out of it.
-fn setup_args(
-    base: &Args,
-    fields: &TitleFields,
-    choice: Choice,
-    validate_loadout: bool,
-) -> Result<Args, String> {
     let mut args = base.clone();
     let name = fields.name.trim();
     // Only multiplayer asks for a name, so a local match falls back instead.
@@ -479,7 +422,7 @@ fn setup_args(
         }
         _ => return Err("nothing to join".into()),
     }
-    if validate_loadout && choice != Choice::Connect {
+    if choice != Choice::Connect {
         if !fields.fire_rate.trim().is_empty() {
             args.host.fire_rate_hz = fields
                 .fire_rate
@@ -660,26 +603,11 @@ struct WeaponFields;
 /// Host settings shared by solo and LAN setup, hidden from remote joins.
 #[derive(Component)]
 struct HostSettings;
-/// Loadout controls shown only for a pilot seat.
-#[derive(Component)]
-struct PilotSettings;
-/// Session mode and setup limitations above the form.
-#[derive(Component)]
-struct SetupSummary;
 #[derive(Component)]
 struct MenuPage(Page);
 /// A row of two columns that stacks on a narrow window.
 #[derive(Component)]
 struct Columns;
-/// The frame around a seat button, lit when its seat is the chosen one.
-#[derive(Component)]
-struct SeatCard(Seat);
-/// The line naming the chosen seat.
-#[derive(Component)]
-struct SeatText;
-/// Shown only when the pending choice hosts (true) or joins (false).
-#[derive(Component)]
-struct WhenHosting(bool);
 #[derive(Component)]
 struct LobbyList;
 #[derive(Component)]
@@ -731,7 +659,6 @@ type DiscoveryResult = (Vec<rm_simulator_server::lobby::Listing>, String, bool);
 /// search in flight and the buttons pressed this frame.
 #[derive(Resource, Default)]
 pub(crate) struct TitleState {
-    pending: Option<Choice>,
     seat: Seat,
     chassis: Chassis,
     tip: bool,
@@ -762,10 +689,6 @@ impl TitleState {
                 next.set(Page::Main);
                 true
             }
-            Page::Robot => {
-                next.set(self.pending.take().map_or(Page::Main, Choice::origin));
-                true
-            }
         }
     }
 }
@@ -790,8 +713,6 @@ impl Plugin for TitlePlugin {
                     poll_lobbies,
                     show_page,
                     sync_page_navigation.run_if(state_changed::<Page>),
-                    show_seats,
-                    show_chassis,
                     fit_columns,
                     fit_scrollbars,
                     prefill,
@@ -817,161 +738,6 @@ fn button(commands: &mut Commands, parent: Entity, title: &str, choice: Choice) 
         })
         .insert((ChildOf(parent), TitleButton))
         .id()
-}
-
-/// A titled band of the seat board, returning the wrapping row its slots go
-/// in. The spectators sit in one above the team columns and the referees in
-/// one below, so neither is mistaken for the page's own buttons.
-fn seat_section(commands: &mut Commands, parent: Entity, title: &str, color: Color) -> Entity {
-    let section = commands
-        .spawn((
-            ChildOf(parent),
-            Node {
-                width: percent(100),
-                flex_direction: FlexDirection::Column,
-                row_gap: px(6),
-                ..default()
-            },
-        ))
-        .id();
-    commands.spawn((
-        ChildOf(section),
-        Text::new(title.to_owned()),
-        TextFont {
-            font_size: FontSize::Px(16.0),
-            ..default()
-        },
-        TextColor(color),
-    ));
-    commands
-        .spawn((
-            ChildOf(section),
-            Node {
-                column_gap: px(8),
-                row_gap: px(8),
-                flex_wrap: FlexWrap::Wrap,
-                ..default()
-            },
-        ))
-        .id()
-}
-
-/// A lightweight top-down drivetrain diagram built from UI shapes. It is a
-/// schematic, not a CAD preview, and needs no additional assets or renderer.
-fn chassis_sketch(commands: &mut Commands, parent: Entity, chassis: Chassis) {
-    let root = commands
-        .spawn((
-            ChildOf(parent),
-            ChassisSketch(chassis),
-            Node {
-                width: percent(100),
-                height: px(112),
-                flex_shrink: 0.0,
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                border_radius: BorderRadius::all(px(8)),
-                ..default()
-            },
-            BackgroundColor(Color::srgb(0.025, 0.045, 0.06)),
-        ))
-        .id();
-    let diagram = commands
-        .spawn((
-            ChildOf(root),
-            Node {
-                width: px(110),
-                height: px(88),
-                ..default()
-            },
-        ))
-        .id();
-    let accent = Color::srgb(0.38, 0.84, 0.81);
-    let mut shape = |x: f32, y: f32, w: f32, h: f32, round: f32| {
-        commands.spawn((
-            ChildOf(diagram),
-            Node {
-                position_type: PositionType::Absolute,
-                left: px(x),
-                top: px(y),
-                width: px(w),
-                height: px(h),
-                border: UiRect::all(px(2)),
-                border_radius: BorderRadius::all(px(round)),
-                ..default()
-            },
-            BorderColor::all(accent),
-            BackgroundColor(Color::srgb(0.08, 0.16, 0.19)),
-        ));
-    };
-    shape(32., 22., 46., 48., 8.);
-    shape(49., 7., 12., 31., 3.);
-    match chassis {
-        Chassis::Balance => {
-            shape(14., 29., 13., 35., 4.);
-            shape(83., 29., 13., 35., 4.);
-        }
-        Chassis::Flight => {
-            for (x, y) in [(8., 8.), (76., 8.), (8., 56.), (76., 56.)] {
-                shape(x, y, 26., 26., 13.);
-            }
-        }
-        _ => {
-            for (x, y) in [(14., 18.), (83., 18.), (14., 55.), (83., 55.)] {
-                shape(x, y, 13., 24., 3.);
-                if chassis == Chassis::Mecanum {
-                    shape(x + 3., y + 5., 7., 3., 0.);
-                    shape(x + 3., y + 14., 7., 3., 0.);
-                }
-            }
-        }
-    }
-}
-
-/// One numbered slot in a [`seat_section`] row, sized to its number rather
-/// than stretched like the team columns' named robots.
-fn seat_slot(commands: &mut Commands, parent: Entity, title: &str, seat: Seat) {
-    let card = seat_frame(commands, parent, title, seat);
-    commands
-        .entity(card)
-        .entry::<Node>()
-        .and_modify(|mut node| node.min_width = px(56));
-}
-
-/// A seat button in a frame that lights up while its seat is the chosen one.
-fn seat_card(commands: &mut Commands, parent: Entity, title: &str, seat: Seat) {
-    let card = seat_frame(commands, parent, title, seat);
-    commands
-        .entity(card)
-        .entry::<Node>()
-        .and_modify(|mut node| node.width = percent(100));
-}
-
-/// The frame and button shared by every seat on the board. The button fills
-/// the frame, so the caller sizes the frame alone.
-fn seat_frame(commands: &mut Commands, parent: Entity, title: &str, seat: Seat) -> Entity {
-    let card = commands
-        .spawn((
-            ChildOf(parent),
-            SeatCard(seat),
-            Node {
-                padding: UiRect::all(px(1)),
-                border: UiRect::all(px(2)),
-                border_radius: BorderRadius::all(px(8)),
-                ..default()
-            },
-            BorderColor::all(Color::NONE),
-        ))
-        .id();
-    let button = button(commands, card, title, Choice::Seat(seat));
-    commands
-        .entity(button)
-        .entry::<Node>()
-        .and_modify(|mut node| {
-            node.width = percent(100);
-            node.height = px(32);
-            node.padding = UiRect::horizontal(px(10));
-        });
-    card
 }
 
 fn scrollbar(commands: &mut Commands, parent: Entity, target: Entity) {
@@ -1082,7 +848,6 @@ fn spawn_title(
     );
     state.feedback = None;
     state.search_status = None;
-    state.pending = None;
     state.public = fields.public;
     state.seat = fields.seat();
     state.chassis = fields.chassis;
@@ -1446,259 +1211,9 @@ fn spawn_title(
     status_text(&mut commands, right, StatusLocation::Host);
     button(&mut commands, right, "Back", Choice::Back);
 
-    let robot_page = commands
-        .spawn((
-            ChildOf(card),
-            MenuPage(Page::Robot),
-            Node {
-                width: percent(100),
-                flex_direction: FlexDirection::Column,
-                row_gap: px(8),
-                display: Display::None,
-                ..default()
-            },
-        ))
-        .id();
-    commands.spawn((
-        ChildOf(robot_page),
-        Text::new("Match setup"),
-        TextFont {
-            font_size: FontSize::Px(24.0),
-            ..default()
-        },
-    ));
-    commands.spawn((
-        ChildOf(robot_page),
-        Text::new(
-            "Choose a team and robot, or watch the field. Review your loadout before entering.",
-        ),
-        TextFont {
-            font_size: FontSize::Px(14.0),
-            ..default()
-        },
-        TextColor(Color::srgb(0.55, 0.65, 0.72)),
-    ));
-    commands.spawn((
-        ChildOf(robot_page),
-        SetupSummary,
-        Text::new(""),
-        TextFont {
-            font_size: FontSize::Px(14.0),
-            ..default()
-        },
-        TextColor(Color::srgb(0.5, 0.85, 0.83)),
-    ));
-    let setup = commands
-        .spawn((
-            ChildOf(robot_page),
-            Columns,
-            Node {
-                width: percent(100),
-                column_gap: px(24),
-                align_items: AlignItems::Start,
-                ..default()
-            },
-        ))
-        .id();
-    let roster = commands
-        .spawn((
-            ChildOf(setup),
-            LobbyColumn,
-            Node {
-                width: percent(50),
-                min_width: px(0),
-                flex_direction: FlexDirection::Column,
-                row_gap: px(8),
-                ..default()
-            },
-        ))
-        .id();
-    let loadout = commands
-        .spawn((
-            ChildOf(setup),
-            LobbyColumn,
-            Node {
-                width: percent(50),
-                min_width: px(0),
-                flex_direction: FlexDirection::Column,
-                row_gap: px(16),
-                padding: UiRect::all(px(18)),
-                border_radius: BorderRadius::all(px(12)),
-                ..default()
-            },
-            BackgroundColor(Color::srgb(0.055, 0.08, 0.10)),
-        ))
-        .id();
-    let spectators = seat_section(
-        &mut commands,
-        roster,
-        "SPECTATORS",
-        Color::srgb(0.62, 0.72, 0.78),
-    );
-    for slot in 0..SPECTATOR_SLOTS {
-        seat_slot(
-            &mut commands,
-            spectators,
-            &(slot + 1).to_string(),
-            Seat::Spectator { slot },
-        );
-    }
-    let teams = commands
-        .spawn((
-            ChildOf(roster),
-            Node {
-                width: percent(100),
-                column_gap: px(12),
-                ..default()
-            },
-        ))
-        .id();
-    for (team, title, color) in [
-        (Team::Blue, "BLUE", Color::srgb(0.4, 0.65, 1.0)),
-        (Team::Red, "RED", Color::srgb(1.0, 0.45, 0.4)),
-    ] {
-        let column = commands
-            .spawn((
-                ChildOf(teams),
-                Node {
-                    width: percent(50),
-                    min_width: px(0),
-                    flex_direction: FlexDirection::Column,
-                    row_gap: px(4),
-                    ..default()
-                },
-            ))
-            .id();
-        commands.spawn((
-            ChildOf(column),
-            Text::new(title),
-            TextFont {
-                font_size: FontSize::Px(24.0),
-                ..default()
-            },
-            TextColor(color),
-        ));
-        for robot in Robot::ALL {
-            seat_card(
-                &mut commands,
-                column,
-                robot.name(),
-                Seat::Pilot { team, robot },
-            );
-        }
-    }
-    let referees = seat_section(
-        &mut commands,
-        roster,
-        "REFEREE",
-        Color::srgb(0.62, 0.72, 0.78),
-    );
-    for slot in 0..REFEREE_SLOTS {
-        seat_slot(
-            &mut commands,
-            referees,
-            &(slot + 1).to_string(),
-            Seat::Referee { slot },
-        );
-    }
-    let chassis_page = commands
-        .spawn((
-            ChildOf(loadout),
-            PilotSettings,
-            Node {
-                width: percent(100),
-                flex_direction: FlexDirection::Column,
-                row_gap: px(14),
-                ..default()
-            },
-        ))
-        .id();
-    commands.spawn((
-        ChildOf(chassis_page),
-        Text::new("LOADOUT"),
-        TextFont {
-            font_size: FontSize::Px(24.0),
-            ..default()
-        },
-    ));
-    for chassis in [
-        Chassis::Omni,
-        Chassis::Balance,
-        Chassis::Mecanum,
-        Chassis::Flight,
-    ] {
-        chassis_sketch(&mut commands, chassis_page, chassis);
-    }
-    commands.spawn((
-        ChildOf(chassis_page),
-        Text::new("DRIVETRAIN / TOP VIEW"),
-        TextFont {
-            font_size: FontSize::Px(11.0),
-            ..default()
-        },
-        TextColor(Color::srgb(0.55, 0.65, 0.72)),
-    ));
-    commands.spawn((
-        ChildOf(chassis_page),
-        ChassisText,
-        Text::new(""),
-        TextFont {
-            font_size: FontSize::Px(14.0),
-            ..default()
-        },
-    ));
-    for (chassis, label) in [
-        (Chassis::Omni, "Omni · four wheels"),
-        (Chassis::Balance, "Balance · two wheels"),
-        (Chassis::Mecanum, "Mecanum · four wheels"),
-        (Chassis::Flight, "Flight · tethered aerial"),
-    ] {
-        let entity = button(&mut commands, chassis_page, label, Choice::Chassis(chassis));
-        commands
-            .entity(entity)
-            .insert((ChassisCard(chassis), BorderColor::all(Color::NONE)));
-    }
-    // One action bar confirms the complete setup for either local or remote play.
-    let bottom = commands
-        .spawn((
-            ChildOf(root),
-            MenuPage(Page::Robot),
-            Node {
-                width: percent(90),
-                max_width: px(1100),
-                display: Display::None,
-                column_gap: px(10),
-                row_gap: px(10),
-                margin: UiRect::top(px(6)),
-                flex_wrap: FlexWrap::Wrap,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-        ))
-        .id();
-    commands.spawn((
-        ChildOf(bottom),
-        SeatText,
-        Text::new(""),
-        TextFont {
-            font_size: FontSize::Px(14.0),
-            ..default()
-        },
-        TextColor(Color::srgb(0.7, 0.82, 0.85)),
-        Node {
-            flex_grow: 1.0,
-            ..default()
-        },
-    ));
-    button(&mut commands, bottom, "Back", Choice::Back);
-    let start = button(&mut commands, bottom, "Enter field", Choice::Confirm);
-    commands.entity(start).insert(WhenHosting(true));
-    let join = button(&mut commands, bottom, "Join lobby", Choice::Confirm);
-    commands.entity(join).insert(WhenHosting(false));
-
     let host_settings = commands
         .spawn((
-            ChildOf(loadout),
+            ChildOf(card),
             HostSettings,
             Node {
                 width: percent(100),
@@ -1818,7 +1333,6 @@ fn show_page(
         let width = px(match current {
             Page::Main => 480.0,
             Page::Multiplayer => 1100.0,
-            Page::Robot => 1100.0,
         });
         let height = if multiplayer { percent(80) } else { Val::Auto };
         if node.max_width != width {
@@ -1842,15 +1356,7 @@ fn show_page(
         }
     }
     for mut node in &mut settings {
-        let display = if current == Page::Robot
-            && state
-                .pending
-                .is_some_and(|choice| choice != Choice::Connect)
-        {
-            Display::Flex
-        } else {
-            Display::None
-        };
+        let display = Display::Flex;
         if node.display != display {
             node.display = display;
         }
@@ -1877,129 +1383,6 @@ fn sync_page_navigation(
     focus.clear();
     for mut scroll in &mut scrolls {
         *scroll = default();
-    }
-}
-
-/// A drivetrain option, shown only for compatible robot types.
-#[derive(Component)]
-struct ChassisCard(Chassis);
-/// Drivetrain schematic visible for the resolved chassis.
-#[derive(Component)]
-struct ChassisSketch(Chassis);
-/// The selected robot and chassis caption.
-#[derive(Component)]
-struct ChassisText;
-#[allow(clippy::type_complexity)]
-fn show_chassis(
-    state: Res<TitleState>,
-    mut cards: Query<(&ChassisCard, &mut Node, &mut BorderColor)>,
-    mut texts: Query<&mut Text, With<ChassisText>>,
-    mut panels: Query<
-        &mut Node,
-        (
-            With<PilotSettings>,
-            Without<ChassisCard>,
-            Without<ChassisSketch>,
-        ),
-    >,
-    mut sketches: Query<(&ChassisSketch, &mut Node), Without<ChassisCard>>,
-) {
-    for mut panel in &mut panels {
-        panel.display = if matches!(state.seat, Seat::Pilot { .. }) {
-            Display::Flex
-        } else {
-            Display::None
-        };
-    }
-    let Seat::Pilot { robot, .. } = state.seat else {
-        return;
-    };
-    for (sketch, mut node) in &mut sketches {
-        node.display = if sketch.0 == state.chassis.resolved(robot) {
-            Display::Flex
-        } else {
-            Display::None
-        };
-    }
-    for (card, mut node, mut border) in &mut cards {
-        node.display = if robot.chassis_choices().contains(&card.0) {
-            Display::Flex
-        } else {
-            Display::None
-        };
-        node.border = UiRect::all(px(2));
-        *border = BorderColor::all(if state.chassis.resolved(robot) == card.0 {
-            Color::srgb(0.35, 0.85, 0.9)
-        } else {
-            Color::NONE
-        });
-    }
-    for mut text in &mut texts {
-        text.0 = format!(
-            "{} / {}\n{}",
-            robot.name(),
-            state.chassis.resolved(robot).name(),
-            match robot {
-                Robot::Drone =>
-                    "Fly horizontally with WASD; aim with the mouse and fire 17 mm with left click. Fixed altitude.",
-                Robot::Engineer => "Drive with WASD. The arm is fixed; there is no launcher.",
-                Robot::Sentry => "Drive and aim like Infantry. The radar tower is decorative.",
-                Robot::Hero => "Mecanum drivetrain with a 42 mm launcher.",
-                _ =>
-                    "17 mm launcher. Strafe with WASD; aim with the mouse. Balance adds assisted stabilization and a Space jump.",
-            }
-        );
-    }
-}
-
-/// The frame of the chosen seat lights up, the selection line names it and
-/// the confirm button says whether the match is started or joined.
-#[allow(clippy::type_complexity)]
-fn show_seats(
-    state: Res<TitleState>,
-    mut cards: Query<(&SeatCard, &mut BorderColor)>,
-    mut texts: Query<&mut Text, (With<SeatText>, Without<SetupSummary>)>,
-    mut buttons: Query<(&WhenHosting, &mut Node)>,
-    mut summaries: Query<&mut Text, (With<SetupSummary>, Without<SeatText>)>,
-) {
-    for mut text in &mut summaries {
-        let label = match state.pending {
-            Some(Choice::Practice) => "SOLO PRACTICE  /  Private field on this computer",
-            Some(Choice::Host) => "LAN HOST  /  Friends can connect when you enter the field",
-            _ => "JOIN LOBBY  /  Weapon settings are provided by the host",
-        };
-        if text.0 != label {
-            text.0 = label.into();
-        }
-    }
-    for (card, mut border) in &mut cards {
-        let color = if card.0 == state.seat {
-            Color::srgb(0.35, 0.85, 0.9)
-        } else {
-            Color::NONE
-        };
-        if *border != BorderColor::all(color) {
-            *border = BorderColor::all(color);
-        }
-    }
-    for mut text in &mut texts {
-        let wanted = format!("Selected: {}", state.seat.describe());
-        if text.0 != wanted {
-            text.0 = wanted;
-        }
-    }
-    let hosting = state
-        .pending
-        .is_some_and(|choice| choice != Choice::Connect);
-    for (when, mut node) in &mut buttons {
-        let display = if when.0 == hosting {
-            Display::Flex
-        } else {
-            Display::None
-        };
-        if node.display != display {
-            node.display = display;
-        }
     }
 }
 
@@ -2192,7 +1575,6 @@ fn title_input(
                     Choice::Connect
                 }
             }
-            Page::Robot => Choice::Confirm,
         };
         state.actions.push(choice);
     }
@@ -2215,36 +1597,10 @@ fn title_input(
         state.escape_back(page, &mut next_page);
         return;
     }
-    if let Choice::Seat(seat) = choice {
-        state.seat = seat;
-        if let Seat::Pilot { robot, .. } = seat
-            && state.chassis.config(robot).is_err()
-        {
-            state.chassis = Chassis::Auto;
-        }
-        return;
-    }
-    if let Choice::Chassis(chassis) = choice {
-        if let Seat::Pilot { robot, .. } = state.seat
-            && chassis.config(robot).is_ok()
-        {
-            state.chassis = chassis;
-        }
-        return;
-    }
     if choice == Choice::Multiplayer {
         next_page.set(Page::Multiplayer);
         state.tip = false;
         choice = Choice::Refresh;
-    }
-    // A choice that enters a match is checked, then opens the robot page;
-    // confirming there joins with it.
-    let confirming = choice == Choice::Confirm;
-    if confirming {
-        let Some(pending) = state.pending else {
-            return;
-        };
-        choice = pending;
     }
     let mut fields = TitleFields {
         public: state.public,
@@ -2355,18 +1711,8 @@ fn title_input(
         return;
     }
     state.feedback = None;
-    let result = if confirming {
-        join_args(&base, &fields, choice)
-    } else {
-        setup_args(&base, &fields, choice, false)
-    };
-    match result {
-        Ok(_) if !confirming => {
-            state.pending = Some(choice);
-            next_page.set(Page::Robot);
-            screen.status = None;
-        }
-        Ok(args) => {
+    match join_args(&base, &fields, choice) {
+        Ok(mut args) => {
             if !cfg!(test)
                 && let Some(path) = remembered_path()
                 && let Err(error) = save_remembered(&path, &fields)
@@ -2377,13 +1723,12 @@ fn title_input(
                 );
             }
             screen.status = None;
+            args.staging = true;
             commands.insert_resource(JoinRequest(args));
             next_screen.set(Screen::Loading);
         }
         Err(message) => {
-            let location = if confirming {
-                StatusLocation::General
-            } else if choice == Choice::Connect {
+            let location = if choice == Choice::Connect {
                 StatusLocation::Join
             } else if choice == Choice::Host {
                 StatusLocation::Host
@@ -2492,247 +1837,6 @@ mod tests {
     }
 
     #[test]
-    fn a_join_choice_opens_the_robot_page_and_the_seat_is_taken_there() {
-        let mut app = App::new();
-        app.init_resource::<TitleState>()
-            .init_resource::<TitleScreen>()
-            .init_resource::<ButtonInput<KeyCode>>()
-            .init_resource::<bevy::input_focus::InputFocus>()
-            .insert_resource(BaseArgs(base()))
-            .add_message::<AppExit>()
-            .add_systems(Update, title_input);
-        with_screens(&mut app);
-        let press = |app: &mut App, choice| {
-            app.world_mut()
-                .resource_mut::<TitleState>()
-                .actions
-                .push(choice);
-            app.update();
-            settle(app);
-        };
-        // The fields come from the inputs, which this app has none of, so
-        // the name is missing. Single Player does not ask for one and opens
-        // the robot page anyway; joining reports it against its own status.
-        press(&mut app, Choice::Practice);
-        assert_eq!(page(&app), Page::Robot);
-        assert!(app.world().resource::<TitleState>().feedback.is_none());
-        open(&mut app, Page::Multiplayer);
-        app.world_mut()
-            .spawn((AddressInput, EditableText::new("localhost:7700")));
-        press(&mut app, Choice::Connect);
-        assert_eq!(page(&app), Page::Multiplayer);
-        assert!(
-            app.world()
-                .resource::<TitleState>()
-                .feedback
-                .as_ref()
-                .is_some_and(|(location, error, text)| *location == StatusLocation::Join
-                    && *error
-                    && text.contains("name"))
-        );
-        app.world_mut()
-            .spawn((NameInput, EditableText::new("dave")));
-        open(&mut app, Page::Main);
-        press(&mut app, Choice::Practice);
-        assert_eq!(page(&app), Page::Robot);
-        assert_eq!(
-            app.world().resource::<TitleState>().pending,
-            Some(Choice::Practice)
-        );
-        assert!(app.world().resource::<TitleScreen>().status.is_none());
-        assert!(!app.world().contains_resource::<JoinRequest>());
-        let hero = Seat::Pilot {
-            team: Team::Blue,
-            robot: Robot::Hero,
-        };
-        press(&mut app, Choice::Seat(hero));
-        assert_eq!(app.world().resource::<TitleState>().seat, hero);
-        // Back returns to the page the choice was pressed on and forgets it.
-        press(&mut app, Choice::Back);
-        assert_eq!(page(&app), Page::Main);
-        let state = app.world().resource::<TitleState>();
-        assert_eq!(state.pending, None);
-        assert_eq!(state.seat, hero);
-        // Confirm with nothing pending is ignored.
-        press(&mut app, Choice::Confirm);
-        assert!(!app.world().contains_resource::<JoinRequest>());
-        assert_eq!(Choice::Connect.origin(), Page::Multiplayer);
-        assert_eq!(Choice::Host.origin(), Page::Multiplayer);
-    }
-
-    #[test]
-    fn pilot_configures_chassis_in_lobby_and_confirms_once() {
-        for choice in [Choice::Practice, Choice::Host, Choice::Connect] {
-            let mut app = App::new();
-            app.init_resource::<TitleState>()
-                .init_resource::<TitleScreen>()
-                .init_resource::<ButtonInput<KeyCode>>()
-                .init_resource::<bevy::input_focus::InputFocus>()
-                .insert_resource(BaseArgs(base()))
-                .add_message::<AppExit>()
-                .add_systems(Update, title_input);
-            with_screens(&mut app);
-            app.world_mut()
-                .spawn((NameInput, EditableText::new("pilot")));
-            app.world_mut()
-                .spawn((AddressInput, EditableText::new("127.0.0.1:7700")));
-            app.world_mut()
-                .spawn((LobbyInput::Name, EditableText::new("Test lobby")));
-            let press = |app: &mut App, choice| {
-                app.world_mut()
-                    .resource_mut::<TitleState>()
-                    .actions
-                    .push(choice);
-                app.update();
-                settle(app);
-            };
-            press(&mut app, choice);
-            assert_eq!(page(&app), Page::Robot);
-            assert!(!app.world().contains_resource::<JoinRequest>());
-            press(&mut app, Choice::Chassis(Chassis::Balance));
-            press(&mut app, Choice::Back);
-            assert_eq!(page(&app), choice.origin());
-            press(&mut app, choice);
-            assert_eq!(
-                app.world().resource::<TitleState>().chassis,
-                Chassis::Balance
-            );
-            press(&mut app, Choice::Confirm);
-            assert_eq!(
-                app.world().resource::<JoinRequest>().0.chassis,
-                Chassis::Balance
-            );
-        }
-    }
-
-    #[test]
-    fn switching_robot_resets_an_incompatible_chassis() {
-        let mut app = App::new();
-        app.insert_resource(TitleState {
-            chassis: Chassis::Balance,
-            ..default()
-        })
-        .init_resource::<TitleScreen>()
-        .init_resource::<ButtonInput<KeyCode>>()
-        .init_resource::<bevy::input_focus::InputFocus>()
-        .insert_resource(BaseArgs(base()))
-        .add_message::<AppExit>()
-        .add_systems(Update, title_input);
-        with_screens(&mut app);
-        app.world_mut()
-            .resource_mut::<TitleState>()
-            .actions
-            .push(Choice::Seat(Seat::Pilot {
-                team: Team::Red,
-                robot: Robot::Engineer,
-            }));
-        app.update();
-        assert_eq!(app.world().resource::<TitleState>().chassis, Chassis::Auto);
-    }
-
-    #[test]
-    fn seat_cards_light_the_chosen_seat_and_the_confirm_button_matches_the_origin() {
-        let mut app = App::new();
-        app.insert_resource(TitleState {
-            seat: Seat::Referee { slot: 1 },
-            pending: Some(Choice::Connect),
-            ..default()
-        })
-        .add_systems(Update, show_seats);
-        let world = app.world_mut();
-        let referee = world
-            .spawn((
-                SeatCard(Seat::Referee { slot: 1 }),
-                BorderColor::all(Color::NONE),
-            ))
-            .id();
-        let red = world
-            .spawn((SeatCard(Seat::default()), BorderColor::all(Color::NONE)))
-            .id();
-        let text = world.spawn((SeatText, Text::new(""))).id();
-        let start = world.spawn((WhenHosting(true), Node::default())).id();
-        let join = world.spawn((WhenHosting(false), Node::default())).id();
-        app.update();
-        let lit =
-            |app: &App, card| app.world().get::<BorderColor>(card).unwrap().top != Color::NONE;
-        assert!(lit(&app, referee) && !lit(&app, red));
-        assert_eq!(
-            app.world().get::<Text>(text).unwrap().0,
-            "Selected: referee 2"
-        );
-        let shown =
-            |app: &App, button| app.world().get::<Node>(button).unwrap().display == Display::Flex;
-        assert!(!shown(&app, start) && shown(&app, join));
-        let mut state = app.world_mut().resource_mut::<TitleState>();
-        state.seat = Seat::default();
-        state.pending = Some(Choice::Host);
-        app.update();
-        assert!(!lit(&app, referee) && lit(&app, red));
-        assert_eq!(
-            app.world().get::<Text>(text).unwrap().0,
-            "Selected: red driving Infantry 3 (17 mm)"
-        );
-        assert!(shown(&app, start) && !shown(&app, join));
-        assert_eq!(
-            Seat::Pilot {
-                team: Team::Blue,
-                robot: Robot::Hero
-            }
-            .describe(),
-            "blue driving Hero (42 mm)"
-        );
-        assert_eq!(Seat::Spectator { slot: 0 }.describe(), "spectator 1");
-    }
-
-    #[test]
-    fn enter_submits_the_focused_multiplayer_form() {
-        for hosting in [true, false] {
-            let mut app = App::new();
-            app.init_resource::<TitleState>()
-                .init_resource::<TitleScreen>()
-                .init_resource::<ButtonInput<KeyCode>>()
-                .init_resource::<bevy::input_focus::InputFocus>()
-                .insert_resource(BaseArgs(base()))
-                .add_systems(Update, title_input);
-            with_screens(&mut app);
-            open(&mut app, Page::Multiplayer);
-            app.world_mut()
-                .spawn((NameInput, EditableText::new("pilot")));
-            app.world_mut()
-                .spawn((AddressInput, EditableText::new("127.0.0.1:7700")));
-            let input = app
-                .world_mut()
-                .spawn((
-                    if hosting {
-                        LobbyInput::Name
-                    } else {
-                        LobbyInput::JoinPassword
-                    },
-                    EditableText::new(if hosting { "Practice lobby" } else { "secret" }),
-                ))
-                .id();
-            app.world_mut()
-                .resource_mut::<bevy::input_focus::InputFocus>()
-                .set(input, bevy::input_focus::FocusCause::Pressed);
-            app.world_mut()
-                .resource_mut::<ButtonInput<KeyCode>>()
-                .press(KeyCode::Enter);
-            app.update();
-            settle(&mut app);
-            let state = app.world().resource::<TitleState>();
-            assert_eq!(
-                state.pending,
-                Some(if hosting {
-                    Choice::Host
-                } else {
-                    Choice::Connect
-                })
-            );
-            assert_eq!(page(&app), Page::Robot);
-        }
-    }
-
-    #[test]
     fn changing_title_pages_resets_scroll_and_hidden_input_focus() {
         let mut app = App::new();
         app.init_resource::<TitleState>()
@@ -2751,7 +1855,7 @@ mod tests {
             .set(input, bevy::input_focus::FocusCause::Pressed);
         app.update();
         assert_eq!(app.world().get::<ScrollPosition>(scroll).unwrap().y, 250.);
-        open(&mut app, Page::Robot);
+        open(&mut app, Page::Multiplayer);
         app.update();
         assert_eq!(app.world().get::<ScrollPosition>(scroll).unwrap().y, 0.);
         assert!(
@@ -2779,6 +1883,33 @@ mod tests {
         let state = app.world().resource::<TitleState>();
         assert_eq!(state.feedback.as_ref().unwrap().2, "Enter an address");
         assert_eq!(state.search_status.as_deref(), Some("0 LAN lobbies found"));
+    }
+
+    #[test]
+    fn practice_connects_before_opening_deployment() {
+        let mut app = App::new();
+        app.init_resource::<TitleState>()
+            .init_resource::<TitleScreen>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<bevy::input_focus::InputFocus>()
+            .insert_resource(BaseArgs(base()))
+            .add_message::<AppExit>()
+            .add_systems(Update, title_input);
+        with_screens(&mut app);
+        app.update();
+        app.world_mut()
+            .resource_mut::<TitleState>()
+            .actions
+            .push(Choice::Practice);
+        app.update();
+        let args = &app.world().resource::<JoinRequest>().0;
+        assert!(args.staging);
+        assert!(args.host.listen.is_none());
+        assert!(args.connect.is_none());
+        assert!(matches!(
+            app.world().resource::<NextState<Screen>>(),
+            NextState::Pending(Screen::Loading)
+        ));
     }
 
     #[test]
@@ -2989,53 +2120,6 @@ mod tests {
     }
 
     #[test]
-    fn setup_shows_only_controls_owned_by_the_selected_role_and_host() {
-        let mut app = App::new();
-        with_screens(&mut app)
-            .init_resource::<TitleState>()
-            .add_systems(Update, (show_page, show_chassis));
-        let host = app.world_mut().spawn((HostSettings, Node::default())).id();
-        let pilot = app.world_mut().spawn((PilotSettings, Node::default())).id();
-        let sketch = app
-            .world_mut()
-            .spawn((ChassisSketch(Chassis::Omni), Node::default()))
-            .id();
-        open(&mut app, Page::Robot);
-        let visible =
-            |app: &App, entity| app.world().get::<Node>(entity).unwrap().display == Display::Flex;
-        for choice in [Choice::Practice, Choice::Host, Choice::Connect] {
-            app.world_mut().resource_mut::<TitleState>().pending = Some(choice);
-            app.update();
-            assert_eq!(visible(&app, host), choice != Choice::Connect);
-            assert!(visible(&app, pilot));
-            assert!(visible(&app, sketch));
-        }
-        for seat in [Seat::Spectator { slot: 0 }, Seat::Referee { slot: 0 }] {
-            app.world_mut().resource_mut::<TitleState>().seat = seat;
-            app.update();
-            assert!(!visible(&app, pilot));
-        }
-    }
-
-    #[test]
-    fn invalid_weapon_draft_can_reopen_setup_but_cannot_start() {
-        let fields = TitleFields {
-            name: "pilot".into(),
-            lobby_name: "Practice".into(),
-            fire_rate: "invalid".into(),
-            ..default()
-        };
-        for choice in [Choice::Practice, Choice::Host] {
-            assert!(setup_args(&base(), &fields, choice, false).is_ok());
-            assert!(
-                join_args(&base(), &fields, choice)
-                    .unwrap_err()
-                    .contains("fire rate")
-            );
-        }
-    }
-
-    #[test]
     fn missing_fields_are_reported_instead_of_joined() {
         let mut fields = TitleFields {
             name: "bob".into(),
@@ -3063,44 +2147,6 @@ mod tests {
             join_args(&base(), &fields, Choice::Practice).unwrap().name,
             DEFAULT_NAME
         );
-    }
-
-    #[test]
-    fn escape_returns_from_multiplayer_before_offering_to_quit() {
-        let mut app = App::new();
-        app.init_resource::<TitleScreen>()
-            .init_resource::<crate::hud::HudState>()
-            .init_resource::<ButtonInput<KeyCode>>()
-            .insert_resource(TitleState {
-                pending: Some(Choice::Connect),
-                ..default()
-            })
-            .add_systems(Update, crate::hud::panel_input);
-        with_screens(&mut app);
-        open(&mut app, Page::Robot);
-        let escape = |app: &mut App| {
-            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
-            keys.reset_all();
-            keys.press(KeyCode::Escape);
-            app.world_mut()
-                .resource_mut::<crate::hud::HudState>()
-                .consumed = false;
-            app.update();
-            settle(app);
-        };
-        escape(&mut app);
-        assert_eq!(page(&app), Page::Multiplayer);
-        assert_eq!(app.world().resource::<TitleState>().pending, None);
-        assert!(!app.world().resource::<crate::hud::HudState>().quit_confirm);
-        app.world_mut().resource_mut::<TitleState>().tip = true;
-        escape(&mut app);
-        assert_eq!(page(&app), Page::Multiplayer);
-        assert!(!app.world().resource::<TitleState>().tip);
-        escape(&mut app);
-        assert_eq!(page(&app), Page::Main);
-        assert!(!app.world().resource::<crate::hud::HudState>().quit_confirm);
-        escape(&mut app);
-        assert!(app.world().resource::<crate::hud::HudState>().quit_confirm);
     }
 
     #[test]

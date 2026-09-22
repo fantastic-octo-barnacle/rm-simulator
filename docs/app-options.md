@@ -16,6 +16,7 @@ joined with `--connect` takes those from the server.
 | Option | Purpose |
 |---|---|
 | `--play` | Skip the title screen and start a local practice match at once |
+| `--staging` | Connect first, then choose side, robot and position over the real field; works with local hosting and `--connect` |
 | `--console [ADDR]` | App automation console on localhost, default `127.0.0.1:7790`; see [console commands](console.md) |
 | `--window-mode normal\|unfocused\|headless` | Normal visible window, visible without requesting focus, or GPU rendering without an OS window |
 | `--robot hero\|engineer\|infantry-3\|infantry-4\|infantry-5\|sentry\|drone` | Robot you drive on any host. Hero fires 42 mm; Infantry (default), Sentry and Drone fire 17 mm. Engineer has a fixed decorative arm; Drone flies at fixed altitude. Engineer has no launcher |
@@ -89,28 +90,35 @@ Settings keeps its tabs and Reset / Close buttons visible while the selected
 page scrolls. The active tab is underlined; switching tabs starts at the top of
 that page.
 
-## Shared setup lobby
+## Connected deployment lobby
 
-Single Player, Join lobby / address and Create lobby all open the seat page
-before the match starts. It is laid out as a lobby board, the same one for
-single player and multiplayer: a row of five SPECTATORS slots across the top,
-the blue column on the left and the red column on the right, and a row of three
-REFEREE slots underneath. Each team column is the competition line-up, one slot
-each for Hero, Engineer, Infantry 3, Infantry 4, Infantry 5, Sentry and Drone.
-The loadout panel sits alongside the board and includes a top-down drivetrain
-schematic. Narrow windows stack the panels. Back and Enter field / Join lobby
-sit below the complete form.
+Single Player, Join lobby / address and Create lobby connect first and open the
+same staging screen over the real 3D field. Solo uses the embedded host and
+client without a network listener. No robot exists for this player yet.
 
-Choose a supported chassis inline, then Enter field or Join lobby (or Enter).
-Spectators and referees hide the loadout panel. Advanced weapon settings are
-available only for solo practice and LAN hosting; remote joins use their host's
-settings. Solo runs the same embedded host and client without opening a network
-listener. Escape returns to the originating menu and preserves the loadout. The robot,
-chassis and spectator slot are remembered with the other fields; the referee
-seat is not. Slots do not yet show who holds them, and two pilots may drive the
-same robot: a host has no seat list to show before the connection is made. A
-spectator still joins on the remembered team, which the protocol requires; the
-slot number is the board position only.
+1. Hover over a half of the arena to highlight it, then click to join that side.
+   The arena faces you with its long edge horizontal and the camera tilted down.
+   Keyboard shortcuts: 1 chooses the left (blue) half, 2 the right (red) half.
+   Watch as spectator skips robot deployment.
+2. Choose Hero, Engineer, Infantry 3/4/5, Sentry or Drone and a supported chassis.
+   The preview uses the normal robot renderer.
+3. In the top-down base view, click inside the outlined ring, outside the base.
+   Arrow keys adjust the selected point by 0.1 m; Enter or Deploy submits it.
+
+The host checks the team ring, drivetrain and occupancy, then assigns a chassis
+on the existing connection. A refusal leaves the form open so you can retry.
+Drone retains its designated aerial pad and flight boundary. The outlined ring
+is this simulator's deployment policy, based on its Base-area footprint and the
+approved minimap prototype, not a claim of official competition starting rules.
+Multiple players can still choose the same robot class; no exclusive roster
+slots are enforced. Spectators and referees have no robot. `--referee --staging`
+opens a referee-only entry rather than offering pilot deployment.
+
+Escape goes back one step and leaves the lobby from the side-selection step.
+Deployment remembers the chosen team, robot and chassis. Host weapon settings
+remain in the connection form; remote joins use the host's configuration.
+Direct-play CLI commands preserve their immediate spawn behavior. Add
+`--staging` (alone, with `--connect`, or with `--listen`) to use this flow.
 
 ## Balance stabilization and Drone flight
 
@@ -262,4 +270,4 @@ an NVIDIA laptop GPU; Mac performance still needs separate measurements.
 | Left Alt (hold) | Free the cursor, for example to click a marker on the small map |
 | F12 (hold) | Show controls |
 | Toolbar | Mouse-driven Settings, Map, Team, Help, Close and Leave match; appears with the cursor released |
-| Escape | Close the current panel or open Pause; on the seat page, return to the page its choice came from; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |
+| Escape | Close the current panel or open Pause; in staging, go back a step or leave; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |

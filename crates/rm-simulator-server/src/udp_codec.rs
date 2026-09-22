@@ -836,6 +836,11 @@ impl PeerCodec {
         now: Instant,
         pending_bytes: u32,
     ) -> io::Result<()> {
+        // Deployment changes ownership on the existing transport before any
+        // subsequent periodic frame can select its owner anchor.
+        if let ServerMessage::Deployed(receipt) = frame.message() {
+            self.chassis = Some(receipt.chassis.id);
+        }
         // The owner anchor is a single replaceable datagram that carries this
         // pilot's own chassis. It must not be dropped with the world checkpoint
         // a backlog skips below. An anchor may name a configuration only once

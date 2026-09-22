@@ -836,6 +836,58 @@ impl Owner {
             }
         }
     }
+    fn deploy(
+        &mut self,
+        id: u32,
+        team: Team,
+        robot: Robot,
+        chassis: crate::protocol::Chassis,
+        position_m: [f64; 2],
+    ) -> Result<(), String> {
+        if !self.control.ready.load(Ordering::Acquire) {
+            return Err("host is still loading".into());
+        }
+        let peer = self
+            .peers
+            .iter()
+            .find(|peer| peer.info.client_id == id)
+            .ok_or("unknown peer")?;
+        if peer.info.role != Role::Spectator || peer.info.chassis.is_some() {
+            return Err("only an undeployed spectator can deploy".into());
+        }
+        let chassis_id = self
+            .simulation
+            .deploy_robot(team, robot, chassis, position_m)?;
+        let receipt = crate::protocol::DeploymentReceipt {
+            team,
+            chassis: ChassisAssignment {
+                id: chassis_id,
+                config: self
+                    .simulation
+                    .field()
+                    .chassis_config(chassis_id)
+                    .expect("new chassis")
+                    .clone(),
+                robot,
+            },
+            weapon: self.simulation.weapon_for(chassis_id),
+            weapon_limits: self.simulation.weapon_limits_for(chassis_id),
+        };
+        let peer = self
+            .peers
+            .iter_mut()
+            .find(|peer| peer.info.client_id == id)
+            .expect("connected peer");
+        peer.info.team = Some(team);
+        peer.info.role = Role::Pilot;
+        peer.info.chassis = Some(chassis_id);
+        peer.info.robot = Some(robot);
+        self.send_to(id, ServerMessage::Deployed(Box::new(receipt)));
+        self.broadcast(ServerMessage::Roster(
+            self.peers.iter().map(|peer| peer.info.clone()).collect(),
+        ));
+        Ok(())
+    }
     fn client_message(&mut self, id: u32, message: ClientMessage) {
         self.observer.client(
             "host_receive",
@@ -847,6 +899,16 @@ impl Owner {
             return;
         };
         match message {
+            ClientMessage::Command(Command::Deploy {
+                team,
+                robot,
+                chassis,
+                position_m,
+            }) => {
+                if let Err(reason) = self.deploy(id, team, robot, chassis, position_m) {
+                    self.send_to(id, ServerMessage::Rejected { reason });
+                }
+            }
             ClientMessage::Hello { .. } => {}
             ClientMessage::TimeProbe { nonce } => {
                 self.send_to(

@@ -93,7 +93,8 @@ use serde::{Deserialize, Serialize};
 /// Version 49 adds the live prototype air-support policy and armed Drone preset.
 /// Version 50 adds the Drone's Aerial Safety Rope to the chassis configuration
 /// and the `MapMarker` command.
-pub const PROTOCOL_VERSION: u32 = 51;
+/// Version 52 adds connected deployment and the reliable ownership receipt.
+pub const PROTOCOL_VERSION: u32 = 52;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///
@@ -786,6 +787,17 @@ pub fn check_map_marker(kind: MapMarkerKind, position_m: [f64; 2]) -> Result<(),
 /// Anything that changes the simulation.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Command {
+    /// Deploy a connected spectator once, subject to host placement validation.
+    Deploy {
+        /// Team whose base ring contains the requested position.
+        team: Team,
+        /// Robot to create; determines weapon caliber.
+        robot: Robot,
+        /// Supported drivetrain for that robot.
+        chassis: Chassis,
+        /// Chassis centre in world FLU metres. Drone uses its designated aerial pad.
+        position_m: [f64; 2],
+    },
     /// Privileged training bots use ordinary chassis physics and never shoot.
     SpawnBot {
         /// Team the bot plays for.
@@ -1078,9 +1090,8 @@ pub struct ChassisAssignment {
 }
 /// The host's answer to [`ClientMessage::Hello`].
 ///
-/// It fixes the seat for the rest of the session: the role, the team and the
-/// chassis id the client may command. A client keeps them, so a later
-/// re-welcome is a new session rather than a role change.
+/// It establishes the initial seat. A spectator can become a pilot through
+/// `Command::Deploy` and `ServerMessage::Deployed`; a second Welcome remains invalid.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Welcome {
     /// How to build the shared prediction geometry, or `None` when this host
@@ -1102,6 +1113,19 @@ pub struct Welcome {
     /// Host caps, independent of the starting settings.
     pub weapon_limits: WeaponLimits,
 }
+/// A successful one-time transition from spectator to pilot on the same connection.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentReceipt {
+    /// Granted team.
+    pub team: Team,
+    /// Newly assigned robot, whose id is never reused.
+    pub chassis: ChassisAssignment,
+    /// Authoritative starting weapon settings for this robot.
+    pub weapon: WeaponConfig,
+    /// Host weapon limits for this robot's caliber.
+    pub weapon_limits: WeaponLimits,
+}
+
 /// One connected client, as listed in the roster.
 ///
 /// A host sends the whole roster whenever it changes, so a client replaces its
@@ -1180,6 +1204,8 @@ pub struct ShotResult {
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ServerMessage {
+    /// Reliable deployment acknowledgement, ordered before its confirmation snapshot.
+    Deployed(Box<DeploymentReceipt>),
     /// Host downstream application queues sampled independently of input execution.
     DeliveryStats(crate::pacing::QueueStats),
     /// Ordered authoritative contact feedback. Native reliable delivery retries

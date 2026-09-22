@@ -400,7 +400,7 @@ fn armor_pattern(
 /// One chassis for the renderer, using the actual host or predicted motor pose. `flash`
 /// lists the armor plates flashing after a strike; `robot` is what the roster
 /// says its pilot drives.
-fn chassis_appearance(
+pub(crate) fn chassis_appearance(
     chassis: &ChassisSnapshot,
     flash: &[bool],
     robot: Option<rm_simulator_server::protocol::Robot>,

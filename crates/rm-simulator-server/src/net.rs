@@ -423,6 +423,7 @@ fn record_loopback_frame(inbox: &ClientInbox, payload: &[u8]) {
 /// Latest replaceable state and ordered discrete events from the reader.
 #[derive(Default)]
 struct Incoming {
+    deployment: Option<Box<crate::protocol::DeploymentReceipt>>,
     transport_stats: Option<crate::network_stats::TransportStats>,
     host_telemetry: Option<crate::network_stats::HostTelemetry>,
     delivery_stats: Option<crate::pacing::QueueStats>,
@@ -484,6 +485,10 @@ impl ClientInbox {
             ));
         }
         let replaced = match message {
+            ServerMessage::Deployed(receipt) => data
+                .deployment
+                .replace(receipt)
+                .map(ServerMessage::Deployed),
             ServerMessage::DeliveryStats(stats) => {
                 data.delivery_stats = Some(stats);
                 None
@@ -728,6 +733,13 @@ impl Client {
             return;
         };
         self.acknowledged = data.acknowledged;
+        if let Some(receipt) = data.deployment.take() {
+            self.welcome.team = Some(receipt.team);
+            self.welcome.role = Role::Pilot;
+            self.welcome.chassis = Some(receipt.chassis);
+            self.welcome.weapon = receipt.weapon;
+            self.welcome.weapon_limits = receipt.weapon_limits;
+        }
         if let Some(stats) = data.delivery_stats.take() {
             self.delivery_stats = Some(stats);
         }
@@ -1209,6 +1221,101 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
     }
+    #[test]
+    fn staged_deployment_assigns_same_peer_over_loopback_and_udp() {
+        let _serial = NATIVE_TEST.lock().unwrap_or_else(|p| p.into_inner());
+        for remote in [false, true] {
+            let (server, simulation) = host();
+            let mut client = if remote {
+                Client::connect_udp(
+                    server.local_addr(),
+                    "staged",
+                    Some(Team::Red),
+                    Role::Spectator,
+                )
+                .unwrap()
+            } else {
+                server
+                    .connect_owner(
+                        "staged",
+                        Team::Red,
+                        Role::Spectator,
+                        Robot::default(),
+                        [0.0; 3],
+                        0.0,
+                    )
+                    .unwrap()
+            };
+            let peer = client.welcome().client_id;
+            assert!(client.welcome().chassis.is_none());
+            let deploy = |position_m| Command::Deploy {
+                team: Team::Blue,
+                robot: Robot::Hero,
+                chassis: crate::protocol::Chassis::Mecanum,
+                position_m,
+            };
+            // Centre of the base and the opposing ring are both invalid.
+            for position in [[-11.68, 0.0], [10.4, 0.0], [f64::NAN, 0.0]] {
+                client.send_confirmed(deploy(position)).unwrap();
+                wait_until("invalid deployment confirmation", || {
+                    client.poll();
+                    client.commands_confirmed()
+                });
+                assert!(client.welcome().chassis.is_none());
+                assert!(simulation.snapshot().unwrap().chassis.is_empty());
+            }
+            client.send_confirmed(deploy([-10.4, 0.0])).unwrap();
+            wait_until("deployment confirmation", || {
+                client.poll();
+                client.commands_confirmed()
+            });
+            assert_eq!(client.welcome().client_id, peer);
+            assert_eq!(client.welcome().role, Role::Pilot);
+            assert_eq!(client.welcome().team, Some(Team::Blue));
+            let assignment = client.welcome().chassis.as_ref().unwrap();
+            let id = assignment.id;
+            assert_eq!(assignment.robot, Robot::Hero);
+            assert!(assignment.config.mecanum);
+            let roster = client
+                .roster()
+                .iter()
+                .find(|p| p.client_id == peer)
+                .unwrap();
+            assert_eq!(roster.chassis, Some(id));
+            assert_eq!(roster.role, Role::Pilot);
+            assert_eq!(client.state().unwrap().field.chassis.len(), 1);
+            assert_eq!(client.state().unwrap().field.chassis[0].team, Team::Blue);
+            // A second request cannot allocate a replacement or another robot.
+            client.send_confirmed(deploy([-12.8, 0.0])).unwrap();
+            wait_until("second deployment refused", || {
+                client.poll();
+                client.commands_confirmed()
+            });
+            assert_eq!(simulation.snapshot().unwrap().chassis.len(), 1);
+            // A different spectator cannot deploy over the existing robot.
+            let mut other =
+                Client::connect_udp(server.local_addr(), "other", None, Role::Spectator).unwrap();
+            other.send_confirmed(deploy([-10.4, 0.0])).unwrap();
+            wait_until("occupied deployment refused", || {
+                other.poll();
+                other.commands_confirmed()
+            });
+            assert!(other.welcome().chassis.is_none());
+            assert_eq!(simulation.snapshot().unwrap().chassis.len(), 1);
+            // Ownership is also propagated into the per-peer owner stream.
+            server.spawn_clock().unwrap();
+            simulation.apply(&Command::Pause { paused: false }).unwrap();
+            wait_until("deployed owner receives anchor", || {
+                client.poll();
+                client.take_owner_anchor().is_some()
+            });
+            drop(client);
+            wait_until("deployed robot removed on disconnect", || {
+                simulation.snapshot().unwrap().chassis.is_empty()
+            });
+        }
+    }
+
     #[test]
     fn in_process_owner_preserves_barriers_over_the_loopback_codec() {
         let mut server = Server::in_process(

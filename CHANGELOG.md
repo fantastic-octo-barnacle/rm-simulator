@@ -4,20 +4,17 @@
 
 ## Unreleased
 
-- Solo practice, LAN hosting and remote joins share one setup lobby with
-  inline chassis selection, drivetrain schematics and a responsive loadout
-  panel. Host weapon settings are expandable inside solo and LAN setup;
-  one confirmation enters the field.
+- Joining solo or multiplayer now opens connected 3D staging: hover over and
+  click an arena half to choose a side, preview a robot and chassis, then click
+  a starting point in the outlined base ring. The tilted camera keeps the
+  arena's long edge horizontal. The host validates deployment and assigns the robot on the same
+  connection; occupied or invalid points can be retried. Drone keeps its aerial
+  pad, while spectators and referees enter without robots. `--staging` also
+  exposes the flow to direct CLI launches. Protocol 52 adds deployment requests
+  and ownership acknowledgements; both ends must use the same version.
+- Infantry 5 is available alongside Infantry 3 and 4 and wears armor number 5.
 
-- The robot page is now a seat board, the same one in single player and
-  multiplayer: five spectator slots across the top, the blue line-up on the
-  left and the red on the right, and three referee slots underneath, with Back
-  and Continue moved below the board so a seat is no longer mistaken for a page
-  button. Each team column is the competition line-up, so Infantry 5 joins
-  Infantry 3 and 4 as `--robot infantry-5` and wears armor number 5. Slots do
-  not yet show who holds them (protocol 51).
-
-- The title screen, the loading splash and a running match are now a Bevy
+- The title screen, loading splash, connected staging and a running match are now a Bevy
   `Screen` state instead of the presence of a resource, and the title screen's
   pages are a sub-state of it. Leaving the title screen takes its pages with it,
   so returning always opens the main menu. No visible behaviour changes.

@@ -39,6 +39,8 @@ pub enum Screen {
     Loading,
     /// A match is running and the gameplay systems are unlocked.
     InMatch,
+    /// Connected, with an overhead camera and deployment form; no gameplay input.
+    Staging,
 }
 /// Whether a match is running, for the exclusive systems that cannot carry a
 /// run condition. Equivalent to the `in_state(Screen::InMatch)` condition.
@@ -283,6 +285,7 @@ fn poll(world: &mut World) {
             }
             Ok(Update::Complete(result)) => match *result {
                 Ok((cad, opened, args, yaw, minimap, bounds)) => {
+                    world.insert_resource(crate::staging::StagingConfig(args.clone()));
                     world.insert_resource(scene::ArenaBounds(bounds));
                     world.insert_resource(Gun::new(
                         opened.session.weapon.shot,
@@ -371,7 +374,17 @@ fn poll(world: &mut World) {
                 if let Some(session) = world.get_resource::<Session>() {
                     session.ready();
                 }
-                enter(world, Screen::InMatch);
+                let staging = world
+                    .get_resource::<crate::staging::StagingConfig>()
+                    .is_some_and(|config| config.0.staging);
+                enter(
+                    world,
+                    if staging {
+                        Screen::Staging
+                    } else {
+                        Screen::InMatch
+                    },
+                );
                 return;
             }
         }
@@ -412,6 +425,7 @@ pub fn to_title(world: &mut World, status: Option<String>) {
     world.remove_resource::<Loading>();
     world.remove_resource::<LeaveRequest>();
     world.remove_resource::<Session>();
+    world.remove_resource::<crate::staging::StagingConfig>();
     if let Some(mut assist) = world.get_resource_mut::<crate::auto_aim::AutoAim>() {
         *assist = default();
     }

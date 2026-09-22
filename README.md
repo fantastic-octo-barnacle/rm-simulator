@@ -106,7 +106,7 @@ The essentials, for driving and for match control:
 | M | Toggle the large team map; click it to place a marker, A / B / I pick attack / defend / alert and other letters a custom marker |
 | Left Alt (hold) | Free the cursor, for example to click a marker on the small map |
 | F12 (hold) | Show controls |
-| Escape | Close the current panel or open Pause; on the seat page, return to the page its choice came from; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |
+| Escape | Close the current panel or open Pause; in staging, go back a step or leave; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |
 
 The complete command-line reference for both binaries, the weapon settings, the
 HUD and interface behavior, the graphics presets and the full controls table are
@@ -121,14 +121,17 @@ and Quit. Single Player starts a local practice field and never asks for a
 name. Multiplayer asks for the player name, then lists LAN lobbies on the left
 and creates a named, optionally
 password-protected lobby on the right. Select a listing, enter its password if needed, and press Join lobby / address.
-Every way in then opens the seat page, a lobby board with five spectator slots
-across the top, the blue line-up on the left and the red on the right, and three
-referee slots underneath. Each team column holds one Hero, one Engineer,
-Infantry 3, 4 and 5, one Sentry and one Drone. Select the chassis in the adjacent loadout panel,
-then Enter field or Join lobby. Infantry offers omni or balance; Hero and
-Engineer use mecanum, and Sentry uses omni. Spectators and referees hide the loadout controls. Expand Advanced weapon
-settings in the same lobby to configure solo practice or a LAN host. Solo uses
-the same embedded host and client as LAN hosting, without a network listener.
+Joining opens a connected 3D staging view of the real field. Hover over a half
+of the arena to highlight it and click to choose your side. Choose a robot and
+supported chassis, then click a starting position in the outlined ring around
+your base. The camera switches to a top-down view for
+placement. Deploy creates your robot only after the host accepts the position;
+occupied points are refused. Drone uses its designated aerial pad. You can also
+enter as a spectator without a robot. Escape goes back a step or leaves staging.
+Advanced host weapon settings are available before starting solo practice or a
+LAN lobby. Solo uses the same embedded host and client as LAN hosting, without
+a network listener. Existing direct-play CLI commands still enter immediately;
+add `--staging` to use the connected setup flow.
 You can also enter a direct address. The page and lobby list scroll with the
 mouse wheel, trackpad or scrollbar; narrow windows stack the two columns. Public is greyed out pending public connectivity support.
 The firewall tip recommends allowing the app on private networks. Lobby names

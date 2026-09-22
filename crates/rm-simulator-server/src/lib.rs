@@ -16,6 +16,7 @@ pub mod cad_assets;
 pub mod clock;
 pub mod collision_mesh;
 pub mod compression;
+pub mod deployment;
 pub mod host;
 pub mod host_args;
 pub mod http;
