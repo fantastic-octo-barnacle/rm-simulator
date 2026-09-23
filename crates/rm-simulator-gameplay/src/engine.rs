@@ -328,6 +328,20 @@ pub enum Command {
     /// previous observation for the same mechanic, team and robot.
     Observe(ElementObservation),
 }
+impl Command {
+    /// These handlers finish validation before changing the game. Every other
+    /// command runs on a clone so rejection cannot leave partial state behind.
+    fn applies_atomically_in_place(&self) -> bool {
+        matches!(
+            self,
+            Self::CombatState { .. }
+                | Self::Disconnection { .. }
+                | Self::Launch { .. }
+                | Self::ObserveLaunch { .. }
+                | Self::ProjectileHit(_)
+        )
+    }
+}
 /// Rejection reason from [`Game::new`], [`Game::command`] and [`Game::step`].
 /// A rejected call leaves the game unchanged.
 ///
@@ -994,16 +1008,7 @@ impl Game {
     /// # Ok::<(), Error>(())
     /// ```
     pub fn command(&mut self, command: Command) -> Result<(), Error> {
-        // These handlers validate everything before their first mutation.
-        // Keep their implementation in `apply` so both paths use the same rules.
-        if matches!(
-            command,
-            Command::CombatState { .. }
-                | Command::Disconnection { .. }
-                | Command::Launch { .. }
-                | Command::ObserveLaunch { .. }
-                | Command::ProjectileHit(_)
-        ) {
+        if command.applies_atomically_in_place() {
             return self.apply(command);
         }
         let mut next = self.clone();

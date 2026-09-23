@@ -1518,32 +1518,6 @@ mod tests {
             Err(FieldError::Restore(_))
         ));
     }
-    /// Partition invariance stated in world time rather than tick counts, so it
-    /// holds whatever the fixed `tick_ns` length is.
-    #[test]
-    fn field_partition_invariance_holds_at_the_fixed_tick() {
-        let config = FieldConfig::default();
-        let mut whole = Field::new(&config).unwrap();
-        let mut split = Field::new(&config).unwrap();
-        let muzzle = Pose::yawed([0.0, 0.0, 1.0], 0.6);
-        for field in [&mut whole, &mut split] {
-            field.step(ticks(500_000_000)).unwrap();
-            field
-                .fire(muzzle, Shot::at_limit(Caliber::Mm17), None)
-                .unwrap();
-        }
-        // Split by uneven tick counts derived from the total, so the parts
-        // still sum to it at the fixed tick.
-        let total = ticks(1_500_000_000);
-        whole.step(total).unwrap();
-        let parts = [1, total / 7, total / 3];
-        let rest = total - parts.iter().sum::<u64>();
-        for part in parts.into_iter().chain([rest]) {
-            split.step(part).unwrap();
-        }
-        assert_eq!(whole.tick(), split.tick());
-        assert_eq!(whole.snapshot(), split.snapshot());
-    }
     #[test]
     fn default_field_steps_deterministically_in_any_partition() {
         let config = FieldConfig::default();
