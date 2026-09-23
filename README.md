@@ -17,7 +17,7 @@ Physics and motion, gameplay rules, Bevy rendering, the server and the
 interactive application are separate Rust crates. Rune rules, outpost geometry,
 the CAD scene handling, and the armor artwork masks were reused from the sibling
 `../Vision/rm-vision-sim` repository; see `NOTICE.md`. The
-[documentation index](docs/README.md) separates current guides from historical plans.
+[documentation index](docs/README.md) lists the current guides.
 
 ## Contents
 
@@ -531,11 +531,6 @@ block asserts named thresholds on the summary, `--baseline PREVIOUS/summary.json
 fails regressions beyond a relative tolerance, and the run reports `passed`,
 `failed` or `completed` with a matching exit code.
 
-The [bandwidth experiment record](docs/bandwidth-experiments.md) retains the
-isolated trials behind the current delivery contracts. The
-[completed network investigation](docs/network-investigation.md) summarizes
-its historical measurements and their limits.
-
 ## Match rules and scoring
 
 Projectiles follow RMUC 2026 rules: 17 mm balls (16.8 mm, 3.2 g) and 42 mm balls
@@ -839,12 +834,11 @@ shields.
 
 ## Performance
 
-The recorded standard-detail build has 497,886 placed visual triangles and
-312,749 collision triangles including mechanisms. The 100k collision target remains
-unmet. Rebuilding, validation and rollback are described in
-[reproducible field detail](docs/field-detail.md). Runtime level of detail switching
-and mesh chunking are not part of this pass; GPU occlusion culling is an optional
-Graphics setting and remains off by default pending measurements.
+Use the `inspect_assets` example to measure the selected field package's visual
+and collision geometry. Rebuilding, validation and rollback are described in
+[field detail](docs/field-detail.md). Runtime level of detail switching and mesh
+chunking are not available; GPU occlusion culling is an optional Graphics
+setting and is off by default.
 
 Use [the loaded-match CPU probe](docs/performance.md) to measure median and tail
 costs with several matches running at once. Test client frame times separately

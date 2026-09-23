@@ -69,7 +69,6 @@ the embedded checkpoint dictionary.
 cargo run --locked -p rm-simulator-server --example inspect_assets -- <package>
 ```
 
-Transport tracing is documented in
-[docs/network-tracing.md](../../docs/network-tracing.md), the codec measurements
-in [docs/bandwidth-experiments.md](../../docs/bandwidth-experiments.md), and the
-engine cost checks in [docs/performance.md](../../docs/performance.md).
+Transport tracing and the deterministic codec probe are documented in
+[docs/network-tracing.md](../../docs/network-tracing.md). Engine cost probes are
+in [docs/performance.md](../../docs/performance.md).

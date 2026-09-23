@@ -2,10 +2,10 @@
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
 //! The deterministic field the bandwidth probe and the measurement examples drive.
 //!
-//! Every bandwidth number in `docs/bandwidth-experiments.md` and every training
-//! workload behind the compressed-dictionary checkpoints has to start from the
-//! same field, or the numbers stop being comparable. The builder lives in the
-//! library rather than in each harness so that "the same workload" is a
+//! Bandwidth comparisons and training workloads behind the compressed-dictionary
+//! checkpoints must start from the same field, or the numbers stop being
+//! comparable. The builder lives in the library rather than in each harness so
+//! that "the same workload" is a
 //! compiler-checked fact instead of a copied block: the two-rune, two-team
 //! referee layout with no CAD, and `players` chassis that alternate teams in
 //! spawn order.
