@@ -141,10 +141,10 @@ The compositor embeds full upstream manifests and build/deployment records in
 `build-provenance.json`, including original exporter settings and source hashes.
 No STEP tessellation is performed by this refresh.
 
-To reproduce after installation, from the simulator repository root, use unused
-output directories as shown. The retained backup is the scenery input.
-`field-all-joints` is retained as the unsimplified intermediate; reuse it and
-skip composition, or move it aside before rebuilding it:
+To reproduce this historical build from the simulator repository root, restore
+the source packages with the hashes in the build record and use unused output
+directories as shown. The unsimplified `field-all-joints` intermediate is not
+required after installation and may be regenerated:
 
 ```sh
 python3 scripts/build-semantic-assets.py \
@@ -177,8 +177,9 @@ physics triangles, excluding mechanism subtrees managed as moving colliders.
 All 14 visual and collision joint records are identical before and after the
 simplifier. The minimap was regenerated for the final manifest hashes.
 
-Installation retains `local-assets/field.before-all-joints` and the prior binaries
-with `.before-all-joints` suffixes. Both binaries were rebuilt with
+At the time, installation retained `local-assets/field.before-all-joints` and the
+prior binaries with `.before-all-joints` suffixes. Those scratch backups are not
+part of the package and need not remain on disk. Both binaries were rebuilt with
 `cargo build --workspace --bins` and installed into `local-assets/bin`.
 The output also contains `asset-refresh.json` and `asset-refresh-simplify.json`
 as local copies of the checked-in recipe and settings.
@@ -207,6 +208,7 @@ cargo run -p rm-simulator-server --example inspect_assets -- local-assets/field-
 
 The artwork-rebuild candidate package's `base-armor-artwork.json` records the
 exact invocation, script and helper hashes, atlas hash, placement recipe and
-output hash. It lives in the candidate at `local-assets/field-base-artwork`, not
-in the installed runtime package, whose base entry carries no artwork record. The
-pre-artwork package is retained at `local-assets/field.before-base-artwork`.
+output hash. It lived in the candidate at `local-assets/field-base-artwork`, not
+in the installed runtime package, whose base entry carries no artwork record.
+The pre-artwork package was kept at `local-assets/field.before-base-artwork`
+during that build; neither scratch copy is required for runtime use.

@@ -24,6 +24,10 @@ cargo install prek --version 0.4.14 --locked
 prek install --hook-type pre-commit --hook-type commit-msg
 ```
 
+The pre-commit hook runs `cargo fmt --all` when Rust files are staged, so review
+and stage any formatting it applies before committing. Run `just verify` for
+Clippy and the full test gate.
+
 ## Commits and pull requests
 
 Use `type(scope): summary` for commit subjects and PR titles. Scope is optional;

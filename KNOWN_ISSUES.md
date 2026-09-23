@@ -2,17 +2,18 @@
 <!-- Copyright (c) 2026 hxyulin <hxyulin@proton.me> -->
 # Known issues
 
-Networking issues still open as of 14 September 2026, with the protocol 29
-bandwidth integration. Measurements below retain their original revisions.
-This list covers the current networking investigation, not every limitation of
+Networking issues recorded as open on 14 September 2026, with the protocol 29
+bandwidth integration. The current protocol is 52; these measurements have not
+been repeated against it, so the status of each issue needs revalidation.
+This list covers the networking investigation, not every limitation of
 competition-rule enforcement. Fixed hit delivery, auto-aim sampling, lobby
 compatibility and local TCP overhead are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 | Id | Issue | Status |
 |---|---|---|
-| NET-001 | Downstream traffic exceeds the bandwidth target | Open |
-| NET-002 | Shot outcomes remain delayed on a fast local connection | Open; attribution incomplete |
-| NET-003 | Constrained links develop severe latency and incomplete outcomes | Open |
+| NET-001 | Downstream traffic exceeds the bandwidth target | Open in protocol 29; current build unmeasured |
+| NET-002 | Shot outcomes remain delayed on a fast local connection | Open in protocol 29; current build unmeasured |
+| NET-003 | Constrained links develop severe latency and incomplete outcomes | Open in protocol 29; current build unmeasured |
 
 ## NET-001: Downstream traffic exceeds the bandwidth target
 
@@ -130,9 +131,8 @@ targeted robot-armor and impaired setup/rejoin probes are retained in Git histor
 Packet-specific setup/ACK loss over GNS and broader recovery validation remain
 outstanding; random setup loss is not proof of dropping a particular ACK.
 
-Raw artifacts remain outside Git in `/tmp/rm-short-two-client-blackout-baseline`
-and `/tmp/rm-short-two-client-blackout-run`; each contains the scenario, binary
-hashes, samples and summary. They are local captures, not permanent report URLs.
+The trial's raw artifacts were local captures outside Git, not permanent report
+URLs. The setup and summary above retain the tracked evidence.
 
 Use the new traces to locate backlog, then test traffic reduction and pacing
 changes under bandwidth caps, loss, jitter and blackouts. Keep reliable outcomes

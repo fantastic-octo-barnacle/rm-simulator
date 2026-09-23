@@ -99,7 +99,7 @@ loader and the licensing rules depend on the split.
 
 | Path | Tracked | Role |
 |---|---|---|
-| `assets/` | yes | Build input embedded with `include_bytes!`: armor-atlas artwork masks, outpost/title art and their sources. Small and CAD-free. |
+| `assets/` | yes | Build input embedded with `include_bytes!`: armor-atlas artwork masks, the outpost mask and their sources. Small and CAD-free. |
 | `crates/rm-simulator-server/assets/` | yes | Build input embedded with `include_bytes!`: the protocol 32 checkpoint ZSTD dictionary. |
 | `local-assets/` | no | Gitignored development scratch: extracted `field` package, dated `field.before-*` backups, coarse/preview exports, harness reports. Never source; not referenced from committed code. |
 | `~/dev/RM/assets/` | outside the repo | Home-directory field install and the legacy V2.0.0 extraction the loader falls back to. Not this repository's `assets/`. |
