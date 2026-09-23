@@ -206,6 +206,7 @@ struct ChassisRecord {
     team: rm_simulator_world::Team,
     config: ConfigWire,
     command: rm_simulator_world::ChassisCommand,
+    jump_held: bool,
     defeated: bool,
 }
 /// The dynamic part of a [`rm_simulator_world::ChassisSnapshot`], with each
@@ -391,6 +392,7 @@ impl PlayerSnapshot {
                     team: chassis.team,
                     config: ConfigWire::new(&chassis.config),
                     command: chassis.command,
+                    jump_held: chassis.jump_held,
                     defeated: chassis.defeated,
                 })
             })
@@ -541,6 +543,7 @@ impl PlayerSnapshot {
                 velocity_m_s: motion.velocity_m_s,
                 angular_velocity_rad_s: motion.angular_velocity_rad_s,
                 command: record.command,
+                jump_held: record.jump_held,
                 held_aim_rad: motion.held_aim_rad,
                 gimbal_velocity_rad_s: motion.gimbal_velocity_rad_s,
                 wheels: motion
@@ -852,6 +855,7 @@ fn predict_motion(records: &[Aligned<ChassisRecord>], motion: &mut [ChassisMotio
             continue;
         }
         let mut probe = rm_simulator_world::ChassisSnapshot {
+            jump_held: false,
             placement_revision: record.placement_revision,
             id: record.id,
             team: record.team,

@@ -3,7 +3,7 @@
 //! The per-peer UDP codec, with no socket in it.
 //!
 //! One peer's whole wire behaviour lives here: the RMG1 fragment framing, the
-//! RMI3 input batches, the RMC1 compressed commands, the RMO6 owner anchor, the
+//! RMI5 input batches, the RMC1 compressed commands, the RMO8 owner anchor, the
 //! RMA2 baseline feedback, snapshot delta encoding and the byte pacer. The GNS
 //! reactor in `gns_transport` is a thin wrapper that moves datagrams between a
 //! socket and these structs; a test drives the same structs over a scripted
@@ -49,16 +49,16 @@ const COMMAND_MAGIC: &[u8; 4] = b"RMC1";
 /// header carries the chassis, input epoch and placement revision, and every
 /// frame carries relative sequence and sampled-time fields plus an exact
 /// changed-value mask over the five command values.
-const INPUT_BATCH_MAGIC: &[u8; 4] = b"RMI3";
+const INPUT_BATCH_MAGIC: &[u8; 4] = b"RMI5";
 /// Bytes of one fixed input frame: chassis, input epoch, sequence, sampled time,
 /// placement revision, duration and five f64 command values.
-const INPUT_FRAME_BYTES: usize = 80;
+const INPUT_FRAME_BYTES: usize = 82;
 /// Most frames one batch may carry.
 pub(crate) const MAX_INPUT_FRAMES: usize = 12;
-/// Bytes of the shared RMI3 batch header: chassis, input epoch and placement
+/// Bytes of the shared RMI5 batch header: chassis, input epoch and placement
 /// revision, which every compact frame in the batch inherits.
 const INPUT_HEADER_BYTES: usize = 20;
-/// Per-frame tag for a frame that keeps the fixed 80-byte encoding.
+/// Per-frame tag for a frame that keeps the fixed 82-byte encoding.
 const INPUT_FRAME_FIXED: u8 = 0x00;
 /// Per-frame tag for a frame that takes its identity from the shared header.
 const INPUT_FRAME_COMPACT: u8 = 0x01;
@@ -66,7 +66,9 @@ const INPUT_FRAME_COMPACT: u8 = 0x01;
 const INPUT_SEQUENCE_ABSOLUTE: u8 = 0x01;
 /// Compact-frame flag: the sampled time is an absolute u64, not a relative delta.
 const INPUT_TIME_ABSOLUTE: u8 = 0x02;
-/// Largest inflated RMI3 body: the count, the shared header and twelve frames
+/// Held jump button in a compact input.
+const INPUT_JUMP: u8 = 0x04;
+/// Largest inflated RMI5 body: the count, the shared header and twelve frames
 /// that each fall back to the fixed encoding. It bounds a hostile peer's
 /// allocation and proves the body still fits one datagram.
 const INPUT_BATCH_BODY_LIMIT: usize =
@@ -213,6 +215,8 @@ fn select_inputs(history: &VecDeque<Command>, limit: usize) -> VecDeque<Command>
                 direction(frame.command.forward_m_s),
                 direction(frame.command.left_m_s),
                 direction(frame.command.yaw_rate_rad_s),
+                frame.command.jump,
+                frame.command.balance_control,
             ),
             _ => unreachable!(),
         };
@@ -239,7 +243,7 @@ fn command_values(command: &rm_simulator_world::ChassisCommand) -> [f64; 5] {
 fn command_bits(command: &rm_simulator_world::ChassisCommand) -> [u64; 5] {
     command_values(command).map(f64::to_bits)
 }
-/// The fixed 80-byte frame encoding this codec used before the compact batch:
+/// The fixed 82-byte frame encoding this codec used before the compact batch:
 /// chassis, input epoch, sequence, sampled time, placement revision, duration
 /// and five f64 command values. A compact batch keeps it as the exact fallback
 /// for a frame whose identity is not the shared header's.
@@ -255,9 +259,11 @@ fn fixed_frame(chassis: u32, frame: &crate::input_stream::InputFrame) -> [u8; IN
         let start = 40 + index * 8;
         bytes[start..start + 8].copy_from_slice(&value.to_le_bytes());
     }
+    bytes[80] = u8::from(frame.command.jump);
+    bytes[81] = frame.command.balance_control;
     bytes
 }
-/// Whether `payload` is a compact `RMI3` pilot input batch.
+/// Whether `payload` is a compact `RMI5` pilot input batch.
 fn is_input_batch(payload: &[u8]) -> bool {
     payload.starts_with(INPUT_BATCH_MAGIC)
 }
@@ -295,7 +301,7 @@ fn read_u64(bytes: &[u8], cursor: &mut usize) -> io::Result<u64> {
     *cursor += 8;
     Ok(u64::from_le_bytes(slice.try_into().unwrap()))
 }
-/// Decodes one fixed 80-byte frame. Refuses a non-finite command.
+/// Decodes one fixed 82-byte frame. Refuses a non-finite command.
 fn decode_fixed_frame(frame: &[u8]) -> io::Result<Command> {
     let u64_at = |i| u64::from_le_bytes(frame[i..i + 8].try_into().unwrap());
     let f64_at = |i| f64::from_le_bytes(frame[i..i + 8].try_into().unwrap());
@@ -305,6 +311,12 @@ fn decode_fixed_frame(frame: &[u8]) -> io::Result<Command> {
         yaw_rate_rad_s: f64_at(56),
         aim_yaw_rad: f64_at(64),
         aim_pitch_rad: f64_at(72),
+        balance_control: frame[81],
+        jump: match frame[80] {
+            0 => false,
+            1 => true,
+            _ => return Err(io_error("invalid jump flag")),
+        },
     };
     if !command.is_finite() {
         return Err(io_error("non-finite input"));
@@ -321,7 +333,7 @@ fn decode_fixed_frame(frame: &[u8]) -> io::Result<Command> {
         },
     })
 }
-/// Encodes an input batch as `RMI3` followed by a ZSTD or raw `compression` framing: one count byte,
+/// Encodes an input batch as `RMI5` followed by a ZSTD or raw `compression` framing: one count byte,
 /// one header holding the values the newest frame shares (chassis, input epoch
 /// and placement revision), then one entry per frame.
 ///
@@ -329,7 +341,7 @@ fn decode_fixed_frame(frame: &[u8]) -> io::Result<Command> {
 /// relative sequence delta, a relative sampled-time delta and a duration
 /// varint; only changed values ride at full f64 precision. A frame whose
 /// identity is not the header's, or whose delta cannot be represented exactly,
-/// keeps its fixed 80-byte encoding, so decoding returns the same `InputFrame`
+/// keeps its fixed 82-byte encoding, so decoding returns the same `InputFrame`
 /// the fixed encoding produces, bit for bit.
 ///
 /// Refuses an empty batch, more than [`MAX_INPUT_FRAMES`] frames, any command
@@ -376,7 +388,7 @@ fn input_batch(inputs: &VecDeque<Command>, raw: bool) -> io::Result<Vec<u8>> {
             let sequence = previous_sequence.and_then(|before| frame.sequence.checked_sub(before));
             let sampled_time =
                 previous_time.and_then(|before| frame.sampled_time_ns.checked_sub(before));
-            let mut flags = 0u8;
+            let mut flags = if frame.command.jump { INPUT_JUMP } else { 0 };
             if sequence.is_none() {
                 flags |= INPUT_SEQUENCE_ABSOLUTE;
             }
@@ -386,6 +398,7 @@ fn input_batch(inputs: &VecDeque<Command>, raw: bool) -> io::Result<Vec<u8>> {
             bytes.push(INPUT_FRAME_COMPACT);
             bytes.push(mask);
             bytes.push(flags);
+            bytes.push(frame.command.balance_control);
             match sequence {
                 Some(delta) => write_varint(&mut bytes, delta),
                 None => bytes.extend(frame.sequence.to_le_bytes()),
@@ -417,7 +430,7 @@ fn input_batch(inputs: &VecDeque<Command>, raw: bool) -> io::Result<Vec<u8>> {
     }
     Ok(packet)
 }
-/// Decodes a compact `RMI3` pilot input batch in encoded order, oldest first. Refuses a missing magic, a
+/// Decodes a compact `RMI5` pilot input batch in encoded order, oldest first. Refuses a missing magic, a
 /// packet over the single-datagram budget, an inflated body over
 /// [`INPUT_BATCH_BODY_LIMIT`], a count outside 1..=12, a reserved mask or flag
 /// bit, a delta or command value with no in-batch base, a truncated frame, a
@@ -431,7 +444,7 @@ fn decode_inputs(packet: &[u8]) -> io::Result<Vec<Command>> {
         .ok_or_else(|| io_error("invalid input batch"))?;
     decode_compact_inputs(compressed)
 }
-/// Decodes the `RMI3` body: one count byte, the shared identity header, then one
+/// Decodes the `RMI5` body: one count byte, the shared identity header, then one
 /// entry per count. A compact frame inherits the header's identity and reuses the
 /// previous frame's sequence, sampled time and unchanged command values; a legacy
 /// frame carries all 80 bytes of its own.
@@ -479,10 +492,14 @@ fn decode_compact_inputs(compressed: &[u8]) -> io::Result<Vec<Command>> {
                     .get(cursor)
                     .ok_or_else(|| io_error("truncated input frame"))?;
                 cursor += 1;
+                let balance_control = *bytes
+                    .get(cursor)
+                    .ok_or_else(|| io_error("truncated control level"))?;
+                cursor += 1;
                 if mask & !0x1f != 0 {
                     return Err(io_error("invalid input mask"));
                 }
-                if flags & !(INPUT_SEQUENCE_ABSOLUTE | INPUT_TIME_ABSOLUTE) != 0 {
+                if flags & !(INPUT_SEQUENCE_ABSOLUTE | INPUT_TIME_ABSOLUTE | INPUT_JUMP) != 0 {
                     return Err(io_error("invalid input flags"));
                 }
                 let sequence = if flags & INPUT_SEQUENCE_ABSOLUTE != 0 {
@@ -518,6 +535,8 @@ fn decode_compact_inputs(compressed: &[u8]) -> io::Result<Vec<Command>> {
                     yaw_rate_rad_s: f64::from_bits(bits[2]),
                     aim_yaw_rad: f64::from_bits(bits[3]),
                     aim_pitch_rad: f64::from_bits(bits[4]),
+                    jump: flags & INPUT_JUMP != 0,
+                    balance_control,
                 };
                 if !command.is_finite() {
                     return Err(io_error("non-finite input"));
@@ -971,6 +990,7 @@ impl HostPeer {
                     team,
                     role,
                     robot,
+                    chassis,
                 } = message
                 else {
                     return Err(io_error("expected hello"));
@@ -981,7 +1001,7 @@ impl HostPeer {
                         protocol,
                     )));
                 }
-                self.join(name, team, role, robot, password)
+                self.join(name, team, role, robot, chassis, password)
             }
         }
     }
@@ -993,6 +1013,7 @@ impl HostPeer {
         team: Option<Team>,
         role: Role,
         robot: Robot,
+        chassis: crate::protocol::Chassis,
         password: String,
     ) -> io::Result<()> {
         let (sender, receiver) = outbox::channel(crate::net::OUTBOX_CAPACITY);
@@ -1005,6 +1026,7 @@ impl HostPeer {
                 team,
                 role,
                 robot,
+                chassis,
                 owner_spawn: spawn,
                 outbox: sender,
                 stream: self.stop.clone(),
@@ -1144,6 +1166,24 @@ impl ClientCodec {
         robot: Robot,
         password: &str,
     ) -> io::Result<Vec<u8>> {
+        Self::hello_with_chassis(
+            name,
+            team,
+            role,
+            robot,
+            crate::protocol::Chassis::Auto,
+            password,
+        )
+    }
+    /// Encode the independently selected drivetrain in the admission request.
+    pub(crate) fn hello_with_chassis(
+        name: &str,
+        team: Option<Team>,
+        role: Role,
+        robot: Robot,
+        chassis: crate::protocol::Chassis,
+        password: &str,
+    ) -> io::Result<Vec<u8>> {
         Ok(crate::snapshot_codec::encode_client_message(
             &ClientMessage::Hello {
                 password: password.into(),
@@ -1152,6 +1192,7 @@ impl ClientCodec {
                 team,
                 role,
                 robot,
+                chassis,
             },
         ))
     }
@@ -2021,7 +2062,7 @@ mod tests {
         }
     }
 
-    /// The fixed 80-byte encoding of every frame in a batch. It is the equality
+    /// The fixed 82-byte encoding of every frame in a batch. It is the equality
     /// witness: f64 `==` cannot tell `-0.0` from `0.0`.
     fn fixed_batch(inputs: &[Command]) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -2034,7 +2075,7 @@ mod tests {
         bytes
     }
 
-    /// The inflated `RMI3` body behind one encoded batch.
+    /// The inflated `RMI5` body behind one encoded batch.
     fn body_of(packet: &[u8]) -> Vec<u8> {
         crate::compression::decompress(
             packet.strip_prefix(INPUT_BATCH_MAGIC).unwrap(),
@@ -2043,7 +2084,7 @@ mod tests {
         .unwrap()
     }
 
-    /// Frames a hand-built body as an `RMI3` packet.
+    /// Frames a hand-built body as an `RMI5` packet.
     fn reencoded(body: &[u8]) -> Vec<u8> {
         let mut packet = INPUT_BATCH_MAGIC.to_vec();
         packet.extend(crate::compression::compress(body));
@@ -2093,6 +2134,8 @@ mod tests {
             history.push_back(pilot(
                 sequence,
                 ChassisCommand {
+                    jump: false,
+                    balance_control: 100,
                     forward_m_s: sign * 2.5,
                     left_m_s: random.value() - 1.5,
                     yaw_rate_rad_s: -sign * random.value(),
@@ -2277,7 +2320,7 @@ mod tests {
             ));
         }
         // The header comes from the newest frame, so the mismatched frame keeps
-        // its fixed 80-byte encoding and still round-trips exactly.
+        // its fixed 82-byte encoding and still round-trips exactly.
         let packet = input_batch(&inputs, false).unwrap();
         assert_eq!(
             fixed_batch(&decode_inputs(&packet).unwrap()),
@@ -2366,7 +2409,7 @@ mod tests {
         assert!(decode_inputs(&bomb).is_err());
 
         // The worst batch the codec can build: eleven frames whose identity is
-        // not the shared header's keep the fixed 80-byte encoding, and the
+        // not the shared header's keep the fixed 82-byte encoding, and the
         // newest frame changes all five full-precision values.
         let maximal: VecDeque<_> = (1..=12)
             .map(|sequence| {
@@ -2376,6 +2419,8 @@ mod tests {
                     sequence,
                     sequence * 16_000_000,
                     ChassisCommand {
+                        jump: false,
+                        balance_control: 100,
                         forward_m_s: f64::from_bits(0x3ff0_0000_0000_0001 + sequence),
                         left_m_s: -f64::from_bits(0x3ff8_0000_0000_0003 + sequence),
                         yaw_rate_rad_s: f64::from_bits(0x3fe0_0000_0000_0007 + sequence),
@@ -2386,6 +2431,31 @@ mod tests {
             })
             .collect();
         assert!(input_batch(&maximal, false).unwrap().len() <= CHUNK);
+    }
+
+    #[test]
+    fn jump_edges_survive_compact_and_fixed_input_batches() {
+        let inputs: VecDeque<_> = (0..4)
+            .map(|sequence| {
+                pilot_at(
+                    1,
+                    if sequence == 0 { 9 } else { 10 },
+                    sequence + 1,
+                    sequence * 8_000_000,
+                    ChassisCommand {
+                        jump: sequence == 0 || sequence == 2,
+                        balance_control: (sequence * 25) as u8,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        for raw in [true, false] {
+            assert_eq!(
+                decode_inputs(&input_batch(&inputs, raw).unwrap()).unwrap(),
+                inputs.iter().copied().collect::<Vec<_>>()
+            );
+        }
     }
 
     /// The application body of one datagram: the fragment payload for an RMG1
@@ -2426,7 +2496,7 @@ mod tests {
         let mut client = ClientCodec::new(epoch, 1 << 20, 12, true);
         client.welcome_for_test();
 
-        // One pilot input travels as an RMI3 batch whose body is RMRW, and the
+        // One pilot input travels as an RMI5 batch whose body is RMRW, and the
         // host decodes it back to the exact frame.
         let command = pilot(
             1,

@@ -85,7 +85,13 @@ use serde::{Deserialize, Serialize};
 /// referee, so peers animate it opening and closing, and the stamp the Dart
 /// Detection Modules started sweeping (`dart_target_since_ns`); they rest by
 /// default.
-pub const PROTOCOL_VERSION: u32 = 46;
+/// Version 47 adds robot chassis selection, Engineer and Sentry pilots, and
+/// the assisted balance chassis configuration. RMI4 inputs carry the jump
+/// button; RMO7 anchors and checkpoints retain the consumed-press latch.
+/// Version 48 adds planar Drone flight and adjustable balance stabilization.
+/// RMI5/RMO8 carry the stabilization percentage.
+/// Version 49 adds the live prototype air-support policy and armed Drone preset.
+pub const PROTOCOL_VERSION: u32 = 49;
 
 /// Explains incompatible host and client wire versions and how to resolve them.
 ///
@@ -436,11 +442,10 @@ impl Role {
     }
 }
 
-/// The robot a pilot asks to drive. Each robot fixes its chassis preset, its
-/// gun caliber and the number printed on its armor, so a host never offers a
-/// caliber of its own: the Hero fires 42 mm rounds from the mecanum chassis
-/// and every infantry fires 17 mm rounds from the omni chassis. The two
-/// infantry differ only in their number.
+/// The robot role a pilot asks to drive. It fixes the armor identifier and
+/// launcher: Hero fires 42 mm, Infantry/Sentry/Drone fire 17 mm, and Engineer
+/// has no launcher. A separate [`Chassis`] choice selects a supported drive.
+/// The two infantry roles differ only in their number.
 ///
 /// ```
 /// use rm_simulator_server::protocol::Robot;
@@ -464,23 +469,39 @@ impl Role {
 pub enum Robot {
     /// Mecanum Hero with the 42 mm gun, armor number 1.
     Hero,
-    /// Omni infantry number 3 with the 17 mm gun. The API default.
+    /// Infantry number 3 with the 17 mm gun and a choice of omni or balance. The API default.
     #[default]
     #[value(name = "infantry-3", alias = "infantry")]
     Infantry3,
-    /// Omni infantry number 4 with the 17 mm gun, otherwise the same robot.
+    /// Infantry number 4 with the same launcher and chassis choices as number 3.
     #[value(name = "infantry-4")]
     Infantry4,
+    /// Engineer number 2, with a fixed decorative arm and no launcher.
+    Engineer,
+    /// Manually driven sentry with a 17 mm launcher.
+    Sentry,
+    /// Quadcopter prototype with horizontal-plane flight and a 17 mm launcher.
+    Drone,
 }
 impl Robot {
     /// Every robot a pilot can choose, in menu order.
-    pub const ALL: [Robot; 3] = [Robot::Hero, Robot::Infantry3, Robot::Infantry4];
+    pub const ALL: [Robot; 6] = [
+        Robot::Hero,
+        Robot::Engineer,
+        Robot::Infantry3,
+        Robot::Infantry4,
+        Robot::Sentry,
+        Robot::Drone,
+    ];
     /// Display name for menus, notices and the roster.
     pub fn name(self) -> &'static str {
         match self {
             Robot::Hero => "Hero",
             Robot::Infantry3 => "Infantry 3",
             Robot::Infantry4 => "Infantry 4",
+            Robot::Engineer => "Engineer",
+            Robot::Sentry => "Sentry",
+            Robot::Drone => "Drone",
         }
     }
     /// The command-line and remembered-settings spelling: `hero`,
@@ -490,6 +511,9 @@ impl Robot {
             Robot::Hero => "hero",
             Robot::Infantry3 => "infantry-3",
             Robot::Infantry4 => "infantry-4",
+            Robot::Engineer => "engineer",
+            Robot::Sentry => "sentry",
+            Robot::Drone => "drone",
         }
     }
     /// Read an [`Robot::id`] spelling; `infantry` alone means infantry 3.
@@ -498,6 +522,9 @@ impl Robot {
             "hero" => Some(Robot::Hero),
             "infantry" | "infantry-3" => Some(Robot::Infantry3),
             "infantry-4" => Some(Robot::Infantry4),
+            "engineer" => Some(Robot::Engineer),
+            "sentry" => Some(Robot::Sentry),
+            "drone" => Some(Robot::Drone),
             _ => None,
         }
     }
@@ -506,7 +533,11 @@ impl Robot {
     pub fn caliber(self) -> rm_simulator_world::Caliber {
         match self {
             Robot::Hero => rm_simulator_world::Caliber::Mm42,
-            Robot::Infantry3 | Robot::Infantry4 => rm_simulator_world::Caliber::Mm17,
+            Robot::Infantry3
+            | Robot::Infantry4
+            | Robot::Engineer
+            | Robot::Sentry
+            | Robot::Drone => rm_simulator_world::Caliber::Mm17,
         }
     }
     /// The robot class the referee records for it.
@@ -514,21 +545,102 @@ impl Robot {
         match self {
             Robot::Hero => rm_simulator_world::RobotKind::Hero,
             Robot::Infantry3 | Robot::Infantry4 => rm_simulator_world::RobotKind::Infantry,
+            Robot::Engineer => rm_simulator_world::RobotKind::Engineer,
+            Robot::Sentry => rm_simulator_world::RobotKind::Sentry,
+            Robot::Drone => rm_simulator_world::RobotKind::Drone,
         }
     }
-    /// The number printed on its armor: 1 for the Hero, 3 or 4 for an infantry.
+    /// Armor identifier: Hero 1, Engineer 2, Infantry 3/4, or Sentry 7.
     pub fn number(self) -> u8 {
         match self {
             Robot::Hero => 1,
             Robot::Infantry3 => 3,
             Robot::Infantry4 => 4,
+            Robot::Engineer => 2,
+            Robot::Sentry => 7,
+            Robot::Drone => 6,
         }
     }
-    /// The chassis preset it drives: the mecanum Hero or the omni infantry.
+    /// Its default chassis preset before a supported explicit choice is applied.
     pub fn chassis_config(self) -> rm_simulator_world::ChassisConfig {
         match self {
             Robot::Hero => rm_simulator_world::ChassisConfig::hero(),
-            Robot::Infantry3 | Robot::Infantry4 => rm_simulator_world::ChassisConfig::default(),
+            Robot::Infantry3 | Robot::Infantry4 | Robot::Sentry => {
+                rm_simulator_world::ChassisConfig::default()
+            }
+            Robot::Engineer => rm_simulator_world::ChassisConfig::engineer(),
+            Robot::Drone => rm_simulator_world::ChassisConfig::drone(),
+        }
+    }
+}
+
+/// The drivetrain requested separately from the robot's competition role.
+/// `Auto` selects the robot's default; unsupported combinations are refused
+/// by the host before it creates a chassis.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+pub enum Chassis {
+    /// Default: omni Infantry/Sentry, mecanum Hero/Engineer, fixed-altitude Drone.
+    #[default]
+    Auto,
+    /// Four omni wheels, using the sentry's lower-body approximation.
+    Omni,
+    /// Two-wheel infantry with reduced-model LQR stabilization and serial leg visuals.
+    Balance,
+    /// Four mecanum wheels for Hero or Engineer.
+    Mecanum,
+    /// Quadcopter held on its spawn-height horizontal plane.
+    Flight,
+}
+impl Chassis {
+    /// Menu label for this drivetrain.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "Default",
+            Self::Omni => "Omni",
+            Self::Balance => "Balance (assisted)",
+            Self::Mecanum => "Mecanum",
+            Self::Flight => "Flight (fixed altitude)",
+        }
+    }
+    /// The concrete default or explicitly requested drivetrain.
+    pub fn resolved(self, robot: Robot) -> Self {
+        if self == Self::Auto {
+            robot.chassis_choices()[0]
+        } else {
+            self
+        }
+    }
+    /// Validate a robot/chassis combination and return its physical preset.
+    ///
+    /// ```
+    /// use rm_simulator_server::protocol::{Chassis, Robot};
+    /// assert!(Chassis::Balance.config(Robot::Infantry3).unwrap().balance_assist);
+    /// assert!(Chassis::Balance.config(Robot::Hero).is_err());
+    /// ```
+    pub fn config(self, robot: Robot) -> Result<ChassisConfig, String> {
+        let selected = self.resolved(robot);
+        if !robot.chassis_choices().contains(&selected) {
+            return Err(format!(
+                "{} does not support the {} chassis",
+                robot.name(),
+                self.name()
+            ));
+        }
+        Ok(if selected == Self::Balance {
+            ChassisConfig::balance()
+        } else {
+            robot.chassis_config()
+        })
+    }
+}
+impl Robot {
+    /// Supported chassis in menu order, with the default first.
+    pub fn chassis_choices(self) -> &'static [Chassis] {
+        match self {
+            Self::Infantry3 | Self::Infantry4 => &[Chassis::Omni, Chassis::Balance],
+            Self::Hero | Self::Engineer => &[Chassis::Mecanum],
+            Self::Sentry => &[Chassis::Omni],
+            Self::Drone => &[Chassis::Flight],
         }
     }
 }
@@ -777,6 +889,7 @@ impl Command {
 ///     team: None,
 ///     role: Role::Pilot,
 ///     robot: Default::default(),
+///     chassis: Default::default(),
 /// };
 /// let start = ClientMessage::Command(Command::Referee(
 ///     rm_simulator_world::RefereeCommand::StartMatch,
@@ -825,9 +938,11 @@ pub enum ClientMessage {
         /// Requested role. A host grants the referee only to the host's own
         /// operator, so this is a request rather than an assignment.
         role: Role,
-        /// The robot a pilot asks to drive, which fixes its chassis preset
+        /// The robot a pilot asks to drive, which fixes its class
         /// and gun caliber. Ignored for a spectator or the referee.
         robot: Robot,
+        /// Requested drivetrain; ignored for non-pilots.
+        chassis: Chassis,
     },
     /// One action on the field, addressed to a chassis or to the match.
     Command(Command),

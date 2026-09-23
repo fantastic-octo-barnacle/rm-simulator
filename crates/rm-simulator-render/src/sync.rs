@@ -101,6 +101,8 @@ pub struct ArmorAppearance {
 /// by `team`; a defeated robot's lights go dark.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChassisAppearance {
+    /// Approximate body model selected by the caller, independent of team.
+    pub model: crate::chassis::RobotModel,
     /// Printed identifier on each armor plate.
     pub armor_pattern: crate::armor::ArmorPattern,
     /// Hero prototype with parallel wheel axles and mirrored 45-degree rollers.

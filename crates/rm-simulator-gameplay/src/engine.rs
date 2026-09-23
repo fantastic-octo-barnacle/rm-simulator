@@ -474,10 +474,11 @@ impl Game {
         let r = &self.state.robots[i];
         match self.state.phase {
             Phase::Idle => r.alive() && r.config.kind.shoots(caliber),
-            Phase::Running => r.can_launch(
+            Phase::Running => r.can_launch_with_air_support(
                 self.state.round_elapsed_ticks,
                 caliber,
                 self.state.policy.enforce_allowance && !self.reserve_covers(i, caliber),
+                self.state.policy.enforce_air_support,
             ),
             _ => false,
         }
@@ -1463,10 +1464,11 @@ impl Game {
             }
             Command::Launch { robot, caliber } => {
                 let i = self.robot_index(robot)?;
-                if !self.state.robots[i].can_launch(
+                if !self.state.robots[i].can_launch_with_air_support(
                     now,
                     caliber,
                     self.state.policy.enforce_allowance && !self.reserve_covers(i, caliber),
+                    self.state.policy.enforce_air_support,
                 ) {
                     return Err(Error::Ineligible);
                 }

@@ -95,7 +95,7 @@ The essentials, for driving and for match control:
 | V | Toggle first- and third-person view while driving |
 | C | Cycle physics colliders: Off / Overlay / Only |
 | F3 | Open / close debug panel: collider Off / Overlay / Only, visual wireframe, rendering statistics, remote motion buffering, reset own robot to spawn |
-| Space / Left Shift | Move up / down (flying) |
+| Space / Left Shift | Move up / down (flying); Space jumps with balance Infantry |
 | F5 | Start the match (or reset a finished one) (local world or referee) |
 | F6 | Pause or resume the world clock (local world or referee) |
 | F7 | Step the world one manual step (three 128 Hz ticks, 23.4375 ms) while paused (local world or referee) |
@@ -119,9 +119,10 @@ Single Player starts a local practice field.
 Multiplayer lists LAN lobbies on the left and creates a named, optionally
 password-protected lobby on the right. Select a listing, enter its password if needed, and press Join lobby / address.
 Every way in then opens the robot page: blue seats on the left, red on the
-right, each offering the Hero (42 mm), Infantry 3 or Infantry 4 (17 mm) or a
-spectating camera, with the referee seat below. Confirm with Start match or
-Join lobby, or press Enter.
+right, offering Hero, Engineer, Infantry 3, Infantry 4, Sentry or a spectating
+camera, with the referee seat below. Continue to chassis selection, then Start
+match or Join lobby. Infantry offers omni or balance; Hero and Engineer use
+mecanum, and Sentry uses omni. Spectators and referees skip chassis selection.
 You can also enter a direct address. The page and lobby list scroll with the
 mouse wheel, trackpad or scrollbar; narrow windows stack the two columns. Public is greyed out pending public connectivity support.
 The firewall tip recommends allowing the app on private networks. Lobby names
@@ -422,7 +423,7 @@ interpolation buffering; it does not alter local input lead. Automatic buffering
 releases excess delay at up to 50 ms per second after the two-second jitter
 window improves.
 
-RMI3 input batches share identity fields and encode exact value changes without
+RMI5 input batches share identity fields and encode exact value changes without
 reducing input redundancy. Placement revisions prevent old input from
 crossing robot lives. `Ping` remains a command barrier: the server queues a
 resulting snapshot before its `Pong`. Screenshot capture waits for confirmation of
@@ -455,8 +456,12 @@ does not acknowledge its execution by the host.
 | 43 | Removes client fire timing, `ShotScheduled`'s intended time, the explicit-rules checkpoint fallback and `RMI2` input batches; `RMO6` command and tyre speeds use the 1 cm/s velocity scale. |
 | 44 | Carries the gameplay engine's state as the referee's `game`, outpost rotor start and homing, the match rule commands and `SetPerformance`. |
 | 45 | Adds buff point contacts, terrain crossing and Fortress state, the `TerrainCrossing` and `BaseArmorExpanded` events and the field's `zones`. |
+| 46 | Adds expanded base armor and the Dart Detection Module sweep state. |
+| 47 | Adds robot/chassis selection, Engineer and Sentry pilots, balance assist, jump inputs (`RMI4`) and the jump latch in owner anchors (`RMO7`). |
+| 48 | Adds fixed-altitude Drone and adjustable balance stabilization (`RMI5` inputs, `RMO8` anchors). |
+| 49 | Arms the Drone and carries the live prototype air-support policy. |
 
-The current protocol version is 45, defined by `PROTOCOL_VERSION` in
+The current protocol version is 49, defined by `PROTOCOL_VERSION` in
 `crates/rm-simulator-server/src/protocol.rs`. GNS sends redundant controls
 and retried shot intents unreliably; scheduling receipts and terminal shot results
 remain reliable. There is no shooter-view fire path or input-acknowledgement
@@ -466,7 +471,7 @@ matching protocol versions.
 ### Compression and environment variables
 
 The UDP transport sends independent owner corrections and uses acknowledged
-baselines for world deltas. Owner anchors (`RMO6`) are quantized to
+baselines for world deltas. Owner anchors (`RMO8`) are quantized to
 millimetre positions, 1 cm/s velocities, 1 mrad/s rates, 0.1 mrad aims and
 smallest-three rotations; input state keeps f64 precision, while shot intents
 use bounded compression. Owner anchors reference
@@ -736,7 +741,18 @@ shots near cover. No Vision2027 dependency or copied implementation is required.
 ## Robot equipment
 
 `just run --robot hero --third-person` drives the mecanum Hero; omit `--robot`
-for the omni Infantry 3, or pick it on the robot page of the title screen.
+for the omni Infantry 3, or choose robot then chassis on the title screen.
+`--chassis balance` selects the two-wheel Infantry mock with balance assist and
+Space to jump (no strafing). `--robot sentry` drives the Sentry like Infantry;
+`--robot engineer` drives the Engineer with a fixed arm and no launcher.
+`--robot drone` flies a guarded quadcopter on a horizontal plane 1.6 m above
+its spawn ground: WASD moves, the mouse aims, left click fires its underslung
+17 mm launcher, and V switches view. It has no altitude controls. Balance's serial legs use a four-bar knee-drive
+linkage; **P > Controls > Balance stabilization** adjusts the reduced-model
+LQR assist from 0% (off) to 100% (full). The setting is remembered. The Sentry
+radar follows its gimbal above and behind the camera.
+These are procedural approximations of the supplied reference models; no
+URDF or STEP meshes are loaded. Hero retains its existing model.
 `--performance melee` (Hero) or `--performance power-burst` (Infantry) picks a
 section 5.4.2 performance type; see [app options](docs/app-options.md). Both carry approximate AM02 armor, LI01 HP lights,
 FI02 underbody RFID hardware, VT03 camera and a muzzle speed monitor. Hero uses
@@ -744,20 +760,20 @@ an SM11-sized housing; Infantry uses SM01. HP segments and defeat state follow
 the referee. FI02 detection and speed-monitor LED sequences are not simulated.
 
 Every pilot names its robot when it joins, and the host builds that chassis
-and fixes its caliber: the Hero fires 42 mm, the Infantry 3 and Infantry 4
+and fixes its caliber: the Hero fires 42 mm, Drone, Sentry and the Infantry 3 and Infantry 4
 fire 17 mm. Muzzle speed and firing rate defaults come from the host. The
 robot does not change HP, heat or power policies, and two pilots may pick the
 same robot. The visible equipment is decorative;
 armor scoring keeps its existing dimensions. [Reference measurements and
 limitations](docs/robot-equipment.md) distinguish modeled details from assumptions.
 
-Each chassis is a generic 22 kg infantry-sized box (520 × 520 × 100 mm) on
-four 153 mm omni wheels in an X layout, with a 120 mm turret cube 150 mm
+The default omni chassis is a generic 22 kg infantry-sized box (520 × 520 × 100 mm) on
+four 153 mm omni wheels centered on the four edges, with a 120 mm turret cube 150 mm
 above the body (its top is about 0.42 m above the ground), four small armor
 modules on its sides (the outpost's 128 × 113 mm module, leaning back 15°,
-scoring on the 101 × 94 mm area of Figure 5-16), 30 mm of unloaded
-spring/damper extension with progressive bump stops beyond 40 mm compression, motor-limited
-drive (40 N stall, 3.8 m/s no-load wheel speed, so about 5.4 m/s
+scoring on the 101 × 94 mm area of Figure 5-16), 80 mm of unloaded
+spring/damper extension with progressive bump stops beyond 120 mm compression, motor-limited
+drive (60 N stall, 3.8 m/s no-load wheel speed, so below 3.8 m/s
 straight-line top speed) and Coulomb-limited ideal omni tyres. These figures
 are assumptions, not rulebook values. A shared 120 W infantry or 160 W hero
 drivetrain budget includes mechanical work and torque-dependent motor loss.

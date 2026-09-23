@@ -4,6 +4,30 @@
 
 ## Unreleased
 
+- Balance legs now use a serial hip/knee chain and a four-bar knee-drive
+  linkage. A reduced inverted-pendulum LQR replaces the fixed feedback gains;
+  Settings > Controls has a remembered 0–100% stabilization slider.
+- Sentry's radar rack follows the gimbal yaw and pitch above the camera,
+  preventing the chassis spin from sweeping it across the view.
+- Add a guarded quadcopter Drone with fixed-altitude horizontal flight,
+  an underslung 17 mm launcher and no altitude controls. Live Drone firing
+  bypasses the unimplemented air-support controls while retaining cadence,
+  heat and ammo checks (protocol 49). Selection, prediction and controls
+  work on local and remote hosts (protocol 49, RMI5/RMO8).
+
+- Choose a robot, then its chassis before joining. Infantry supports omni or
+  balance; add a drivable Sentry and an Engineer with a fixed arm. Procedural
+  models approximate the supplied references without importing their meshes;
+  omni Infantry shares the Sentry lower body without its radar tower. Hero is
+  unchanged. Choices persist and work on local and remote hosts (protocol 47).
+- Expose omni wheels at the four edge midpoints, add twin roller rows and an
+  open motor frame, detail the Engineer's truss chassis and arm, and connect
+  Balance leg joints to the suspension-following wheel hubs. Retune the omni
+  suspension to keep the driven side wheels loaded at ramp entries.
+- Balance Infantry has two wheels, a mock state-feedback balance assist and
+  a Space jump, once per grounded press. It cannot strafe; articulated leg
+  dynamics are not simulated. Jump state survives network prediction.
+
 - Auto-aim skips a base's three lower plates until its protective armor is
   fully open, since the closed shields cover them.
 

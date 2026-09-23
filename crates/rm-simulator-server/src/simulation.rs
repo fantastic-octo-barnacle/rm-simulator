@@ -430,9 +430,18 @@ impl Simulation {
     /// slot that no chassis is standing in. The robot fixes the chassis
     /// preset, the class the referee records and the caliber its gun fires.
     pub fn spawn_robot(&mut self, team: Team, robot: Robot) -> Result<u32, String> {
+        self.spawn_robot_with_chassis(team, robot, crate::protocol::Chassis::Auto)
+    }
+    /// Spawn a validated robot/drivetrain combination in a team slot.
+    pub fn spawn_robot_with_chassis(
+        &mut self,
+        team: Team,
+        robot: Robot,
+        chassis: crate::protocol::Chassis,
+    ) -> Result<u32, String> {
         self.spawn_in_slot(
             team,
-            Some(robot.chassis_config()),
+            Some(chassis.config(robot)?),
             robot.kind(),
             Some(robot),
         )
@@ -487,12 +496,29 @@ impl Simulation {
         spawn_m: [f64; 3],
         yaw_deg: f64,
     ) -> Result<u32, String> {
+        self.spawn_robot_at_with_chassis(
+            team,
+            robot,
+            crate::protocol::Chassis::Auto,
+            spawn_m,
+            yaw_deg,
+        )
+    }
+    /// Place a validated robot/drivetrain combination at an owner's spawn.
+    pub fn spawn_robot_at_with_chassis(
+        &mut self,
+        team: Team,
+        robot: Robot,
+        chassis: crate::protocol::Chassis,
+        spawn_m: [f64; 3],
+        yaw_deg: f64,
+    ) -> Result<u32, String> {
+        let config = chassis.config(robot)?;
         let spawner = self
             .spawner
             .as_ref()
             .ok_or("this field offers no chassis")?;
-        let placement =
-            spawner.at_with(robot.chassis_config(), robot.kind(), team, spawn_m, yaw_deg);
+        let placement = spawner.at_with(config, robot.kind(), team, spawn_m, yaw_deg);
         self.place(placement, Some(robot))
     }
     fn place(
@@ -852,6 +878,9 @@ impl Simulation {
     /// or behind a newer one, still fires, but it neither pushes the cooldown
     /// onto the correctly spaced shot behind it nor forms a burst.
     fn fire_now(&mut self, shooter: u32, intended_ns: u64) -> Result<u64, String> {
+        if matches!(self.robot(shooter), Some(Robot::Engineer)) {
+            return Err("this robot has no launcher".into());
+        }
         let weapon = self.weapon_for(shooter);
         let fired = self.fired_ns.entry(shooter).or_default();
         if fired
@@ -1325,6 +1354,119 @@ mod tests {
         assert_eq!(sim.pilot_weapons[&shooter], weapon);
         sim.remove_chassis(shooter).unwrap();
         assert!(!sim.pilot_weapons.contains_key(&shooter));
+    }
+
+    #[test]
+    fn drone_fires_from_underslung_gimbal_in_practice_and_running_match() {
+        let mut sim = simulation().with_spawner(ChassisSpawner {
+            config: ChassisConfig::default(),
+            terrain: None,
+        });
+        let drone = sim.spawn_robot(Team::Blue, Robot::Drone).unwrap();
+        sim.apply(&Command::Chassis {
+            chassis: drone,
+            command: rm_simulator_world::ChassisCommand {
+                aim_yaw_rad: 0.0,
+                aim_pitch_rad: -0.35,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        sim.field.step(128).unwrap();
+        let before = sim.snapshot().chassis[0].pose.translation_m;
+        sim.apply(&Command::Fire { shooter: drone }).unwrap();
+        assert!(
+            sim.apply(&Command::Fire { shooter: drone }).is_err(),
+            "cadence must apply"
+        );
+        let launch = sim.fire_records().last().unwrap().clone();
+        assert!(launch.authoritative_muzzle_pose.translation_m[2] < before[2] - 0.14);
+        sim.field.step(4).unwrap();
+        let snapshot = sim.snapshot();
+        let ball = snapshot
+            .projectiles
+            .iter()
+            .find(|ball| ball.id == launch.projectile_id)
+            .unwrap();
+        assert_eq!(ball.caliber, rm_simulator_world::Caliber::Mm17);
+        assert!(ball.position_m[0] > launch.authoritative_muzzle_pose.translation_m[0] + 0.3);
+        assert!(ball.position_m[2] < launch.authoritative_muzzle_pose.translation_m[2]);
+        assert_eq!(snapshot.chassis[0].pose.translation_m[2], before[2]);
+        sim.apply(&Command::Referee(RefereeCommand::StartMatch))
+            .unwrap();
+        sim.field
+            .step(rm_simulator_world::referee::COUNTDOWN_NS.div_ceil(rm_simulator_world::tick_ns()))
+            .unwrap();
+        sim.apply(&Command::Fire { shooter: drone }).unwrap();
+        let state = sim.snapshot();
+        let game = &state.referee.as_ref().unwrap().game;
+        let robot = game.robots.iter().find(|r| r.config.id == drone).unwrap();
+        assert!(!robot.air_support_active);
+        assert!(!game.policy.enforce_air_support);
+        assert!(robot.heat_tenths > 0);
+        assert!(robot.allowance[0] < 750);
+    }
+
+    #[test]
+    fn selected_chassis_and_new_robot_roles_are_host_owned() {
+        use crate::protocol::Chassis;
+        let mut sim = simulation().with_spawner(ChassisSpawner {
+            config: ChassisConfig::default(),
+            terrain: None,
+        });
+        assert!(
+            sim.spawn_robot_with_chassis(Team::Red, Robot::Hero, Chassis::Balance)
+                .is_err()
+        );
+        let balance = sim
+            .spawn_robot_with_chassis(Team::Red, Robot::Infantry3, Chassis::Balance)
+            .unwrap();
+        let sentry = sim.spawn_robot(Team::Blue, Robot::Sentry).unwrap();
+        let engineer = sim.spawn_robot(Team::Red, Robot::Engineer).unwrap();
+        let drone = sim
+            .spawn_robot_with_chassis(Team::Blue, Robot::Drone, Chassis::Flight)
+            .unwrap();
+        assert!(sim.field().chassis_config(drone).unwrap().planar_flight);
+        sim.apply(&Command::Fire { shooter: drone }).unwrap();
+        assert_eq!(
+            sim.weapon_for(drone).shot.caliber,
+            rm_simulator_world::Caliber::Mm17
+        );
+        assert!(sim.field().chassis_config(balance).unwrap().balance_assist);
+        assert!(sim.field().chassis_config(engineer).unwrap().mecanum);
+        let referee = sim.field().referee().unwrap();
+        assert_eq!(
+            referee.robots().find(|r| r.id == sentry).unwrap().kind,
+            RobotKind::Sentry
+        );
+        assert_eq!(
+            referee.robots().find(|r| r.id == engineer).unwrap().kind,
+            RobotKind::Engineer
+        );
+        sim.apply(&Command::Fire { shooter: sentry }).unwrap();
+        assert!(
+            sim.apply(&Command::Fire { shooter: engineer })
+                .unwrap_err()
+                .contains("no launcher")
+        );
+        let state = sim.state();
+        let message = crate::protocol::ServerMessage::Snapshot(Box::new(state));
+        let bytes = crate::snapshot_codec::encode_player_message(&message);
+        let crate::protocol::ServerMessage::Snapshot(decoded) =
+            crate::snapshot_codec::decode_player_message(&bytes).unwrap()
+        else {
+            panic!("snapshot expected")
+        };
+        assert!(
+            decoded
+                .field
+                .chassis
+                .iter()
+                .find(|c| c.id == balance)
+                .unwrap()
+                .config
+                .balance_assist
+        );
     }
 
     #[test]

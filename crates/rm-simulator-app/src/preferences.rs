@@ -20,6 +20,8 @@ pub struct Preferences {
     /// clamps it to 0.0005..=0.005 and replaces a non-finite value with
     /// 0.0025; the settings slider maps 0.0025 to 100 percent.
     pub sensitivity: f32,
+    /// Balance stabilization strength, clamped to 0..=100 percent.
+    pub balance_control: u8,
     /// Draw the minimap.
     pub show_map: bool,
     /// Draw the aiming reticle.
@@ -35,6 +37,7 @@ impl Default for Preferences {
             version: 1,
             controls: default(),
             sensitivity: 0.0025,
+            balance_control: 100,
             show_map: true,
             show_reticle: true,
             network_stats: default(),
@@ -51,6 +54,7 @@ impl Preferences {
             ));
         }
         self.controls.validate();
+        self.balance_control = self.balance_control.min(100);
         self.sensitivity = if self.sensitivity.is_finite() {
             self.sensitivity.clamp(0.0005, 0.005)
         } else {
@@ -128,6 +132,7 @@ impl Plugin for PreferencesPlugin {
         if let Some(mut ui) = app.world_mut().get_resource_mut::<HudState>() {
             ui.controls = settings.controls.clone();
             ui.sensitivity = settings.sensitivity;
+            ui.balance_control = settings.balance_control;
             ui.show_map = settings.show_map;
             ui.show_reticle = settings.show_reticle;
             if ui.network_stats == crate::network_hud::NetworkStatsMode::Off {
@@ -159,6 +164,9 @@ fn save_changes(
     }
     if ui.sensitivity != settings.sensitivity {
         settings.sensitivity = ui.sensitivity;
+    }
+    if ui.balance_control != settings.balance_control {
+        settings.balance_control = ui.balance_control;
     }
     if ui.show_map != settings.show_map {
         settings.show_map = ui.show_map;

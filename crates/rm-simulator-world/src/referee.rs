@@ -945,6 +945,7 @@ impl Referee {
         game.command(gp::Command::SetPolicy(gp::Policy {
             enforce_allowance: false,
             exchange_requires_zone: false,
+            enforce_air_support: false,
         }))
         .map_err(game_error)?;
         Ok(Self {
@@ -1011,7 +1012,10 @@ impl Referee {
             "launching is locked"
         } else if robot.irregularly_disconnected {
             "the robot is disconnected"
-        } else if robot.config.kind == gp::RobotKind::Drone && !robot.air_support_active {
+        } else if snapshot.policy.enforce_air_support
+            && robot.config.kind == gp::RobotKind::Drone
+            && !robot.air_support_active
+        {
             "the drone has no air support"
         } else {
             "no projectile allowance"

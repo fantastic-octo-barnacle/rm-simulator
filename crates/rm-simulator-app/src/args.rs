@@ -107,10 +107,13 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = WindowMode::Normal)]
     pub window_mode: WindowMode,
 
-    /// Robot this pilot drives: the mecanum Hero fires 42 mm, the omni
-    /// infantries fire 17 mm. Every host, local or remote, honours the pick.
+    /// Robot to pilot. Hero fires 42 mm, Infantry/Sentry/Drone 17 mm;
+    /// Engineer has no launcher. Applies on local/remote hosts.
     #[arg(long, value_enum, default_value_t = Robot::default())]
     pub robot: Robot,
+    /// Chassis selection; auto uses the robot default. Balance is infantry-only.
+    #[arg(long, value_enum, default_value_t = rm_simulator_server::protocol::Chassis::Auto)]
+    pub chassis: rm_simulator_server::protocol::Chassis,
     /// Section 5.4.2 performance type to request after joining: `long-range`
     /// or `melee` for a Hero, `hp-cooling`, `hp-burst`, `power-cooling` or
     /// `power-burst` for an infantry. Unset keeps the rulebook default; a host
@@ -400,7 +403,18 @@ mod tests {
         ]);
         assert_eq!(remote.robot, Robot::Hero);
         assert!(Args::try_parse_from(["rm-simulator", "--projectile-mm", "42"]).is_err());
-        assert!(Args::try_parse_from(["rm-simulator", "--robot", "sentry"]).is_err());
+        assert_eq!(
+            Args::try_parse_from(["rm-simulator", "--robot", "sentry"])
+                .unwrap()
+                .robot,
+            Robot::Sentry
+        );
+        assert_eq!(
+            Args::try_parse_from(["rm-simulator", "--robot", "engineer"])
+                .unwrap()
+                .robot,
+            Robot::Engineer
+        );
         for option in ["--muzzle-speed-m-s", "--fire-rate-hz"] {
             assert!(
                 Args::try_parse_from(["rm-simulator", "--connect", "localhost:7700", option, "17"])

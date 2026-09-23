@@ -156,12 +156,20 @@ pub struct Policy {
     /// Whether a local ammo exchange requires an own base, resupply or outpost
     /// zone contact. Hosts without zone detection may turn it off.
     pub exchange_requires_zone: bool,
+    /// Require active Drone air support to launch (section 5.6.3). Hosts with
+    /// no air-support controls can disable this for a shooting prototype.
+    #[serde(default = "require_air_support")]
+    pub enforce_air_support: bool,
+}
+fn require_air_support() -> bool {
+    true
 }
 impl Default for Policy {
     fn default() -> Self {
         Self {
             enforce_allowance: true,
             exchange_requires_zone: true,
+            enforce_air_support: true,
         }
     }
 }
@@ -598,6 +606,16 @@ impl RobotState {
     /// drone, flying with active air support. Match phase is checked by
     /// [`crate::Game::can_launch`].
     pub fn can_launch(&self, now_ticks: u64, caliber: Caliber, enforce_allowance: bool) -> bool {
+        self.can_launch_with_air_support(now_ticks, caliber, enforce_allowance, true)
+    }
+    /// Apply the host's air-support policy while retaining all other launch gates.
+    pub(crate) fn can_launch_with_air_support(
+        &self,
+        now_ticks: u64,
+        caliber: Caliber,
+        enforce_allowance: bool,
+        enforce_air_support: bool,
+    ) -> bool {
         self.alive()
             && !self.irregularly_disconnected
             && !self.weakened
@@ -607,7 +625,9 @@ impl RobotState {
             && self.speed_locked_until_ticks <= now_ticks
             && self.config.kind.shoots(caliber)
             && (!enforce_allowance || self.allowance[caliber.index()] > 0)
-            && (self.config.kind != RobotKind::Drone || self.air_support_active)
+            && (!enforce_air_support
+                || self.config.kind != RobotKind::Drone
+                || self.air_support_active)
     }
 }
 /// Per-team state within a round.

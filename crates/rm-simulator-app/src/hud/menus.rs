@@ -81,6 +81,8 @@ pub(crate) struct MapSetting;
 /// the HUD state's sensitivity in radians per mouse pixel.
 #[derive(Component)]
 pub(crate) struct Sensitivity;
+#[derive(Component)]
+pub(crate) struct BalanceControl;
 #[derive(Clone, Copy)]
 enum Action {
     Settings,
@@ -280,6 +282,24 @@ fn spawn_menus(
             })
         })
         .insert((ChildOf(controls), Sensitivity));
+    commands.spawn((
+        ChildOf(controls),
+        Text::new("Balance stabilization (%) — 0 unassisted / 100 full assist"),
+        text_font(16.),
+        TextColor(super::WHITE),
+    ));
+    commands
+        .spawn_scene(bsn! {
+            @FeathersSlider { @value: 100.0, @min: 0.0, @max: 100.0 }
+            SliderPrecision(0)
+            SliderStep(5.0)
+            AccessibleLabel("Balance stabilization percent")
+            Node { width: percent(100), height: px(36), min_height: px(36), flex_shrink: 0.0 }
+            on(|change: On<ValueChange<f32>>, mut ui: ResMut<HudState>| {
+                ui.balance_control = change.value.clamp(0., 100.).round() as u8;
+            })
+        })
+        .insert((ChildOf(controls), BalanceControl));
     super::controls_menu::spawn(&mut commands, controls, shade);
     crate::graphics::spawn_graphics_controls(&mut commands, graphics, &preferences.graphics);
     commands.spawn((ChildOf(card), Text::new("Drive, aim and fire are suspended while a panel is open.\nEsc closes settings. Click the field to resume control."),
@@ -341,6 +361,7 @@ pub fn menu_input(
                 ui.show_map = true;
                 ui.show_reticle = true;
                 ui.sensitivity = 0.0025;
+                ui.balance_control = 100;
             }
             Action::SpawnBot | Action::ClearBots => {
                 let spawn = matches!(action, Action::SpawnBot);
@@ -433,6 +454,7 @@ pub fn sync_menus(
         Or<(With<ReticleSetting>, With<MapSetting>)>,
     >,
     sliders: Query<(Entity, &SliderValue), With<Sensitivity>>,
+    balance_sliders: Query<(Entity, &SliderValue), With<BalanceControl>>,
 ) {
     for mut node in &mut panels {
         node.display = if ui.settings {
@@ -464,6 +486,13 @@ pub fn sync_menus(
             } else {
                 commands.entity(entity).remove::<Checked>();
             }
+        }
+    }
+    for (entity, value) in &balance_sliders {
+        if value.0 != f32::from(ui.balance_control) {
+            commands
+                .entity(entity)
+                .insert(SliderValue(f32::from(ui.balance_control)));
         }
     }
     for (entity, value) in &sliders {

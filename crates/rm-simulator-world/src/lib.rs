@@ -1422,6 +1422,8 @@ mod tests {
         let mut restored = Field::restore(&original.snapshot(), &geometry, floor).unwrap();
         for round in 0..10 {
             let command = ChassisCommand {
+                jump: false,
+                balance_control: 100,
                 forward_m_s: if round % 3 == 0 { 1.5 } else { -0.5 },
                 left_m_s: 0.4,
                 yaw_rate_rad_s: 0.6,
@@ -1455,6 +1457,8 @@ mod tests {
         let mut worst_projectile = 0.0_f64;
         for round in 0..10 {
             let command = ChassisCommand {
+                jump: false,
+                balance_control: 100,
                 forward_m_s: if round % 3 == 0 { 1.5 } else { -0.5 },
                 left_m_s: 0.4,
                 yaw_rate_rad_s: 0.6,
@@ -2280,8 +2284,10 @@ mod tests {
         let top = 2.0 * 15_f64.to_radians().tan();
         let [x, _, z] = chassis.pose.translation_m;
         assert!(x > 3.2 && x < 5.0, "{chassis:?}");
+        let preset = ChassisConfig::default();
+        let sag = preset.mass_kg * 9.81 / 4.0 / preset.suspension_stiffness_n_m;
         assert!(
-            (z - (top + ChassisConfig::default().rest_height_m())).abs() < 0.02,
+            (z - (top + preset.rest_height_m() - sag)).abs() < 0.02,
             "{chassis:?}"
         );
         assert!(chassis.wheels.iter().all(|w| w.contact.is_some()));
@@ -3025,6 +3031,7 @@ mod tests {
             .referee_command(RefereeCommand::SetPolicy(rm_simulator_gameplay::Policy {
                 enforce_allowance: true,
                 exchange_requires_zone: false,
+                enforce_air_support: false,
             }))
             .unwrap();
         assert_eq!(

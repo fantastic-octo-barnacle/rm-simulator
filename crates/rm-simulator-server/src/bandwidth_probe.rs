@@ -143,7 +143,7 @@ pub(crate) struct Totals {
     pub(crate) down_packets: u64,
     /// Downstream application bytes, fragment headers included.
     pub(crate) down_bytes: u64,
-    /// Downstream bytes in RMO6 owner anchors, as delivered.
+    /// Downstream bytes in RMO8 owner anchors, as delivered.
     pub(crate) down_owner_bytes: u64,
     /// Owner anchor bytes produced before pacing replaced or dropped them.
     pub(crate) produced_owner_bytes: u64,
@@ -167,7 +167,7 @@ pub(crate) struct Totals {
     pub(crate) down_incomplete_frames: u64,
     /// Checkpoints the client dropped as no newer than the last one delivered.
     pub(crate) down_stale_updates: u64,
-    /// RMO6 owner anchor datagrams delivered to the client.
+    /// RMO8 owner anchor datagrams delivered to the client.
     pub(crate) down_anchors: u64,
     /// Upstream datagrams the client pacer released.
     pub(crate) up_packets: u64,
@@ -257,7 +257,7 @@ fn account_up(totals: &mut Totals, bytes: &[u8]) {
     totals.up_packets += 1;
     totals.up_bytes += bytes.len() as u64;
     if let Some(inflated) = bytes
-        .strip_prefix(b"RMI3")
+        .strip_prefix(b"RMI5")
         .and_then(|body| crate::compression::decompress(body, 16 * 1024).ok())
     {
         totals.up_batches += 1;
@@ -275,6 +275,8 @@ fn frame_command(workload: Workload, sequence: u64) -> ChassisCommand {
     }
     let phase = (sequence / 12) % 4;
     ChassisCommand {
+        jump: false,
+        balance_control: 100,
         forward_m_s: if phase == 0 || phase == 1 { 1.5 } else { 0. },
         left_m_s: if phase == 2 { 1.0 } else { 0. },
         yaw_rate_rad_s: if phase == 1 { 0.6 } else { 0. },

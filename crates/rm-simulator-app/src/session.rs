@@ -190,12 +190,13 @@ impl Session {
         let (client, host) = if let Some(address) = &args.connect {
             progress(0.3, "Connecting to host");
             (
-                Client::connect_udp_with_password(
+                Client::connect_udp_with_chassis(
                     address,
                     &args.name,
                     Some(args.team.into()),
                     role,
                     args.robot,
+                    args.chassis,
                     &args.password,
                 )
                 .map_err(|e| anyhow::anyhow!("connecting to {address}: {e}"))?,
@@ -234,8 +235,15 @@ impl Session {
                 Server::bind_suspended(address, simulation)
             }?;
             server.spawn_clock()?;
-            let client =
-                server.connect_owner(&args.name, team, role, args.robot, spawn, spawn_yaw_deg)?;
+            let client = server.connect_owner_with_chassis(
+                &args.name,
+                team,
+                role,
+                args.robot,
+                args.chassis,
+                spawn,
+                spawn_yaw_deg,
+            )?;
             if args.host.listen.is_some() {
                 println!("hosting players at {}", server.local_addr());
             }
