@@ -153,5 +153,5 @@ per concurrent worktree to avoid executing another checkout's test artifact.
 
 These application-byte measurements exclude GNS and network overhead. The probe
 is not a real-UDP acceptance trial, and its canonical firing scenarios do not
-populate shot-result or hit histories. See the [experiment record](bandwidth-experiments.md)
-for historical comparisons and outstanding workload coverage.
+populate shot-result or hit histories. Add those workloads before using the
+probe to evaluate outcome-recovery traffic.

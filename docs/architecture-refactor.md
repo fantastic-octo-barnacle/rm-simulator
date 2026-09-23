@@ -86,6 +86,5 @@ scene input leaves the visuals untouched. Projectile spheres retain their pool.
 
 Tests cover unchanged transforms, first-frame poses, wheel visibility, light
 states, chassis removal, legacy outpost serialization, tick partitioning and
-complete-world replay. Before/after measurements and their limits are in the
-[dated refactor comparison](performance.md#refactor-comparison). The comparison
-is a regression check, not evidence of a renderer or gameplay speedup.
+complete-world replay. Use the [performance probes](performance.md) to measure
+new builds on their target hardware.

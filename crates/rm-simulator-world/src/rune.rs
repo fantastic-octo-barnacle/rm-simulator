@@ -17,8 +17,6 @@ use serde::{Deserialize, Serialize};
 
 /// Blades on the rune wheel; five targets must be hit (section 5.5.2.1).
 pub const BLADE_COUNT: usize = 5;
-/// Training collision disk and effective scoring disk; not the target orbit radius.
-pub const PHYSICAL_TARGET_RADIUS_M: f64 = 0.154;
 /// 300 mm effective detection disk of the rune (Figure 5-18).
 pub const EFFECTIVE_TARGET_RADIUS_M: f64 = 0.150;
 /// Nominal 700 mm orbit of the five targets. The measured CAD orbit is

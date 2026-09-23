@@ -5,8 +5,6 @@ use crate::math::{quat_normalize, quat_slerp};
 use rm_simulator_world::{ChassisSnapshot, FieldSnapshot, Pose};
 use std::collections::VecDeque;
 
-/// App presentation setting, not a rulebook delay.
-pub const DELAY_NS: u64 = 64_000_000;
 /// Frames retained. Playback clamps to the oldest and newest frame, so a view
 /// time outside the window holds an endpoint instead of extrapolating far.
 const CAPACITY: usize = 32;

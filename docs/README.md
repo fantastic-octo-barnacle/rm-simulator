@@ -3,15 +3,14 @@
 # Documentation
 
 Start with the [project README](../README.md) for installation, controls,
-asset discovery and current server/client behavior. Code and the active guides
-below describe the live implementation. The records section retains measurements
-and design decisions for their named revision, not current API guarantees.
+asset discovery and current server/client behavior. The guides below describe
+the live implementation. Old investigations and measurements are available in
+Git history.
 
 ## Current guides
 
 | Topic | Guide |
 |---|---|
-| Open issues and measurement gaps | [Known issues](../KNOWN_ISSUES.md) |
 | Contribution rules and review | [Contributing](../CONTRIBUTING.md) |
 | Environment, `just` targets, tests and commits | [Development](development.md) |
 | CI checks, validation reuse and releases | [CI and releases](releases.md) |
@@ -30,18 +29,3 @@ and design decisions for their named revision, not current API guarantees.
 | Renderer benchmark commands and interpretation | [Render benchmark](render-benchmark.md) |
 | Optional Steam integration | [Steam](steam.md) |
 | License, provenance and third-party notices | [Notices](../NOTICE.md) |
-
-## Experiment records
-
-- [Bandwidth experiments](bandwidth-experiments.md) records the isolated trials
-  and the experiments integrated into the live wire, with their measured savings
-  and the remaining bandwidth target. Treat its rates, asset hashes and revision
-  ids as evidence for the named revision, not as properties of the current build.
-
-Dated investigation logs, trial transcripts and per-experiment result files are
-not kept here. They remain in Git history and in the pull requests that produced
-the changes they describe; read them there when a claim needs its raw evidence.
-
-Keep dated evidence tied to its original build. Update the current overview or
-add a superseded notice when behavior changes; do not relabel old measurements
-as results from the latest protocol or renderer.

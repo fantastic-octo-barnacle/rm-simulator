@@ -44,8 +44,10 @@ The shell sets `CARGO_TARGET_DIR="$PWD/target/nix"`, so Nix builds land in
 | `just network-test` / `just network-trial <scenario>` | Harness tests with real UDP / one scenario against built binaries |
 | `just bench-build` / `just bench-render <config>` | Build the benchmark / run a sweep without recompiling |
 
-The `prek` hook set in `prek.toml` covers whitespace, end-of-file, merge
-conflicts, YAML/JSON/TOML validity, line endings, large files, `typos`, `actionlint` and a `commit-msg` check; it excludes `target/` and `field/`.
+The `prek` hook set in `prek.toml` formats the Rust workspace and checks
+whitespace, end-of-file, merge conflicts, YAML/JSON/TOML validity, line endings,
+large files, `typos`, `actionlint` and commit messages. It excludes `target/`
+and `field/`. Clippy remains in `just verify` and CI's full workspace gate.
 
 ## `just verify`
 

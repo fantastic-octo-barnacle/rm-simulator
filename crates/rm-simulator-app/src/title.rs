@@ -585,16 +585,12 @@ fn preview_progress(world: &mut World) {
         node.width = percent(progress * 100.0);
     }
 }
-#[derive(Component, Default, Clone)]
-struct NameInput;
-#[derive(Component, Default, Clone)]
-struct AddressInput;
-#[derive(Component, Default, Clone)]
-struct HostInput;
-#[derive(Component, Default, Clone)]
-enum LobbyInput {
-    #[default]
+#[derive(Component)]
+enum TitleInput {
     Directory,
+    PlayerName,
+    Address,
+    Host,
     Name,
     Password,
     JoinPassword,
@@ -607,6 +603,46 @@ enum LobbyInput {
     Spread,
     Distribution,
     Seed,
+}
+impl TitleInput {
+    fn value_mut<'a>(&self, fields: &'a mut TitleFields) -> &'a mut String {
+        match self {
+            Self::Directory => &mut fields.lobby_host,
+            Self::PlayerName => &mut fields.name,
+            Self::Address => &mut fields.address,
+            Self::Host => &mut fields.host,
+            Self::Name => &mut fields.lobby_name,
+            Self::Password => &mut fields.password,
+            Self::JoinPassword => &mut fields.join_password,
+            Self::Advertised => &mut fields.advertised,
+            Self::FireRate => &mut fields.fire_rate,
+            Self::MaxFireRate => &mut fields.max_fire_rate,
+            Self::MaxMuzzleSpeed => &mut fields.max_muzzle_speed,
+            Self::MuzzleSpeed => &mut fields.muzzle_speed,
+            Self::SpeedVariation => &mut fields.speed_variation,
+            Self::Spread => &mut fields.spread,
+            Self::Distribution => &mut fields.distribution,
+            Self::Seed => &mut fields.seed,
+        }
+    }
+
+    fn submits_host(&self) -> bool {
+        matches!(
+            self,
+            Self::Host
+                | Self::Name
+                | Self::Password
+                | Self::Advertised
+                | Self::FireRate
+                | Self::MaxFireRate
+                | Self::MaxMuzzleSpeed
+                | Self::MuzzleSpeed
+                | Self::SpeedVariation
+                | Self::Spread
+                | Self::Distribution
+                | Self::Seed
+        )
+    }
 }
 #[derive(Component)]
 struct WeaponFields;
@@ -757,13 +793,14 @@ fn scrollbar(commands: &mut Commands, parent: Entity, target: Entity) {
     }).insert((ChildOf(parent), MenuScrollbar(target)));
 }
 
-fn field<M: Component + Default + Clone>(
+fn field(
     commands: &mut Commands,
     parent: Entity,
     label: &'static str,
-    value: String,
-    marker: M,
+    fields: &mut TitleFields,
+    marker: TitleInput,
 ) -> Entity {
+    let value = marker.value_mut(fields).clone();
     commands.spawn((
         ChildOf(parent),
         Text::new(label),
@@ -847,7 +884,7 @@ fn update_status(
 /// spawned and `show_page` displays the current one, so a choice made on one
 /// page can still read the fields of another.
 fn spawn_title(mut commands: Commands, base: Res<BaseArgs>, mut state: ResMut<TitleState>) {
-    let fields = TitleFields::initial(
+    let mut fields = TitleFields::initial(
         &base.0,
         remembered_path().and_then(|path| load_remembered(&path)),
     );
@@ -1027,8 +1064,8 @@ fn spawn_title(mut commands: Commands, base: Res<BaseArgs>, mut state: ResMut<Ti
         &mut commands,
         identity,
         "Name",
-        fields.name.clone(),
-        NameInput,
+        &mut fields,
+        TitleInput::PlayerName,
     );
     let columns = commands
         .spawn((
@@ -1066,8 +1103,8 @@ fn spawn_title(mut commands: Commands, base: Res<BaseArgs>, mut state: ResMut<Ti
         &mut commands,
         future,
         "Lobby Host (HOST:PORT)",
-        fields.lobby_host.clone(),
-        LobbyInput::Directory,
+        &mut fields,
+        TitleInput::Directory,
     );
     let discovery_actions = commands
         .spawn((
@@ -1156,15 +1193,15 @@ fn spawn_title(mut commands: Commands, base: Res<BaseArgs>, mut state: ResMut<Ti
         &mut commands,
         left,
         "Direct address (HOST:PORT)",
-        fields.address.clone(),
-        AddressInput,
+        &mut fields,
+        TitleInput::Address,
     );
     let join_password = field(
         &mut commands,
         left,
         "Lobby password (optional)",
-        fields.join_password.clone(),
-        LobbyInput::JoinPassword,
+        &mut fields,
+        TitleInput::JoinPassword,
     );
     password::attach(&mut commands, left, join_password);
     button(&mut commands, left, "Join lobby / address", Choice::Connect);
@@ -1194,15 +1231,15 @@ fn spawn_title(mut commands: Commands, base: Res<BaseArgs>, mut state: ResMut<Ti
         &mut commands,
         right,
         "Lobby name",
-        fields.lobby_name.clone(),
-        LobbyInput::Name,
+        &mut fields,
+        TitleInput::Name,
     );
     let host_password = field(
         &mut commands,
         right,
         "Password (optional)",
-        fields.password.clone(),
-        LobbyInput::Password,
+        &mut fields,
+        TitleInput::Password,
     );
     password::attach(&mut commands, right, host_password);
     let mut public = commands.spawn_scene(bsn! {
@@ -1215,15 +1252,15 @@ fn spawn_title(mut commands: Commands, base: Res<BaseArgs>, mut state: ResMut<Ti
         &mut commands,
         right,
         "Listen on (ADDR:PORT)",
-        fields.host.clone(),
-        HostInput,
+        &mut fields,
+        TitleInput::Host,
     );
     field(
         &mut commands,
         future,
         "Public IP:PORT override (optional)",
-        fields.advertised.clone(),
-        LobbyInput::Advertised,
+        &mut fields,
+        TitleInput::Advertised,
     );
     commands.spawn((
         ChildOf(right),
@@ -1273,57 +1310,57 @@ fn spawn_title(mut commands: Commands, base: Res<BaseArgs>, mut state: ResMut<Ti
         &mut commands,
         weapon_fields,
         "Maximum fire rate (Hz)",
-        fields.max_fire_rate.clone(),
-        LobbyInput::MaxFireRate,
+        &mut fields,
+        TitleInput::MaxFireRate,
     );
     field(
         &mut commands,
         weapon_fields,
         "Maximum muzzle speed (m/s)",
-        fields.max_muzzle_speed.clone(),
-        LobbyInput::MaxMuzzleSpeed,
+        &mut fields,
+        TitleInput::MaxMuzzleSpeed,
     );
     field(
         &mut commands,
         weapon_fields,
         "Starting fire rate (Hz)",
-        fields.fire_rate.clone(),
-        LobbyInput::FireRate,
+        &mut fields,
+        TitleInput::FireRate,
     );
     field(
         &mut commands,
         weapon_fields,
         "Starting muzzle speed (m/s, blank = 25)",
-        fields.muzzle_speed.clone(),
-        LobbyInput::MuzzleSpeed,
+        &mut fields,
+        TitleInput::MuzzleSpeed,
     );
     field(
         &mut commands,
         weapon_fields,
         "Default speed variation (+/- m/s, 0 to 1)",
-        fields.speed_variation.clone(),
-        LobbyInput::SpeedVariation,
+        &mut fields,
+        TitleInput::SpeedVariation,
     );
     field(
         &mut commands,
         weapon_fields,
         "Default spread half-angle (degrees, 0 = perfect)",
-        fields.spread.clone(),
-        LobbyInput::Spread,
+        &mut fields,
+        TitleInput::Spread,
     );
     field(
         &mut commands,
         weapon_fields,
         "Default distribution (uniform or gaussian)",
-        fields.distribution.clone(),
-        LobbyInput::Distribution,
+        &mut fields,
+        TitleInput::Distribution,
     );
     field(
         &mut commands,
         weapon_fields,
         "Default spread seed",
-        fields.seed.clone(),
-        LobbyInput::Seed,
+        &mut fields,
+        TitleInput::Seed,
     );
 
     commands.spawn((
@@ -1548,14 +1585,7 @@ fn title_input(
     mut next_page: ResMut<NextState<Page>>,
     mut next_screen: ResMut<NextState<Screen>>,
     mut ui: Option<ResMut<crate::hud::HudState>>,
-    inputs: Query<(
-        Entity,
-        &EditableText,
-        Has<NameInput>,
-        Has<AddressInput>,
-        Has<HostInput>,
-        Option<&LobbyInput>,
-    )>,
+    inputs: Query<(Entity, &EditableText, &TitleInput)>,
     focus: Res<bevy::input_focus::InputFocus>,
     controls: Query<(), Or<(With<bevy::ui_widgets::Checkbox>, With<FeathersButton>)>>,
 ) {
@@ -1581,24 +1611,7 @@ fn title_input(
                 let hosting = focus
                     .get()
                     .and_then(|entity| inputs.get(entity).ok())
-                    .is_some_and(|(_, _, _, _, host, lobby)| {
-                        host || matches!(
-                            lobby,
-                            Some(
-                                LobbyInput::Name
-                                    | LobbyInput::Password
-                                    | LobbyInput::Advertised
-                                    | LobbyInput::FireRate
-                                    | LobbyInput::MaxFireRate
-                                    | LobbyInput::MaxMuzzleSpeed
-                                    | LobbyInput::MuzzleSpeed
-                                    | LobbyInput::SpeedVariation
-                                    | LobbyInput::Spread
-                                    | LobbyInput::Distribution
-                                    | LobbyInput::Seed
-                            )
-                        )
-                    });
+                    .is_some_and(|(_, _, input)| input.submits_host());
                 if hosting {
                     Choice::Host
                 } else {
@@ -1638,31 +1651,8 @@ fn title_input(
     };
     fields.set_seat(state.seat);
     fields.chassis = state.chassis;
-    for (_, text, name, address, host, lobby) in &inputs {
-        let value = text.value().to_string();
-        if let Some(lobby) = lobby {
-            match lobby {
-                LobbyInput::Directory => fields.lobby_host = value,
-                LobbyInput::Name => fields.lobby_name = value,
-                LobbyInput::Password => fields.password = value,
-                LobbyInput::JoinPassword => fields.join_password = value,
-                LobbyInput::Advertised => fields.advertised = value,
-                LobbyInput::FireRate => fields.fire_rate = value,
-                LobbyInput::MaxFireRate => fields.max_fire_rate = value,
-                LobbyInput::MaxMuzzleSpeed => fields.max_muzzle_speed = value,
-                LobbyInput::MuzzleSpeed => fields.muzzle_speed = value,
-                LobbyInput::SpeedVariation => fields.speed_variation = value,
-                LobbyInput::Spread => fields.spread = value,
-                LobbyInput::Distribution => fields.distribution = value,
-                LobbyInput::Seed => fields.seed = value,
-            }
-        } else if name {
-            fields.name = value;
-        } else if address {
-            fields.address = value;
-        } else if host {
-            fields.host = value;
-        }
+    for (_, text, input) in &inputs {
+        *input.value_mut(&mut fields) = text.value().to_string();
     }
     if choice == Choice::Refresh {
         if state.discovery.is_none() {
@@ -1717,8 +1707,8 @@ fn title_input(
             ));
             return;
         }
-        for (entity, _, _, address, _, _) in &inputs {
-            if address {
+        for (entity, _, input) in &inputs {
+            if matches!(input, TitleInput::Address) {
                 commands
                     .entity(entity)
                     .insert(Prefill(entry.address.clone()));

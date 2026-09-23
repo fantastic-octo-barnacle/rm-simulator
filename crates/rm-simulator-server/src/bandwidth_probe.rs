@@ -2,9 +2,8 @@
 // Copyright (c) 2026 hxyulin <hxyulin@proton.me>
 //! Test-only bandwidth attribution probe.
 //!
-//! This module is the measurement instrument for the bandwidth experiments in
-//! `docs/bandwidth-experiments.md`. It drives the production host encoders and
-//! codecs ([`PeerCodec`], [`crate::owner_stream::OwnerAnchor`], the acknowledged
+//! This module measures the production host encoders and codecs ([`PeerCodec`],
+//! [`crate::owner_stream::OwnerAnchor`], the acknowledged
 //! baseline encoder and the byte [`Pacer`]) against the production client codec
 //! ([`ClientCodec`]) with no socket, on a hand-advanced clock, so the same
 //! workload replays byte for byte on any machine.

@@ -52,6 +52,14 @@ id = "actionlint"
 repo = "local"
 
 [[repos.hooks]]
+id = "cargo-fmt"
+name = "Format Rust workspace"
+entry = "cargo fmt --all"
+language = "system"
+types = ["rust"]
+pass_filenames = false
+
+[[repos.hooks]]
 id = "conventional-commit"
 name = "Conventional commit message"
 entry = "python3 scripts/check-commit-message.py --file"

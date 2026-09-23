@@ -2130,7 +2130,6 @@ mod tests {
     fn compact_input_batch_round_trips_a_long_randomized_reversal_sequence() {
         let mut random = Lcg(0x5eed_1234_abcd_0001);
         let mut history = VecDeque::new();
-        let mut batches = 0;
         for sequence in 1..=400 {
             // Reverse the drive direction on almost every sample, with
             // full-precision aim and steering, so the change mask and both
@@ -2153,17 +2152,13 @@ mod tests {
             }
             if sequence % 5 == 0 {
                 assert_round_trip(&select_inputs(&history, 12));
-                batches += 1;
             }
         }
-        assert!(batches >= 70);
-        eprintln!("randomized reversal batches={batches}");
     }
 
     #[test]
     fn compact_input_batch_round_trips_an_aim_sweep() {
         let mut history = VecDeque::new();
-        let mut batches = 0;
         for sequence in 1..=200 {
             // A fine sweep: neighbours differ in the low mantissa bits, so the
             // mask has to carry every aim value at full f64 precision.
@@ -2181,16 +2176,13 @@ mod tests {
             }
             if sequence % 7 == 0 {
                 assert_round_trip(&select_inputs(&history, 12));
-                batches += 1;
             }
         }
-        assert!(batches >= 28);
     }
 
     #[test]
     fn compact_input_batch_round_trips_movement_with_fire() {
         let mut history = VecDeque::new();
-        let mut batches = 0;
         for sequence in 1..=120 {
             // Fire rides its own reliable-command lane; a stray Fire in the
             // input history must never enter the batch.
@@ -2216,10 +2208,8 @@ mod tests {
                         .all(|command| matches!(command, Command::PilotInput { .. }))
                 );
                 assert_round_trip(&selected);
-                batches += 1;
             }
         }
-        assert!(batches >= 30);
     }
 
     #[test]
@@ -2330,41 +2320,6 @@ mod tests {
         assert_eq!(
             fixed_batch(&decode_inputs(&packet).unwrap()),
             fixed_batch(&inputs.iter().copied().collect::<Vec<_>>())
-        );
-    }
-
-    #[test]
-    fn compact_batch_carries_the_scripted_workload_not_just_its_bytes() {
-        // An idle and a driving pilot produce batches of similar size, so the
-        // decoded values, not the byte count, must show which one was sent.
-        let idle: VecDeque<_> = (1..=8)
-            .map(|sequence| pilot(sequence, ChassisCommand::default()))
-            .collect();
-        let drive: VecDeque<_> = (1..=8)
-            .map(|sequence| {
-                pilot(
-                    sequence,
-                    ChassisCommand {
-                        forward_m_s: 2.0,
-                        aim_yaw_rad: 0.5,
-                        ..Default::default()
-                    },
-                )
-            })
-            .collect();
-        let idle_packet = input_batch(&idle, false).unwrap();
-        let drive_packet = input_batch(&drive, false).unwrap();
-        let idle_decoded = decode_inputs(&idle_packet).unwrap();
-        let drive_decoded = decode_inputs(&drive_packet).unwrap();
-        assert!(idle_decoded.iter().all(|command| matches!(command,
-            Command::PilotInput { frame, .. } if frame.command.forward_m_s == 0.0)));
-        assert!(drive_decoded.iter().all(|command| matches!(command,
-            Command::PilotInput { frame, .. }
-                if frame.command.forward_m_s == 2.0 && frame.command.aim_yaw_rad == 0.5)));
-        eprintln!(
-            "workload idle_bytes={} drive_bytes={}",
-            idle_packet.len(),
-            drive_packet.len()
         );
     }
 

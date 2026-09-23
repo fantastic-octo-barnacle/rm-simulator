@@ -47,10 +47,10 @@ still load.
 
 Text and paint can be exported as native glTF texture patches. Their PNGs,
 UVs and alpha-mask materials are embedded in the GLBs; no texture sidecar loader
-is needed. Textured CAD materials retain their exported appearance. Package composition and
-previous native-texture measurements are documented in [semantic assets](semantic-assets.md).
-The later standard-detail build is recorded in [field detail](field-detail.md);
-use loader counts and manifest hashes when comparing a different installed package.
+is needed. Textured CAD materials retain their exported appearance. Package composition and sidecar bindings are documented in
+[semantic assets](semantic-assets.md). See [field detail](field-detail.md) for
+rebuilding a simplified package; use loader counts and manifest hashes when
+comparing packages.
 
 The simulator supports rm-map-tools semantic packages: exported joint frames,
 stable IDs and fixed geometry drive animation and collision selection. See
