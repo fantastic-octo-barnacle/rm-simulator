@@ -22,12 +22,6 @@ pub struct RuneProgressLight {
     /// Progress stage, 0 to 4, growing from the hub outward.
     pub stage: u32,
 }
-/// Parent of one blade's lights; its local rotation places the blade.
-#[derive(Component)]
-pub struct RuneBlade {
-    /// Blade index, 0 to 4.
-    pub id: u32,
-}
 /// A light that shows while the blade is still an available target.
 #[derive(Component)]
 pub struct RuneActiveLight {
@@ -118,7 +112,6 @@ pub fn spawn_rune(
                 Transform::from_rotation(Quat::from_rotation_z(angle)),
                 Visibility::default(),
                 ChildOf(root),
-                RuneBlade { id: blade },
             ))
             .id();
         let active_parent = commands

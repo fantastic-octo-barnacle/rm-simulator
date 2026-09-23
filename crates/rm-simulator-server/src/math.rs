@@ -81,11 +81,6 @@ pub fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
         a[0] * b[1] - a[1] * b[0],
     ]
 }
-/// Euclidean length of an FLU vector, in the vector's own unit.
-pub fn length(v: [f64; 3]) -> f64 {
-    v.iter().map(|x| x * x).sum::<f64>().sqrt()
-}
-
 /// World pose of a glTF asset whose manifest placement is the rotation
 /// `rotation_wxyz` (applied to the asset's own glTF axes) and the FLU
 /// translation `translation_m`. Applying the result as an FLU pose in the

@@ -358,10 +358,6 @@ pub mod outpost {
         [0.13823941, 0.06881135, 0.23943769],
         [0.13851113, -0.03343800, -0.23990831],
     ];
-    /// Light bar band of the armor module (the 135 x 55 mm optical target).
-    pub const TARGET_WIDTH_M: f64 = 0.135;
-    /// Height of that light bar band, in metres (55 mm).
-    pub const TARGET_HEIGHT_M: f64 = 0.055;
     /// Figure 5-16 effective detection area: 111 mm span inset 5 mm each side by
     /// 16 + 2 + 58 + 2 + 16 mm, centred on the face.
     pub const DETECTION_WIDTH_M: f64 = 0.101;

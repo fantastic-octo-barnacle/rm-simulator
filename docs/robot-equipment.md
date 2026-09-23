@@ -115,13 +115,13 @@ mapping. The corpus spans different exposures and includes synthetic images;
 only the photographed robots guided this qualitative fit. No corpus images
 are embedded or redistributed, and this is not a calibrated camera or LED model.
 
-## Robot and chassis selection prototypes
+## Robot and chassis selection
 
 The title flow selects the robot/team first, then a compatible chassis.
 `--chassis auto|omni|balance|mecanum|flight` exposes the same selection to the CLI.
-Infantry 3/4 offers omni or balance; Sentry uses omni; Hero and Engineer use
+Infantry 3/4/5 offers omni or balance; Sentry uses omni; Hero and Engineer use
 mecanum; Drone uses Flight. The host validates the pairing. Hello, snapshots and owner anchors
-carry the selection and jump state in protocol 50 (`RMI5` input batches,
+carry the selection and jump state in protocol 52 (`RMI5` input batches,
 `RMO8` owner anchors); use matching builds.
 
 All new models are authored boxes, cylinders and wheel details. The supplied

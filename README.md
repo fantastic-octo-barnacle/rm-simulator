@@ -474,8 +474,9 @@ does not acknowledge its execution by the host.
 | 48 | Adds fixed-altitude Drone and adjustable balance stabilization (`RMI5` inputs, `RMO8` anchors). |
 | 49 | Arms the Drone and carries the live prototype air-support policy. |
 | 50 | Adds the Drone's Aerial Safety Rope to the chassis configuration and the `MapMarker` command. |
+| 52 | Adds connected deployment and the reliable ownership receipt. |
 
-The current protocol version is 50, defined by `PROTOCOL_VERSION` in
+The current protocol version is 52, defined by `PROTOCOL_VERSION` in
 `crates/rm-simulator-server/src/protocol.rs`. GNS sends redundant controls
 and retried shot intents unreliably; scheduling receipts and terminal shot results
 remain reliable. There is no shooter-view fire path or input-acknowledgement
@@ -531,9 +532,9 @@ fails regressions beyond a relative tolerance, and the run reports `passed`,
 `failed` or `completed` with a matching exit code.
 
 The [bandwidth experiment record](docs/bandwidth-experiments.md) retains the
-isolated trials behind the current delivery contracts, including the measured
-savings and the outstanding bandwidth target. Open networking issues and
-measurement gaps are tracked in [known issues](KNOWN_ISSUES.md).
+isolated trials behind the current delivery contracts. The
+[completed network investigation](docs/network-investigation.md) summarizes
+its historical measurements and their limits.
 
 ## Match rules and scoring
 

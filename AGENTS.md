@@ -24,7 +24,7 @@ source file.
 | Standalone gameplay engine and its live integration | `docs/gameplay.md` |
 | Crate ownership, ticks, restore, ECS | `docs/architecture-refactor.md` |
 | Physics reuse without a match or server | `docs/physics-reuse.md` |
-| Open issues and measurement gaps | `KNOWN_ISSUES.md` |
+| Completed network investigation and historical measurements | `docs/network-investigation.md` |
 | Licensing and third-party provenance | `NOTICE.md` |
 | Every guide, indexed | `docs/README.md` |
 

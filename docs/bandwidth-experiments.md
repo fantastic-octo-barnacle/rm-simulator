@@ -3,7 +3,7 @@
 # Bandwidth experiments
 
 The surviving experiment summary: the isolated trials behind the current
-delivery contracts, their measured savings, and the outstanding bandwidth
+delivery contracts, their measured savings, and the historical bandwidth
 target. Every rate, hash and revision id here is evidence for the named
 revision, not a property of the current build.
 
@@ -43,10 +43,11 @@ precision.
 
 The isolated measurements below are not measurements of the combined build.
 Experiment 1's short unimpaired UDP pair corroborates its bandwidth saving, but
-does not complete the loss/blackout or multi-seed acceptance matrix. Experiment 7
-has only in-process bandwidth evidence. NET-001 remains open; see
-[known issues](../KNOWN_ISSUES.md). The canonical probe still needs populated
-hit and shot-result workloads before drawing recovery-history conclusions.
+did not complete the loss/blackout or multi-seed acceptance matrix. Experiment 7
+had only in-process bandwidth evidence. The completed
+[network investigation](network-investigation.md) summarizes NET-001's recorded
+finding. The canonical probe lacked populated hit and shot-result workloads, so
+these trials alone do not support recovery-history conclusions.
 
 The integration follow-up corrected event measurements, repeated the RTT trial
 and ran targeted live trials; a subsequent wire-tag tracing fix followed.
@@ -55,7 +56,7 @@ fix misclassified RMO4/RMI3 traffic as control; total byte counts are unaffected
 
 ## Problem and budget
 
-[NET-001](../KNOWN_ISSUES.md) records approximately 855 kbps downstream and
+[NET-001](network-investigation.md) recorded approximately 855 kbps downstream and
 103 kbps upstream for one remote client moving/firing against a listen host.
 Those are UDP proxy payload rates; the documented header allowance raises them
 to about 882/115 kbps. The desired 100–200 kbps per-player budget requires a

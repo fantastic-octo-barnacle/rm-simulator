@@ -11,7 +11,6 @@ and design decisions for their named revision, not current API guarantees.
 
 | Topic | Guide |
 |---|---|
-| Open issues and measurement gaps | [Known issues](../KNOWN_ISSUES.md) |
 | Contribution rules and review | [Contributing](../CONTRIBUTING.md) |
 | Environment, `just` targets, tests and commits | [Development](development.md) |
 | CI checks, validation reuse and releases | [CI and releases](releases.md) |
@@ -33,9 +32,11 @@ and design decisions for their named revision, not current API guarantees.
 
 ## Experiment records
 
+- [Completed network investigation](network-investigation.md) retains the
+  protocol 27–29 issue findings and the limits of those measurements.
 - [Bandwidth experiments](bandwidth-experiments.md) records the isolated trials
   and the experiments integrated into the live wire, with their measured savings
-  and the remaining bandwidth target. Treat its rates, asset hashes and revision
+  and the historical bandwidth target. Treat its rates, asset hashes and revision
   ids as evidence for the named revision, not as properties of the current build.
 
 Dated investigation logs, trial transcripts and per-experiment result files are
