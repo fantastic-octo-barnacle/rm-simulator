@@ -21,6 +21,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const REQUEST_CAPACITY: usize = 256;
+/// Map markers the host keeps, newest last; older ones are forgotten.
+const MAP_MARKER_CAPACITY: usize = 64;
 const CLOCK_PERIOD: Duration = Duration::from_millis(2);
 /// Snapshot broadcast period for network players.
 // Full independent UDP checkpoints are larger than deltas. 31 Hz keeps
@@ -28,6 +30,23 @@ const CLOCK_PERIOD: Duration = Duration::from_millis(2);
 pub const BROADCAST_PERIOD: Duration = Duration::from_millis(32);
 /// Embedded-client latency setting, independent of the 1 ms rule tick.
 const OWNER_BROADCAST_PERIOD: Duration = Duration::from_millis(4);
+
+/// A map marker the host accepted from a team member, with who sent it and
+/// the world time it arrived. Nothing acts on these yet; the host keeps the
+/// newest 64 for inspection.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MapMarkerRecord {
+    /// Client that placed the marker.
+    pub client_id: u32,
+    /// The sender's team, whose robots the marker is meant for.
+    pub team: rm_simulator_world::Team,
+    /// Icon or custom letter.
+    pub kind: crate::protocol::MapMarkerKind,
+    /// Marked point in world FLU metres (x, y).
+    pub position_m: [f64; 2],
+    /// World time when the host accepted it, in nanoseconds.
+    pub time_ns: u64,
+}
 
 /// A message shared by all recipients. Encoding runs once, on a socket writer.
 pub(crate) struct Outbound {
@@ -138,6 +157,7 @@ enum Request {
     State(Reply<SimulationState>),
     FireRecords(Reply<Vec<crate::simulation::FireRecord>>),
     Roster(Reply<Vec<PlayerInfo>>),
+    MapMarkers(Reply<Vec<MapMarkerRecord>>),
     Join(PeerRegistration, Reply<Result<Welcome, String>>),
     Leave(u32),
     Client(u32, ClientMessage),
@@ -236,6 +256,10 @@ impl HostHandle {
     /// Everyone connected, in arrival order, at this request's worker turn.
     pub fn roster(&self) -> Result<Vec<PlayerInfo>, String> {
         self.request(Request::Roster)
+    }
+    /// The map markers accepted so far, oldest first, at most the newest 64.
+    pub fn map_markers(&self) -> Result<Vec<MapMarkerRecord>, String> {
+        self.request(Request::MapMarkers)
     }
     /// How many peers are connected, counted from a roster capture in order.
     pub fn peer_count(&self) -> Result<usize, String> {
@@ -343,6 +367,7 @@ impl Host {
                 let mut owner = Owner {
                     simulation,
                     peers: Vec::new(),
+                    map_markers: Default::default(),
                     next_id: 1,
                     next_sequence: 0,
                     next_snapshot_id: 1,
@@ -435,6 +460,7 @@ struct Owner {
     observer: crate::network_trace::Observer,
     simulation: Simulation,
     peers: Vec<Peer>,
+    map_markers: std::collections::VecDeque<MapMarkerRecord>,
     next_id: u32,
     next_sequence: u64,
     next_snapshot_id: u64,
@@ -517,6 +543,9 @@ impl Owner {
             }
             Request::Roster(reply) => {
                 let _ = reply.send(self.roster());
+            }
+            Request::MapMarkers(reply) => {
+                let _ = reply.send(self.map_markers.iter().copied().collect());
             }
             Request::Join(peer, reply) => {
                 let result = self.join(peer);
@@ -807,6 +836,58 @@ impl Owner {
             }
         }
     }
+    fn deploy(
+        &mut self,
+        id: u32,
+        team: Team,
+        robot: Robot,
+        chassis: crate::protocol::Chassis,
+        position_m: [f64; 2],
+    ) -> Result<(), String> {
+        if !self.control.ready.load(Ordering::Acquire) {
+            return Err("host is still loading".into());
+        }
+        let peer = self
+            .peers
+            .iter()
+            .find(|peer| peer.info.client_id == id)
+            .ok_or("unknown peer")?;
+        if peer.info.role != Role::Spectator || peer.info.chassis.is_some() {
+            return Err("only an undeployed spectator can deploy".into());
+        }
+        let chassis_id = self
+            .simulation
+            .deploy_robot(team, robot, chassis, position_m)?;
+        let receipt = crate::protocol::DeploymentReceipt {
+            team,
+            chassis: ChassisAssignment {
+                id: chassis_id,
+                config: self
+                    .simulation
+                    .field()
+                    .chassis_config(chassis_id)
+                    .expect("new chassis")
+                    .clone(),
+                robot,
+            },
+            weapon: self.simulation.weapon_for(chassis_id),
+            weapon_limits: self.simulation.weapon_limits_for(chassis_id),
+        };
+        let peer = self
+            .peers
+            .iter_mut()
+            .find(|peer| peer.info.client_id == id)
+            .expect("connected peer");
+        peer.info.team = Some(team);
+        peer.info.role = Role::Pilot;
+        peer.info.chassis = Some(chassis_id);
+        peer.info.robot = Some(robot);
+        self.send_to(id, ServerMessage::Deployed(Box::new(receipt)));
+        self.broadcast(ServerMessage::Roster(
+            self.peers.iter().map(|peer| peer.info.clone()).collect(),
+        ));
+        Ok(())
+    }
     fn client_message(&mut self, id: u32, message: ClientMessage) {
         self.observer.client(
             "host_receive",
@@ -818,6 +899,16 @@ impl Owner {
             return;
         };
         match message {
+            ClientMessage::Command(Command::Deploy {
+                team,
+                robot,
+                chassis,
+                position_m,
+            }) => {
+                if let Err(reason) = self.deploy(id, team, robot, chassis, position_m) {
+                    self.send_to(id, ServerMessage::Rejected { reason });
+                }
+            }
             ClientMessage::Hello { .. } => {}
             ClientMessage::TimeProbe { nonce } => {
                 self.send_to(
@@ -841,6 +932,7 @@ impl Owner {
             }
             ClientMessage::Command(command) => {
                 let own_chassis = peer.info.chassis;
+                let team = peer.info.team;
                 let refused = match command {
                     _ if !self.control.ready.load(Ordering::Acquire) => {
                         Some("host is still loading")
@@ -867,6 +959,9 @@ impl Owner {
                         if Some(shooter) != own_chassis =>
                     {
                         Some("fire from your own chassis only")
+                    }
+                    Command::MapMarker { .. } if team.is_none() => {
+                        Some("only a team member marks the map")
                     }
                     Command::SpawnProjectile { .. } if !peer.owner || own_chassis.is_some() => {
                         Some("only the embedded free camera spawns projectiles")
@@ -905,6 +1000,21 @@ impl Owner {
                     || self.apply(command).map(|_| ()),
                     |reason| Err(reason.into()),
                 );
+                if result.is_ok()
+                    && let Command::MapMarker { kind, position_m } = command
+                    && let Some(team) = team
+                {
+                    if self.map_markers.len() == MAP_MARKER_CAPACITY {
+                        self.map_markers.pop_front();
+                    }
+                    self.map_markers.push_back(MapMarkerRecord {
+                        client_id: id,
+                        team,
+                        kind,
+                        position_m,
+                        time_ns: self.simulation.field().time_ns(),
+                    });
+                }
                 self.observer.client(
                     if result.is_ok() {
                         "host_accept"
@@ -1134,6 +1244,48 @@ mod tests {
                 matches!(next(&messages).message(), ServerMessage::Rejected {reason} if reason == "only the referee runs the match")
             );
         }
+    }
+
+    #[test]
+    fn map_markers_are_recorded_for_team_members_and_leave_the_world_unchanged() {
+        use crate::protocol::MapMarkerKind;
+        let host = host();
+        let handle = host.handle();
+        let (pilot, messages) = peer(&handle, Role::Pilot);
+        for _ in 0..3 {
+            next(&messages);
+        }
+        let before = handle.snapshot().unwrap();
+        let marker =
+            |kind, position_m| ClientMessage::Command(Command::MapMarker { kind, position_m });
+        handle
+            .message(pilot.client_id, marker(MapMarkerKind::Alert, [4.0, -2.5]))
+            .unwrap();
+        handle
+            .message(
+                pilot.client_id,
+                marker(MapMarkerKind::Attack, [f64::NAN, 0.0]),
+            )
+            .unwrap();
+        assert!(
+            matches!(next(&messages).message(), ServerMessage::Rejected { reason } if reason == "map marker is off the field")
+        );
+        let (referee, referee_messages) = peer(&handle, Role::Referee);
+        while referee_messages.try_recv().is_some() {}
+        handle
+            .message(referee.client_id, marker(MapMarkerKind::Defend, [0.0, 0.0]))
+            .unwrap();
+        assert!(
+            matches!(next(&referee_messages).message(), ServerMessage::Rejected { reason } if reason == "only a team member marks the map")
+        );
+        let markers = handle.map_markers().unwrap();
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0].client_id, pilot.client_id);
+        assert_eq!(Some(markers[0].team), pilot.team);
+        assert_eq!(markers[0].kind, MapMarkerKind::Alert);
+        assert_eq!(markers[0].position_m, [4.0, -2.5]);
+        let after = handle.snapshot().unwrap();
+        assert_eq!(before.chassis, after.chassis);
     }
 
     #[test]

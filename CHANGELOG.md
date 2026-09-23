@@ -4,6 +4,51 @@
 
 ## Unreleased
 
+- The title screen preloads verified field assets and scenery for reuse on join,
+  with a bottom progress bar and a live, pointer-controlled arena background.
+  Host weapon limits and defaults now appear only on the Multiplayer page.
+
+- Joining solo or multiplayer now opens connected 3D staging: hover over and
+  click an arena half to choose a side, preview a robot and chassis, then click
+  a starting point in the outlined base ring. The tilted camera keeps the
+  arena's long edge horizontal. The host validates deployment and assigns the robot on the same
+  connection; occupied or invalid points can be retried. Drone keeps its aerial
+  pad, while spectators and referees enter without robots. `--staging` also
+  exposes the flow to direct CLI launches. Protocol 52 adds deployment requests
+  and ownership acknowledgements; both ends must use the same version.
+- Infantry 5 is available alongside Infantry 3 and 4 and wears armor number 5.
+
+- The title screen, loading splash, connected staging and a running match are now a Bevy
+  `Screen` state instead of the presence of a resource, and the title screen's
+  pages are a sub-state of it. Leaving the title screen takes its pages with it,
+  so returning always opens the main menu. No visible behaviour changes.
+
+- The main menu is a vertical stack of Single Player, Multiplayer, Settings and
+  Quit. The player name moved onto the Multiplayer page, where it is sent:
+  Single Player no longer asks for one and uses `--name` or `pilot`.
+
+- Drone flies on its own keys: W/S forward and back, A/D sideways in the body
+  frame, Q/E rotate the body, and the mouse aims the gimbal independently. It
+  spawns 2.0 m above its team's landing pad and is held by the section 4.5
+  Aerial Safety Rope: a 2.4 m tether slides along a rope from the team's edge
+  to the centre line, braking the drone at its reach and pulling it back
+  inside. The HUD robot card shows the remaining tether slack. The Drone's
+  gimbal now hangs 0.20 m ahead of the body centre, so forward shots aimed
+  upward no longer hit its own frame.
+- The minimap is clickable. Click the large map (M), or hold Left Alt to free
+  the cursor and click the small one, to place a marker; A/B/I choose attack,
+  defend or alert and other letters a custom marker, as in the competitor
+  client manual. Markers go to the host, which records them for team members
+  and does not act on them yet (protocol 50).
+
+- Improve menu navigation: settings tabs and footer stay visible, the active
+  tab is underlined, and switching tabs resets scrolling. Multiplayer Enter
+  submits the focused form, passwords are masked with individual Show toggles,
+  and search / validation feedback appears beside the relevant action. Escape
+  also cancels scenery and first-frame preparation. Add clearer empty-lobby
+  guidance, on-demand LAN help, and accessible labels for title inputs. Menu
+  page changes reset scrolling and clear focus from hidden inputs.
+
 - Balance legs now use a serial hip/knee chain and a four-bar knee-drive
   linkage. A reduced inverted-pendulum LQR replaces the fixed feedback gains;
   Settings > Controls has a remembered 0–100% stabilization slider.

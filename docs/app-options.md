@@ -16,9 +16,10 @@ joined with `--connect` takes those from the server.
 | Option | Purpose |
 |---|---|
 | `--play` | Skip the title screen and start a local practice match at once |
+| `--staging` | Connect first, then choose side, robot and position over the real field; works with local hosting and `--connect` |
 | `--console [ADDR]` | App automation console on localhost, default `127.0.0.1:7790`; see [console commands](console.md) |
 | `--window-mode normal\|unfocused\|headless` | Normal visible window, visible without requesting focus, or GPU rendering without an OS window |
-| `--robot hero\|engineer\|infantry-3\|infantry-4\|sentry\|drone` | Robot you drive on any host. Hero fires 42 mm; Infantry (default), Sentry and Drone fire 17 mm. Engineer has a fixed decorative arm; Drone flies at fixed altitude. Engineer has no launcher |
+| `--robot hero\|engineer\|infantry-3\|infantry-4\|infantry-5\|sentry\|drone` | Robot you drive on any host. Hero fires 42 mm; Infantry (default), Sentry and Drone fire 17 mm. Engineer has a fixed decorative arm; Drone flies at fixed altitude. Engineer has no launcher |
 | `--chassis auto\|omni\|balance\|mecanum\|flight` | Default `auto`: Infantry/Sentry use omni, Hero/Engineer use mecanum; Drone uses fixed-altitude flight. Infantry also offers balance (two wheels, mock balance assist and jump). Incompatible choices are rejected |
 | `--performance TYPE` | Section 5.4.2 performance type requested after joining: `long-range` or `melee` for the Hero, `hp-cooling`, `hp-burst`, `power-cooling` or `power-burst` for an infantry. Unset keeps the rulebook default; a host refuses a type for the other class or during a running round |
 | `--cad-assets DIR` | Extracted RMUC CAD directory; relative paths start at the working directory for both manifests and meshes |
@@ -67,17 +68,57 @@ joined with `--connect` takes those from the server.
 screen and enter a match at once; the remaining options are the defaults every
 join from the title screen starts from.
 
-## Robot and chassis pages
+## Menu feedback and navigation
 
-Single Player, Join lobby / address and Create lobby all open the robot page
-before the match starts. The blue column is on the left and the red column on
-the right; each offers Hero, Engineer, Infantry 3, Infantry 4, Sentry and a
-spectating free camera. The Referee seat sits below them. Continue (or Enter)
-opens chassis selection for pilots; spectators and referees join directly.
-Choose a supported chassis, then Start match or Join lobby. Escape returns to
-robot selection without losing the pending lobby. The robot and chassis are
-remembered with the other fields; the referee seat is not. Two pilots may drive the same robot: a host has no seat list to
-show before the connection is made.
+The main menu is one vertical stack: Single Player, Multiplayer, Settings and
+Quit. The player name is asked for on the Multiplayer page, above the lobby
+columns, because only joining and hosting send it; a local practice match uses
+`--name` or `pilot`. An empty name is reported beside the Join or Create lobby
+action that needed it.
+
+In Multiplayer, Enter submits the form containing the focused input: lobby
+creation fields create a lobby, while the address and join-password fields join
+one. Passwords start masked; each field has its own Show password checkbox.
+Passwords are never remembered. Search progress appears beside Refresh LAN;
+validation and lobby-selection messages appear beside the relevant action.
+LAN help opens troubleshooting on request; Escape dismisses it. Menu pages
+start at the top and clear focus from inputs on the previous page.
+Loading can be cancelled with Escape, including while scenery and the first
+frame are being prepared.
+
+Settings keeps its tabs and Reset / Close buttons visible while the selected
+page scrolls. The active tab is underlined; switching tabs starts at the top of
+that page.
+
+## Connected deployment lobby
+
+Single Player, Join lobby / address and Create lobby connect first and open the
+same staging screen over the real 3D field. Solo uses the embedded host and
+client without a network listener. No robot exists for this player yet.
+
+1. Hover over a half of the arena to highlight it, then click to join that side.
+   The arena faces you with its long edge horizontal and the camera tilted down.
+   Keyboard shortcuts: 1 chooses the left (blue) half, 2 the right (red) half.
+   Watch as spectator skips robot deployment.
+2. Choose Hero, Engineer, Infantry 3/4/5, Sentry or Drone and a supported chassis.
+   The preview uses the normal robot renderer.
+3. In the top-down base view, click inside the outlined ring, outside the base.
+   Arrow keys adjust the selected point by 0.1 m; Enter or Deploy submits it.
+
+The host checks the team ring, drivetrain and occupancy, then assigns a chassis
+on the existing connection. A refusal leaves the form open so you can retry.
+Drone retains its designated aerial pad and flight boundary. The outlined ring
+is this simulator's deployment policy, based on its Base-area footprint and the
+approved minimap prototype, not a claim of official competition starting rules.
+Multiple players can still choose the same robot class; no exclusive roster
+slots are enforced. Spectators and referees have no robot. `--referee --staging`
+opens a referee-only entry rather than offering pilot deployment.
+
+Escape goes back one step and leaves the lobby from the side-selection step.
+Deployment remembers the chosen team, robot and chassis. Host weapon limits
+and defaults are on the Multiplayer page; remote joins use the host's configuration.
+Direct-play CLI commands preserve their immediate spawn behavior. Add
+`--staging` (alone, with `--connect`, or with `--listen`) to use this flow.
 
 ## Balance stabilization and Drone flight
 
@@ -88,9 +129,16 @@ and damping, so low settings can let the robot tip. The slider affects only
 Balance, and travels to the host through normal pilot inputs. Reset all settings
 restores 100%. Space still requests one jump per grounded press.
 
-Drone offers the Flight chassis. WASD moves in its horizontal spawn plane,
-mouse look steers, and V changes viewpoint. The initial plane is 1.6 m above
-the spawn ground; Space/Shift do not change altitude. Left click fires an
+Drone offers the Flight chassis. Flying and aiming are separate: W/S fly
+forward and back and A/D sideways in the body frame, Q/E rotate the body
+(1.5 rad/s, 3 rad/s with Left Ctrl), and the mouse aims the gimbal, which can
+pitch down to about 69°. Flight is 2 m/s, 4 m/s with Left Ctrl. V changes
+viewpoint. The drone starts 2.0 m above its team's landing pad; Space/Shift do
+not change altitude. A 2.4 m tether on the Aerial Safety Rope (rulebook
+section 4.5) runs from the team's edge to the centre line along the pad's
+side; the drone brakes at its reach and is pulled back inside, and the HUD
+robot card shows the remaining slack. The rope height is not in the rulebook;
+the simulator assumes 3.6 m, which leaves about 1.8 m of sideways reach. Left click fires an
 underslung 17 mm gimbal launcher, including when aiming downward. Live matches
 do not require activating air support for this prototype; normal cadence, heat
 and configured ammunition checks still apply.
@@ -120,14 +168,20 @@ The client sends one reliable update when settings change and waits for its
 confirmation before sending new shots. A seed, chassis id and intended launch
 time determine the spread sample, so prediction can reproduce it.
 
-Expand **Host weapon settings** on the title screen to set the rate and speed
-limits and default spread before practice or creating a lobby. These
+Expand **Host weapon limits and defaults** on the Multiplayer page to set the rate and speed
+limits and default spread before creating a lobby. These
 fields are remembered. The caliber is not a setting: each pilot's robot fixes
 it, 42 mm for the Hero and 17 mm for the infantries, and the host refuses a
 weapon update that names another. Remote joins use the host's defaults; in-game adjustments
 last for the current session. The server binary accepts the same weapon flags.
 
 ## Interface and HUD
+
+The title screen verifies and loads the field in the background. A bottom bar
+reports loading stages; the live arena backdrop gently follows the pointer.
+Joining reuses the verified assets and imported scenery, including when selected
+before background loading finishes. Match physics and connections still start
+on join. The active graphics preset also applies to the menu backdrop.
 
 The HUD follows the July 2026 RMUC competitor client manual: red/blue team
 status and clock across the top, robot HP below left, ammunition beside the
@@ -162,7 +216,14 @@ Singleplayer pauses until you resume; multiplayer keeps running, including when
 you host. Settings opened from Pause return to that menu. A match that was
 already paused stays paused when you resume. On the title screen, Escape opens
 a quit confirmation with Cancel and Quit.
-Clicking the minimap also opens its expanded view. Settings, the expanded map, and toolbar-opened panels stop driving,
+Clicking the large map (M) places a marker at the clicked point; hold Left
+Alt to free the cursor and click the small map the same way. A, B and I select
+the attack, defend and alert markers while the large map is open, and other
+letters a custom lettered marker, following pages 24–25 of the competitor client
+manual. The newest marker is drawn on the map and sent to the host, which
+records it for team members; spectators and referees cannot mark. Markers
+are not shown to teammates or acted on yet.
+Clicking the small minimap without Left Alt still opens its expanded view. Settings, the expanded map, and toolbar-opened panels stop driving,
 aiming and firing and release the cursor. Hold Tab for both teams' players and HP;
 hold F12 for controls. Scroll the wheel to see longer lists while holding the key.
 These hold-to-peek panels do not pause gameplay. Close a panel, then click the field
@@ -196,7 +257,8 @@ an NVIDIA laptop GPU; Mac performance still needs separate measurements.
 | G | Switch the auto-aim target between armor and rune, when Controls sets the auto-aim target to Manual |
 | Mouse | Look |
 | Left button (held, once captured) | Fire from the barrel (driving) or just ahead of and below the eye (flying) |
-| W A S D | Drive forward/back and strafe left/right relative to the aim; the chassis heading follows the aim (driving) or move on the horizontal plane (flying) |
+| W A S D | Drive forward/back and strafe left/right relative to the aim; the chassis heading follows the aim (driving), fly forward/back and sideways in the body frame (Drone) or move on the horizontal plane (free camera) |
+| Q / E | Rotate the Drone's body left/right; the mouse aims its gimbal separately |
 | Left Ctrl | Fast: 5 m/s drive command, 8 m/s flight |
 | R | Toggle chassis spin (6 rad/s) while driving |
 | V | Toggle first- and third-person view while driving |
@@ -210,7 +272,8 @@ an NVIDIA laptop GPU; Mac performance still needs separate measurements.
 | F | Activate the rune for your team when it has an opportunity (local world or referee) |
 | Tab (hold) | Show team robot status |
 | P | Toggle settings; 1 toggles reticle, 2 toggles minimap, - / = adjusts mouse sensitivity |
-| M | Toggle the large team map |
+| M | Toggle the large team map; click it to place a marker, A / B / I pick attack / defend / alert and other letters a custom marker |
+| Left Alt (hold) | Free the cursor, for example to click a marker on the small map |
 | F12 (hold) | Show controls |
 | Toolbar | Mouse-driven Settings, Map, Team, Help, Close and Leave match; appears with the cursor released |
-| Escape | Close the current panel or open Pause; on the chassis page, return to robots; on the robot page, return to the page its choice came from; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |
+| Escape | Close the current panel or open Pause; in staging, go back a step or leave; in Multiplayer, return to the main menu; otherwise open or cancel quit confirmation |

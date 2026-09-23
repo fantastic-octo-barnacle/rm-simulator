@@ -35,6 +35,7 @@ mod projectile_prediction;
 mod scene;
 mod screenshot;
 mod session;
+mod staging;
 #[cfg(feature = "steam")]
 mod steam_support;
 mod title;
@@ -125,6 +126,7 @@ fn main() -> AppExit {
             Update,
             (hud::panel_input, hud::menu_input)
                 .chain()
+                .run_if(not(in_state(loading::Screen::Staging)))
                 .before(fire_gun)
                 .before(drive_chassis)
                 .before(fly_camera)
@@ -135,6 +137,7 @@ fn main() -> AppExit {
         )
         .add_plugins(loading::LoadingPlugin)
         .add_plugins(title::TitlePlugin)
+        .add_plugins(staging::StagingPlugin)
         .add_systems(
             Update,
             hud::sync_menus.after(mouse_capture).after(hud::menu_input),
@@ -157,7 +160,7 @@ fn main() -> AppExit {
                 publish_scene,
             )
                 .chain()
-                .run_if(resource_exists::<loading::Ready>)
+                .run_if(in_state(loading::Screen::InMatch))
                 .before(SceneSyncSet)
                 .before(mouse_capture)
                 .before(update_hud)
@@ -173,11 +176,12 @@ fn main() -> AppExit {
                     .after(publish_scene)
                     .before(SceneSyncSet),
                 update_hud,
+                hud::click_map.before(mouse_capture),
                 hud::update_map,
                 network_hud::update,
                 hud::update_panel_rows,
             )
-                .run_if(resource_exists::<loading::Ready>),
+                .run_if(in_state(loading::Screen::InMatch)),
         )
         .add_systems(
             Update,
@@ -185,7 +189,9 @@ fn main() -> AppExit {
                 .after(collision_view)
                 .after(SceneSyncSet)
                 .run_if(resource_exists::<ScreenshotRequest>)
-                .run_if(resource_exists::<loading::Ready>),
+                .run_if(
+                    in_state(loading::Screen::InMatch).or_else(in_state(loading::Screen::Staging)),
+                ),
         );
     if let Some(path) = &args.screenshot {
         app.insert_resource(ScreenshotRequest::new(path.clone()));
@@ -202,10 +208,12 @@ fn main() -> AppExit {
             }
         }
     }
+    // A command line that already names a match starts on the splash.
     if args.auto_join() {
-        app.insert_resource(loading::JoinRequest(args.clone()));
+        app.insert_resource(loading::JoinRequest(args.clone()))
+            .insert_state(loading::Screen::Loading);
     } else {
-        app.insert_resource(title::TitleScreen::default());
+        app.insert_state(loading::Screen::Title);
     }
     app.insert_resource(title::BaseArgs(args));
     app.run()

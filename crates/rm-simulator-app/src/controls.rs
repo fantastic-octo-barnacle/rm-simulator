@@ -40,6 +40,16 @@ const DRIVE_FAST_M_S: f64 = 5.0;
 const SPIN_RAD_S: f64 = 6.0;
 const FOLLOW_GAIN_PER_S: f64 = 6.0;
 const MAX_FOLLOW_RAD_S: f64 = 8.0;
+/// Drone flight speeds in its body frame, normal and with `Fast` held, in m/s.
+/// The flight controller reaches them at up to 4 m/s².
+const FLY_SPEED_M_S: f64 = 2.0;
+const FLY_FAST_M_S: f64 = 4.0;
+/// Drone body yaw rate commanded by the turn keys, normal and fast, in rad/s.
+const FLY_TURN_RAD_S: f64 = 1.5;
+const FLY_TURN_FAST_RAD_S: f64 = 3.0;
+/// Pitch range of the Drone's underslung gimbal, which can look further down
+/// than a turret. The auto-aim assist still solves inside `DRIVE_PITCH_RAD`.
+const FLY_PITCH_RAD: (f32, f32) = (-1.2, DRIVE_PITCH_RAD.1);
 /// Gimbal pitch range while driving, as (lowest, highest) radians. The auto-aim
 /// assist solves inside this same range, so an assist solution is always a pitch
 /// the player's own aim could have reached.
@@ -93,6 +103,7 @@ struct DriveIntent {
     jump: bool,
     forward: f64,
     left: f64,
+    turn: f64,
     fast: bool,
     spinning: bool,
     blocked: bool,
@@ -205,6 +216,43 @@ pub fn drive_command(
     }
 }
 
+/// Flight command for a Drone: forward and left in its own body frame, the
+/// turn keys yaw the body (`turn` 1 is counter-clockwise), and the gimbal aims
+/// on its own wherever the mouse points. Nothing follows the gimbal, so the
+/// pilot flies and aims independently.
+pub fn fly_command(
+    wish_forward: f64,
+    wish_left: f64,
+    turn: f64,
+    fast: bool,
+    gimbal_yaw_rad: f64,
+    gimbal_pitch_rad: f64,
+) -> ChassisCommand {
+    let (speed, turn_rate) = if fast {
+        (FLY_FAST_M_S, FLY_TURN_FAST_RAD_S)
+    } else {
+        (FLY_SPEED_M_S, FLY_TURN_RAD_S)
+    };
+    let wish = DVec3::new(wish_forward, wish_left, 0.0).normalize_or_zero() * speed;
+    ChassisCommand {
+        forward_m_s: wish.x,
+        left_m_s: wish.y,
+        yaw_rate_rad_s: turn.clamp(-1.0, 1.0) * turn_rate,
+        aim_yaw_rad: gimbal_yaw_rad,
+        aim_pitch_rad: gimbal_pitch_rad,
+        ..Default::default()
+    }
+}
+
+/// Gimbal pitch limits for `config`, as (lowest, highest) radians.
+pub(crate) fn pitch_range(config: &rm_simulator_world::ChassisConfig) -> (f32, f32) {
+    if config.planar_flight {
+        FLY_PITCH_RAD
+    } else {
+        DRIVE_PITCH_RAD
+    }
+}
+
 /// Read the drive keys and hand the chassis a new command when it changes.
 pub fn drive_chassis(
     ui: Res<HudState>,
@@ -253,6 +301,11 @@ pub fn drive_chassis(
         } else {
             axis(InputAction::Left, InputAction::Right)
         },
+        turn: if blocked || !chassis.config.planar_flight {
+            0.
+        } else {
+            axis(InputAction::TurnLeft, InputAction::TurnRight)
+        },
         fast: ui
             .controls
             .pressed(InputAction::Fast, &keys, buttons.as_deref()),
@@ -260,15 +313,26 @@ pub fn drive_chassis(
         blocked,
         placement_revision: chassis.placement_revision,
     };
-    let mut command = drive_command(
-        intent.forward,
-        intent.left,
-        intent.fast,
-        intent.spinning,
-        f64::from(player.yaw_rad),
-        f64::from(player.pitch_rad),
-        yaw_of(chassis.pose),
-    );
+    let mut command = if chassis.config.planar_flight {
+        fly_command(
+            intent.forward,
+            intent.left,
+            intent.turn,
+            intent.fast,
+            f64::from(player.yaw_rad),
+            f64::from(player.pitch_rad),
+        )
+    } else {
+        drive_command(
+            intent.forward,
+            intent.left,
+            intent.fast,
+            intent.spinning,
+            f64::from(player.yaw_rad),
+            f64::from(player.pitch_rad),
+            yaw_of(chassis.pose),
+        )
+    };
     command.jump = intent.jump;
     command.balance_control = intent.balance_control;
     if chassis.config.balance_assist {
@@ -301,6 +365,7 @@ pub fn sample_drive_aim(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Option<Res<ButtonInput<MouseButton>>>,
     motion: Res<AccumulatedMouseMotion>,
+    session: Res<Session>,
     mut drive: ResMut<Drive>,
     mut player: ResMut<Player>,
 ) {
@@ -315,7 +380,10 @@ pub fn sample_drive_aim(
         player.yaw_rad -= motion.delta.x * ui.sensitivity;
         player.pitch_rad -= motion.delta.y * ui.controls.vertical_sensitivity(ui.sensitivity);
     }
-    player.pitch_rad = player.pitch_rad.clamp(DRIVE_PITCH_RAD.0, DRIVE_PITCH_RAD.1);
+    let (lowest, highest) = session
+        .presented_chassis()
+        .map_or(DRIVE_PITCH_RAD, |chassis| pitch_range(&chassis.config));
+    player.pitch_rad = player.pitch_rad.clamp(lowest, highest);
 }
 
 /// Place the camera from the accepted predicted motor pose after this frame's
@@ -462,20 +530,30 @@ pub fn fire_gun(
     }
 }
 
-/// Left click captures the mouse; modal menus release it.
+/// Left click captures the mouse; modal menus and holding
+/// [`InputAction::FreeCursor`] release it. A click on the visible field map
+/// marks the map instead of capturing.
 pub fn mouse_capture(
     ui: Res<HudState>,
+    keys: Option<Res<ButtonInput<KeyCode>>>,
     buttons: Res<ButtonInput<MouseButton>>,
+    map: Option<Single<(&bevy::ui::RelativeCursorPosition, &Node), With<crate::hud::FieldMap>>>,
     mut player: ResMut<Player>,
     mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
 ) {
-    if ui.blocks_input() {
+    let freed = keys.as_deref().is_some_and(|keys| {
+        ui.controls
+            .pressed(InputAction::FreeCursor, keys, Some(&buttons))
+    });
+    if ui.blocks_input() || freed {
         player.captured = false;
         cursor.grab_mode = CursorGrabMode::None;
         cursor.visible = true;
         return;
     }
-    if buttons.just_pressed(MouseButton::Left) {
+    if buttons.just_pressed(MouseButton::Left)
+        && !map.is_some_and(|map| crate::hud::cursor_on_map(&map))
+    {
         player.captured = true;
     } else {
         return;
@@ -491,6 +569,27 @@ pub fn mouse_capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flight_keys_move_the_body_frame_and_leave_the_aim_to_the_mouse() {
+        // W flies along the body's heading whatever the gimbal looks at.
+        let command = fly_command(1.0, 0.0, 0.0, false, 2.5, -0.9);
+        assert_eq!(
+            (command.forward_m_s, command.left_m_s),
+            (FLY_SPEED_M_S, 0.0)
+        );
+        assert_eq!(command.yaw_rate_rad_s, 0.0);
+        assert_eq!((command.aim_yaw_rad, command.aim_pitch_rad), (2.5, -0.9));
+        // Q turns counter-clockwise, E clockwise; diagonals keep their speed.
+        let command = fly_command(1.0, -1.0, -1.0, true, 0.0, 0.0);
+        assert!((command.forward_m_s.hypot(command.left_m_s) - FLY_FAST_M_S).abs() < 1e-12);
+        assert!(command.left_m_s < 0.0);
+        assert_eq!(command.yaw_rate_rad_s, -FLY_TURN_FAST_RAD_S);
+        // A drone's underslung gimbal looks further down than a turret.
+        let drone = rm_simulator_world::ChassisConfig::drone();
+        assert!(pitch_range(&drone).0 < DRIVE_PITCH_RAD.0);
+        assert_eq!(pitch_range(&ChassisConfig::default()), DRIVE_PITCH_RAD);
+    }
 
     #[test]
     fn camera_cradle_follows_tilt_and_inversion_without_changing_aim() {

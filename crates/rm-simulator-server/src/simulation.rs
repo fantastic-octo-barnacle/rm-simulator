@@ -521,6 +521,46 @@ impl Simulation {
         let placement = spawner.at_with(config, robot.kind(), team, spawn_m, yaw_deg);
         self.place(placement, Some(robot))
     }
+    /// Validate and create a staged pilot. Placement is a host policy: the
+    /// selected base ring, a compatible drivetrain and an unoccupied position.
+    /// Drone retains its existing aerial pad and tether instead of ground placement.
+    pub(crate) fn deploy_robot(
+        &mut self,
+        team: Team,
+        robot: Robot,
+        chassis: crate::protocol::Chassis,
+        position_m: [f64; 2],
+    ) -> Result<u32, String> {
+        let config = chassis.config(robot)?;
+        if !position_m.into_iter().all(f64::is_finite) {
+            return Err("spawn position must be finite".into());
+        }
+        let (spawn, yaw) = if robot == Robot::Drone {
+            let (spawn, yaw) = crate::layout::drone_slot(team, 0);
+            if (spawn[0] - position_m[0]).hypot(spawn[1] - position_m[1]) > 0.001 {
+                return Err("Drone must deploy at its aerial pad".into());
+            }
+            (spawn, yaw)
+        } else {
+            if !crate::deployment::contains(team, position_m) {
+                return Err("choose a position inside your base ring, outside the platform".into());
+            }
+            (
+                [position_m[0], position_m[1], 1.0],
+                if team == Team::Red { 180.0 } else { 0.0 },
+            )
+        };
+        let clearance = (config.body_half_m[0].hypot(config.body_half_m[1]) * 2.0).max(0.9);
+        if self
+            .field
+            .chassis_positions_m()
+            .any(|p| (p[0] - spawn[0]).hypot(p[1] - spawn[1]) < clearance)
+        {
+            return Err("that position is occupied; choose another point in the ring".into());
+        }
+        self.spawn_robot_at_with_chassis(team, robot, chassis, spawn, yaw)
+    }
+
     fn place(
         &mut self,
         placement: rm_simulator_world::ChassisPlacement,
@@ -931,6 +971,7 @@ impl Simulation {
         observer: &mut dyn FnMut(&rm_simulator_world::ArmorHit),
     ) -> Result<(), String> {
         match command {
+            Command::Deploy { .. } => Err("deployment requires a connected peer".into()),
             Command::ConfigureWeapon { chassis, weapon } => {
                 if self.field.chassis_muzzle_pose(*chassis).is_none() {
                     return Err("no chassis with that id".into());
@@ -1089,6 +1130,10 @@ impl Simulation {
                 }
                 self.step_observed(*ticks, observer)
                     .map_err(|e| e.to_string())
+            }
+            // Markers go to the host's record; the world is unchanged.
+            Command::MapMarker { kind, position_m } => {
+                crate::protocol::check_map_marker(*kind, *position_m).map_err(Into::into)
             }
         }
     }
@@ -1363,6 +1408,15 @@ mod tests {
             terrain: None,
         });
         let drone = sim.spawn_robot(Team::Blue, Robot::Drone).unwrap();
+        // It starts over blue's Landing Pad at flight height, on blue's rope.
+        let spawned = sim.snapshot().chassis[0].clone();
+        let (pad, _) = crate::layout::drone_slot(Team::Blue, 0);
+        assert_eq!(spawned.pose.translation_m, pad);
+        assert_eq!(
+            spawned.config.tether,
+            Some(crate::layout::drone_tether(Team::Blue))
+        );
+        assert!(spawned.config.tether.unwrap().slack_m(pad) > 0.0);
         sim.apply(&Command::Chassis {
             chassis: drone,
             command: rm_simulator_world::ChassisCommand {

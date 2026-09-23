@@ -10,7 +10,7 @@ use crate::math::{gltf_child, quat_axis_angle, rotate};
 use anyhow::ensure;
 use rm_simulator_world::{
     ChassisConfig, ChassisPlacement, Field, FieldConfig, OutpostConfig, Pose, RefereeConfig,
-    RobotKind, RuneConfig, RuneKind, Team,
+    RobotKind, RuneConfig, RuneKind, Team, chassis::Tether,
 };
 
 /// Rune face pivots inside the extracted rune asset (glTF axes, metres).
@@ -432,9 +432,11 @@ pub fn add_terrain(field: &mut Field, terrain: &Terrain) -> anyhow::Result<()> {
 }
 
 /// Set a chassis down on the highest ground below the requested point (the
-/// flat floor without terrain), heading `yaw_deg` from FLU forward.
+/// flat floor without terrain), heading `yaw_deg` from FLU forward. A flying
+/// chassis instead holds `DRONE_FLIGHT_HEIGHT_M` above the playing floor and
+/// is tied to its team's [`drone_tether`].
 pub fn chassis_placement(
-    config: ChassisConfig,
+    mut config: ChassisConfig,
     kind: RobotKind,
     terrain: Option<&Terrain>,
     team: Team,
@@ -448,10 +450,13 @@ pub fn chassis_placement(
                 .ground_height_below(spawn[0], spawn[1], spawn[2])
         })
         .unwrap_or(0.0);
-    let spawn = Pose::yawed(
-        [spawn[0], spawn[1], ground + config.rest_height_m() + 0.01],
-        yaw_deg.to_radians(),
-    );
+    let height = if config.planar_flight {
+        config.tether = Some(drone_tether(team));
+        DRONE_FLIGHT_HEIGHT_M
+    } else {
+        ground + config.rest_height_m() + 0.01
+    };
+    let spawn = Pose::yawed([spawn[0], spawn[1], height], yaw_deg.to_radians());
     ChassisPlacement {
         config,
         spawn,
@@ -459,6 +464,79 @@ pub fn chassis_placement(
         kind,
         performance: None,
     }
+}
+
+/// Red's Landing Pad centre in world FLU metres (Figure 4-4 item 9, Figure
+/// 4-17). Read off the default package's minimap artwork, not a drawing
+/// dimension; blue's pad is the point mirror.
+pub const RED_LANDING_PAD_M: [f64; 2] = [12.6, -5.8];
+/// Height of a Drone's body centre above the playing floor, in metres. R51
+/// keeps the drone's lowest point at least 1.5 m above the ground and its
+/// launcher's speed monitor below the 2.4 m Flight Zone perimeter wall
+/// (Figure 7-1); the prototype's lowest point sits about 1.8 m up and its
+/// muzzle near 1.86 m. The height itself is a design choice.
+pub const DRONE_FLIGHT_HEIGHT_M: f64 = 2.0;
+/// Length of the Aerial Safety Rope's soft tether, section 4.5.
+pub const DRONE_TETHER_LENGTH_M: f64 = 2.4;
+/// Height of the wire rope the tether box rides, in metres. Assumed: the
+/// rulebook gives no height, only that the rope hangs above the Pilot
+/// Operation Room. At `DRONE_FLIGHT_HEIGHT_M` it leaves about 1.8 m of
+/// sideways reach.
+pub const DRONE_ROPE_HEIGHT_M: f64 = 3.6;
+/// Distance of the Snap Ring from a team's own short edge of the field,
+/// section 4.5 ("approximately 14 m"). On the 28 m field this is the centre
+/// line.
+pub const DRONE_SNAP_RING_FROM_EDGE_M: f64 = 14.0;
+/// Half the field's length along x, in metres (Figure 4-5, 28 m overall).
+pub const FIELD_HALF_LENGTH_M: f64 = 14.0;
+
+/// The Aerial Safety Rope of `team`'s Drone (section 4.5): a rope running
+/// along x over the team's Landing Pad from its own field edge to the Snap
+/// Ring, with a 2.4 m tether below it. Red's rope is on its +x half.
+///
+/// ```
+/// use rm_simulator_server::layout::drone_tether;
+/// use rm_simulator_world::Team;
+///
+/// let red = drone_tether(Team::Red);
+/// assert_eq!(red.rope_end_m[0], 0.0); // the Snap Ring is on the centre line
+/// let blue = drone_tether(Team::Blue);
+/// assert_eq!(blue.rope_start_m[0], -red.rope_start_m[0]);
+/// assert_eq!(blue.rope_start_m[1], -red.rope_start_m[1]);
+/// ```
+pub fn drone_tether(team: Team) -> Tether {
+    let side = match team {
+        Team::Red => 1.0,
+        Team::Blue => -1.0,
+    };
+    let y = side * RED_LANDING_PAD_M[1];
+    Tether {
+        rope_start_m: [side * FIELD_HALF_LENGTH_M, y, DRONE_ROPE_HEIGHT_M],
+        rope_end_m: [
+            side * (FIELD_HALF_LENGTH_M - DRONE_SNAP_RING_FROM_EDGE_M),
+            y,
+            DRONE_ROPE_HEIGHT_M,
+        ],
+        length_m: DRONE_TETHER_LENGTH_M,
+    }
+}
+/// Spawn point and heading for a team's `slot`th Drone: above its Landing
+/// Pad at the flight height, facing down the field, later slots stepped
+/// towards the centre line so bodies do not overlap.
+pub fn drone_slot(team: Team, slot: usize) -> ([f64; 3], f64) {
+    let (side, yaw_deg) = match team {
+        Team::Red => (1.0, 180.0),
+        Team::Blue => (-1.0, 0.0),
+    };
+    let [x, y] = RED_LANDING_PAD_M;
+    (
+        [
+            side * (x - slot as f64 * SPAWN_SLOT_SPACING_M),
+            side * y,
+            DRONE_FLIGHT_HEIGHT_M,
+        ],
+        yaw_deg,
+    )
 }
 
 /// Sideways spacing between a team's spawn slots.
@@ -509,7 +587,11 @@ impl ChassisSpawner {
         team: Team,
         slot: usize,
     ) -> ChassisPlacement {
-        let (spawn, yaw_deg) = spawn_slot(team, slot);
+        let (spawn, yaw_deg) = if config.planar_flight {
+            drone_slot(team, slot)
+        } else {
+            spawn_slot(team, slot)
+        };
         self.at_with(config, kind, team, spawn, yaw_deg)
     }
     /// A placement at an explicit point with an explicit configuration and

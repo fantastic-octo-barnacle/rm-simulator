@@ -18,6 +18,10 @@ pub enum InputAction {
     Left,
     /// Drive or fly right.
     Right,
+    /// Yaw a flying chassis counter-clockwise; ground chassis follow the gimbal.
+    TurnLeft,
+    /// Yaw a flying chassis clockwise; ground chassis follow the gimbal.
+    TurnRight,
     /// Fly up. Only the free camera has a vertical axis.
     Up,
     /// Fly down. Only the free camera has a vertical axis.
@@ -51,6 +55,8 @@ pub enum InputAction {
     Settings,
     /// Toggle the large map panel.
     Map,
+    /// Hold to free the mouse cursor, so the minimap can be clicked mid-match.
+    FreeCursor,
     /// Toggle the debug panel.
     Debug,
     /// Hold to show the controls help panel.
@@ -74,11 +80,13 @@ pub enum InputAction {
 }
 impl InputAction {
     /// Every action, in the order the help panel and the controls menu list them.
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 29] = [
         Self::Forward,
         Self::Backward,
         Self::Left,
         Self::Right,
+        Self::TurnLeft,
+        Self::TurnRight,
         Self::Up,
         Self::Down,
         Self::Fast,
@@ -93,6 +101,7 @@ impl InputAction {
         Self::Buy42,
         Self::Settings,
         Self::Map,
+        Self::FreeCursor,
         Self::Debug,
         Self::Help,
         Self::Roster,
@@ -109,6 +118,8 @@ impl InputAction {
             Self::Backward => "Move backward",
             Self::Left => "Move left",
             Self::Right => "Move right",
+            Self::TurnLeft => "Turn left (drone)",
+            Self::TurnRight => "Turn right (drone)",
             Self::Up => "Fly up",
             Self::Down => "Fly down",
             Self::Fast => "Move faster",
@@ -123,6 +134,7 @@ impl InputAction {
             Self::Buy42 => "Buy 42 mm",
             Self::Settings => "Settings",
             Self::Map => "Map",
+            Self::FreeCursor => "Hold to free cursor",
             Self::Debug => "Debug panel",
             Self::Help => "Hold help",
             Self::Roster => "Hold team roster",
@@ -137,6 +149,8 @@ impl InputAction {
     fn contexts(self) -> u8 {
         match self {
             Self::Spin
+            | Self::TurnLeft
+            | Self::TurnRight
             | Self::Jump
             | Self::Camera
             | Self::Buy17
@@ -156,6 +170,8 @@ impl InputAction {
             Self::Backward => KeyS,
             Self::Left => KeyA,
             Self::Right => KeyD,
+            Self::TurnLeft => KeyQ,
+            Self::TurnRight => KeyE,
             Self::Up => Space,
             Self::Down => ShiftLeft,
             Self::Fast => ControlLeft,
@@ -169,6 +185,7 @@ impl InputAction {
             Self::Buy42 => KeyI,
             Self::Settings => KeyP,
             Self::Map => KeyM,
+            Self::FreeCursor => AltLeft,
             Self::Debug => F3,
             Self::Help => F12,
             Self::Roster => Tab,

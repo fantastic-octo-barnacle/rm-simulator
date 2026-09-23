@@ -90,6 +90,8 @@ pub struct Session {
     reset_clock: std::sync::atomic::AtomicBool,
     host: Option<EmbeddedHost>,
     singleplayer: bool,
+    /// Read-only terrain lookup for staging previews, built on the loading worker.
+    deployment_ground: Option<(rm_simulator_server::collision_mesh::GroundMesh, Option<f64>)>,
     /// Newest authoritative field state from the host. The app only reads it;
     /// it never steps this field.
     pub snapshot: FieldSnapshot,
@@ -161,6 +163,14 @@ impl Session {
         self.prediction.geometry.clone()
     }
 
+    /// Preview height from verified collision triangles, or the host's explicit
+    /// catch floor in a field without CAD. Unknown terrain has no preview height.
+    pub fn deployment_ground_height(&self, point_m: [f64; 2]) -> Option<f64> {
+        let (mesh, floor) = self.deployment_ground.as_ref()?;
+        mesh.ground_height_below(point_m[0], point_m[1], 1.0)
+            .or(*floor)
+    }
+
     /// Called only once scenery is ready. The held clock never accumulates
     /// loading time, and the simulation keeps the requested initial pause state.
     pub fn ready(&self) {
@@ -186,7 +196,11 @@ impl Session {
         spawn_yaw_deg: f64,
         progress: impl Fn(f32, &str),
     ) -> anyhow::Result<Opened> {
-        let role = args.role();
+        let role = if args.staging && !args.referee {
+            Role::Spectator
+        } else {
+            args.role()
+        };
         let (client, host) = if let Some(address) = &args.connect {
             progress(0.3, "Connecting to host");
             (
@@ -302,8 +316,8 @@ impl Session {
             rune_flash_hz: args.rune_flash_hz.max(0.0),
             rune_flashes: args.rune_flashes,
         };
-        let role = args.role();
         let welcome = client.welcome().clone();
+        let role = welcome.role;
         let team = welcome.team.unwrap_or(args.team.into());
         let client_id = welcome.client_id;
         let chassis_id = welcome.chassis.as_ref().map(|c| c.id);
@@ -353,7 +367,7 @@ impl Session {
                 }
             }
         });
-        let predictor = if chassis_id.is_some() && local_aim {
+        let predictor = if (chassis_id.is_some() || args.staging) && local_aim {
             prediction_geometry.as_ref().and_then(|(geometry, floor)| {
                 progress(0.8, "Preparing chassis prediction");
                 match (|| {
@@ -374,8 +388,29 @@ impl Session {
         } else {
             None
         };
+        let deployment_ground = if args.staging {
+            prediction_geometry.as_ref().map(|(geometry, floor)| {
+                let (vertices_m, triangles) = geometry.fixed_only().into_triangles();
+                let mesh = rm_simulator_server::collision_mesh::CollisionMesh {
+                    vertices_m,
+                    triangles,
+                };
+                let catch_floor = welcome
+                    .prediction_scene
+                    .as_ref()
+                    .filter(|scene| !scene.terrain)
+                    .map(|_| *floor);
+                (
+                    rm_simulator_server::collision_mesh::GroundMesh::from(mesh),
+                    catch_floor,
+                )
+            })
+        } else {
+            None
+        };
         let now = time.now();
         let session = Session {
+            deployment_ground,
             prediction: PredictionState {
                 worker: predictor,
                 geometry: prediction_geometry.map(|(geometry, _)| geometry),
@@ -631,6 +666,18 @@ impl Session {
             return Err(format!("embedded server failed: {error}"));
         }
         self.client.poll();
+        // Deployment updates this connection's ownership, before consuming the
+        // confirmation snapshot or an owner anchor for the newly assigned chassis.
+        let welcome = self.client.welcome();
+        let assigned = welcome.chassis.as_ref().map(|c| c.id);
+        if self.chassis_id != assigned {
+            self.chassis_id = assigned;
+            self.team = welcome.team.unwrap_or(self.team);
+            self.role = welcome.role;
+            self.weapon = welcome.weapon;
+            self.weapon_defaults = welcome.weapon;
+            self.weapon_limits = welcome.weapon_limits;
+        }
         if self.client.disconnected().is_none() {
             let _ = self.client.synchronize_clock();
         }
@@ -1066,6 +1113,11 @@ impl Session {
             / rm_simulator_world::tick_ns()
             * rm_simulator_world::tick_ns()
     }
+    /// Whether the transport has closed while this session remains on screen.
+    pub fn disconnected(&self) -> bool {
+        self.client.disconnected().is_some()
+    }
+
     fn prediction_limited(&self) -> bool {
         self.client.disconnected().is_some()
             || self.time.since(self.last_checkpoint) >= std::time::Duration::from_secs(1)
@@ -1295,6 +1347,15 @@ pub(crate) fn test_cad_assets() -> CadAssets {
         tech_core: asset,
         static_assets: Vec::new(),
     }
+}
+
+/// The map markers the embedded host has recorded, in arrival order.
+#[cfg(test)]
+pub(crate) fn host_map_markers(
+    session: &Session,
+) -> Vec<rm_simulator_server::host::MapMarkerRecord> {
+    let host = session.host.as_ref().expect("embedded session");
+    host.server.handle().map_markers().unwrap()
 }
 
 #[cfg(test)]

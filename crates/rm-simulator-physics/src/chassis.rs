@@ -42,6 +42,94 @@ pub const ARMOR_COUNT: usize = 4;
 /// This 0.35 m barrel length is an application-level infantry geometry assumption.
 pub const MUZZLE_FORWARD_M: f64 = 0.35;
 
+/// Horizontal acceleration a flying chassis may use to reach its commanded
+/// velocity, in metres per second squared. Assumed, not a rulebook figure.
+const FLIGHT_ACCELERATION_M_S2: f64 = 4.0;
+/// Velocity-tracking gain of the flight controller, per second.
+const FLIGHT_VELOCITY_GAIN_PER_S: f64 = 5.0;
+/// Stiffness of a taut tether per kilogram of drone, in newtons per metre per
+/// kilogram. A 30 rad/s pull-back keeps a full-speed overshoot to about 0.13 m.
+/// Assumed; the rulebook specifies the tether's length, not its elasticity.
+const TETHER_STIFFNESS_PER_KG: f64 = 900.0;
+/// Near-critical damping of a taut tether per kilogram, in newtons per metre
+/// per second per kilogram. It resists only motion that stretches the tether.
+const TETHER_DAMPING_PER_KG: f64 = 60.0;
+/// Cap on the taut tether's pull-back acceleration, in metres per second
+/// squared, so a chassis placed far outside its reach returns smoothly.
+const TETHER_MAX_PULL_M_S2: f64 = 20.0;
+
+/// The Aerial Safety Rope a Drone flies on (rule manual V2.1.0 section 4.5,
+/// Flight Zone). A retractable tether box rides a wire rope and cannot pass
+/// the rope's Snap Ring; a soft tether of `length_m` runs from the box to the
+/// drone's hook. The drone may therefore go anywhere within `length_m` of the
+/// rope span from `rope_start_m` to `rope_end_m`, and nowhere else.
+///
+/// The hook is taken at the body centre. The tether's constant elastic force
+/// (under 5 N static, section 4.5) is not modelled: the drone feels nothing
+/// until the tether is taut. The box's inability to follow many turns in one
+/// direction is not modelled either.
+///
+/// ```
+/// use rm_simulator_physics::chassis::Tether;
+///
+/// let tether = Tether {
+///     rope_start_m: [14.0, -5.8, 3.6],
+///     rope_end_m: [0.0, -5.8, 3.6],
+///     length_m: 2.4,
+/// };
+/// tether.validate()?;
+/// // Directly below the rope and 1.6 m under it: 0.8 m of tether to spare.
+/// assert!((tether.slack_m([7.0, -5.8, 2.0]) - 0.8).abs() < 1e-12);
+/// // Past the Snap Ring the box stays at the rope's end.
+/// assert_eq!(tether.anchor_m([-3.0, -5.8, 2.0]), [0.0, -5.8, 3.6]);
+/// assert!(tether.slack_m([-3.0, -5.8, 2.0]) < 0.0);
+/// # Ok::<(), &'static str>(())
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Tether {
+    /// World FLU position of the near end of the span the tether box can
+    /// travel, in metres: the end above the team's own Landing Pad.
+    pub rope_start_m: [f64; 3],
+    /// World FLU position of the Snap Ring, in metres; the box cannot pass it.
+    pub rope_end_m: [f64; 3],
+    /// Tether length from box to hook, in metres; 2.4 m in section 4.5.
+    pub length_m: f64,
+}
+impl Tether {
+    /// Where the tether box sits for a hook at `point_m`: the closest point of
+    /// the rope span, in world FLU metres.
+    pub fn anchor_m(&self, point_m: [f64; 3]) -> [f64; 3] {
+        let start = vector(self.rope_start_m);
+        let span = vector(self.rope_end_m) - start;
+        let along = if span.length_squared() > 0.0 {
+            ((vector(point_m) - start).dot(span) / span.length_squared()).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (start + span * along).to_array()
+    }
+    /// Tether left before it is taut with the hook at `point_m`, in metres:
+    /// positive inside the reach, negative by how far the hook is beyond it.
+    pub fn slack_m(&self, point_m: [f64; 3]) -> f64 {
+        self.length_m - (vector(point_m) - vector(self.anchor_m(point_m))).length()
+    }
+    /// Check that every coordinate is finite and the length positive.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self
+            .rope_start_m
+            .iter()
+            .chain(&self.rope_end_m)
+            .all(|v| v.is_finite())
+            && self.length_m.is_finite()
+            && self.length_m > 0.0
+        {
+            Ok(())
+        } else {
+            Err("tether rope must be finite and its length positive")
+        }
+    }
+}
+
 /// Assumed actuator and suspension tuning, not rulebook limits.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -114,6 +202,10 @@ pub struct ChassisConfig {
     /// Fixed-altitude horizontal flight. Gravity and vertical motion are disabled.
     #[serde(default)]
     pub planar_flight: bool,
+    /// Aerial Safety Rope limiting where a flying chassis may go, set by the
+    /// field layout when the drone is placed. `None` flies unrestrained.
+    #[serde(default)]
+    pub tether: Option<Tether>,
     /// Total chassis mass in kilograms, armour modules excluded.
     pub mass_kg: f64,
     /// Body collider half extents; the body covers the wheels' footprint so
@@ -182,6 +274,7 @@ impl Default for ChassisConfig {
             mecanum: false,
             balance_assist: false,
             planar_flight: false,
+            tether: None,
             mass_kg: 22.0,
             body_half_m: [0.26, 0.26, 0.05],
             turret_center_m: [0.0, 0.0, 0.2],
@@ -291,14 +384,21 @@ impl ChassisConfig {
         }
     }
 
-    /// Guarded quadcopter prototype constrained to a horizontal plane 1.6 m
-    /// above its spawn ground. No rotor aerodynamics or altitude controls.
+    /// Guarded quadcopter prototype constrained to the horizontal plane it is
+    /// placed in; `rest_height_m` offers 1.6 m above the ground for a bare
+    /// placement, and the field layout sets its own flight height and tether.
+    /// It flies in its body frame and yaws on command, independent of the
+    /// gimbal aim. No rotor aerodynamics or altitude controls.
+    ///
+    /// The underslung gimbal hangs 0.20 m ahead of the body centre, so a
+    /// forward shot's muzzle clears the 0.8 m frame at every pitch the flight
+    /// controls allow; a centred gimbal put upward shots into the frame.
     pub fn drone() -> Self {
         Self {
             planar_flight: true,
             mass_kg: 5.0,
             body_half_m: [0.40, 0.40, 0.065],
-            turret_center_m: [0.0, 0.0, -0.14],
+            turret_center_m: [0.20, 0.0, -0.14],
             turret_half_m: [0.035; 3],
             wheel_hubs_m: Vec::new(),
             ..Self::default()
@@ -351,6 +451,12 @@ impl ChassisConfig {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.planar_flight && (self.balance_assist || !self.wheel_hubs_m.is_empty()) {
             return Err("planar flight cannot have wheels or balance assist");
+        }
+        if let Some(tether) = &self.tether {
+            if !self.planar_flight {
+                return Err("only a flying chassis has a tether");
+            }
+            tether.validate()?;
         }
         let positive = [
             self.dynamics.gimbal_response_s,
@@ -709,11 +815,18 @@ impl Chassis {
                 .can_sleep(false),
         );
         // The turret carries a share of the mass so the centre of mass sits
-        // above the body centre, as on a real robot.
+        // above the body centre, as on a real robot. A flying body keeps all
+        // of it centred instead: its roll and pitch locks hold only while
+        // the inertia stays axis-aligned, and its gimbal hangs off-centre.
+        let turret_share = if config.planar_flight {
+            0.0
+        } else {
+            TURRET_MASS_SHARE
+        };
         let [hx, hy, hz] = config.body_half_m;
         world.insert_collider(
             ColliderBuilder::cuboid(hx, hy, hz)
-                .mass(config.mass_kg * (1.0 - TURRET_MASS_SHARE))
+                .mass(config.mass_kg * (1.0 - turret_share))
                 .friction(BODY_FRICTION)
                 .restitution(ROBOT_RESTITUTION)
                 .restitution_combine_rule(CoefficientCombineRule::Min),
@@ -732,7 +845,7 @@ impl Chassis {
         world.insert_collider(
             ColliderBuilder::cuboid(tx, ty, column_half)
                 .translation(Vector::new(cx, cy, column_bottom + column_half))
-                .mass(config.mass_kg * TURRET_MASS_SHARE)
+                .mass(config.mass_kg * turret_share)
                 .friction(BODY_FRICTION)
                 .restitution(ROBOT_RESTITUTION)
                 .restitution_combine_rule(CoefficientCombineRule::Min),
@@ -977,8 +1090,39 @@ impl Chassis {
             self.command
         };
         if cfg.planar_flight {
-            let wish = pose.rotation * Vector::new(command.forward_m_s, command.left_m_s, 0.0);
-            let acceleration = ((wish - linvel) * 5.0).clamp_length_max(4.0);
+            let mut wish = pose.rotation * Vector::new(command.forward_m_s, command.left_m_s, 0.0);
+            wish.z = 0.0;
+            let mut pull = Vector::ZERO;
+            if let Some(tether) = &cfg.tether {
+                let hook = pose.translation;
+                let anchor = vector(tether.anchor_m(hook.to_array()));
+                let outward = Vector::new(hook.x - anchor.x, hook.y - anchor.y, 0.0);
+                if outward.length() > 1e-9 {
+                    let outward = outward.normalize();
+                    let slack = tether.slack_m(hook.to_array());
+                    // Brake so the drone stops where the tether goes taut; once
+                    // it is past, fly back in at up to 1 m/s.
+                    let allowed = if slack > 0.0 {
+                        (2.0 * FLIGHT_ACCELERATION_M_S2 * slack).sqrt()
+                    } else {
+                        -(FLIGHT_VELOCITY_GAIN_PER_S * -slack).min(1.0)
+                    };
+                    let out = wish.dot(outward);
+                    if out > allowed {
+                        wish -= outward * (out - allowed);
+                    }
+                    if slack < 0.0 {
+                        let stretching = linvel.dot(outward).max(0.0);
+                        pull = -outward
+                            * (TETHER_STIFFNESS_PER_KG * -slack
+                                + TETHER_DAMPING_PER_KG * stretching)
+                                .min(TETHER_MAX_PULL_M_S2);
+                    }
+                }
+            }
+            let acceleration = ((wish - linvel) * FLIGHT_VELOCITY_GAIN_PER_S)
+                .clamp_length_max(FLIGHT_ACCELERATION_M_S2)
+                + pull;
             let body = &mut world.bodies[self.body];
             body.reset_forces(false);
             body.reset_torques(false);
@@ -1256,7 +1400,7 @@ fn drive_power_scale(mechanical_w: f64, copper_w: f64, budget_w: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::{
-        projectile::{TargetFrames, WorldPhysics},
+        projectile::{Caliber, Shot, TargetFrames, WorldPhysics},
         tick_ns,
     };
     fn chassis_world(config: ChassisConfig, spawn: Pose) -> WorldPhysics {
@@ -1454,6 +1598,101 @@ mod tests {
         {
             assert!((a - b).abs() < 1e-8);
         }
+    }
+
+    #[test]
+    fn drone_shots_clear_its_own_frame_at_every_forward_pitch() {
+        let config = ChassisConfig::drone();
+        let mut physics = chassis_world(config, Pose::at([0.0, 0.0, 2.0]));
+        let frames = TargetFrames::new(Vec::new());
+        let mut time_ns = 0;
+        // The flight controls allow -1.2 rad down to 0.79 rad up.
+        for step in 0..=20 {
+            let pitch = -1.2 + (0.79 + 1.2) * f64::from(step) / 20.0;
+            physics
+                .command_chassis(
+                    0,
+                    ChassisCommand {
+                        aim_pitch_rad: pitch,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            for _ in 0..128 {
+                time_ns += tick_ns();
+                physics.step(time_ns, &frames).unwrap();
+            }
+            let muzzle = physics.chassis_muzzle_pose(0).unwrap();
+            let id = physics
+                .fire(time_ns, muzzle, Shot::at_limit(Caliber::Mm17), Some(0))
+                .unwrap();
+            for _ in 0..8 {
+                time_ns += tick_ns();
+                physics.step(time_ns, &frames).unwrap();
+            }
+            let ball = physics.snapshot().into_iter().find(|b| b.id == id).unwrap();
+            assert_eq!(
+                ball.first_contact_ns, None,
+                "pitch {pitch:.2} rad hit the drone"
+            );
+        }
+    }
+
+    #[test]
+    fn tethered_drone_stops_at_its_reach_and_is_pulled_back_inside() {
+        let tether = Tether {
+            rope_start_m: [14.0, -5.8, 3.6],
+            rope_end_m: [0.0, -5.8, 3.6],
+            length_m: 2.4,
+        };
+        let config = ChassisConfig {
+            tether: Some(tether),
+            ..ChassisConfig::drone()
+        };
+        config.validate().unwrap();
+        // Facing -x from above the pad, full speed towards the Snap Ring and
+        // beyond it: the drone must brake to a stop within the tether's reach.
+        let spawn = Pose::yawed([10.0, -5.8, 2.0], std::f64::consts::PI);
+        let mut physics = chassis_world(config.clone(), spawn);
+        physics
+            .command_chassis(
+                0,
+                ChassisCommand {
+                    forward_m_s: 4.0,
+                    aim_yaw_rad: std::f64::consts::PI,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut deepest = f64::INFINITY;
+        let frames = TargetFrames::new(Vec::new());
+        for tick in 0..128 * 8 {
+            physics.step(tick * tick_ns(), &frames).unwrap();
+            let hook = physics.chassis_snapshots()[0].pose.translation_m;
+            deepest = deepest.min(tether.slack_m(hook));
+        }
+        let state = physics.chassis_snapshots().remove(0);
+        // Beyond the ring by the tether's horizontal reach at 1.6 m below the rope.
+        let reach = (2.4_f64.powi(2) - 1.6_f64.powi(2)).sqrt();
+        assert!((state.pose.translation_m[0] + reach).abs() < 0.05);
+        assert!(state.velocity_m_s[0].abs() < 0.05);
+        assert!(deepest > -0.05, "overshot the tether by {deepest} m");
+
+        // A drone placed well outside its reach is pulled back without the
+        // pilot's help, and the pilot cannot hold it out.
+        let mut outside = chassis_world(config, Pose::at([7.0, -1.0, 2.0]));
+        outside
+            .command_chassis(
+                0,
+                ChassisCommand {
+                    left_m_s: 3.0,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let state = run(&mut outside, 128 * 6);
+        assert!(tether.slack_m(state.pose.translation_m) > -0.05);
+        assert!((state.pose.translation_m[2] - 2.0).abs() < 1e-10);
     }
 
     #[test]
