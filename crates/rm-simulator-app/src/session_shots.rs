@@ -395,30 +395,31 @@ impl Session {
             .filter(|f| f.flight.authoritative.is_none())
             .count()
     }
-    /// The snapshot plus provisional balls, for drawing. An unconfirmed ball
-    /// takes a client-owned id and a confirmed one is replaced by the
-    /// predicted state; the snapshot is borrowed unchanged when no flight is
-    /// pending.
-    pub fn visual_snapshot(&self) -> std::borrow::Cow<'_, FieldSnapshot> {
-        if self.shots.flights.is_empty() {
-            return std::borrow::Cow::Borrowed(&self.snapshot);
-        }
-        let mut snapshot = self.snapshot.clone();
-        for flight in self.shots.flights.values() {
-            if let Some(id) = flight.flight.authoritative
-                && let Some(state) = snapshot.projectiles.iter_mut().find(|p| p.id == id)
-            {
-                state.id = crate::projectile_prediction::PROVISIONAL_BIT | flight.flight.id;
-                if let Some(predicted) = &flight.projectile {
-                    *state = predicted.clone();
-                }
-                continue;
-            }
-            if let Some(projectile) = &flight.projectile {
-                snapshot.projectiles.push(projectile.clone());
-            }
-        }
-        std::borrow::Cow::Owned(snapshot)
+    /// Projectile states for drawing, merging local flights without copying
+    /// the full field checkpoint on every frame that a shot is pending.
+    pub fn visual_projectiles(
+        &self,
+    ) -> impl Iterator<Item = &rm_simulator_world::ProjectileSnapshot> {
+        let official = self.snapshot.projectiles.iter().map(|projectile| {
+            self.shots
+                .flights
+                .values()
+                .find(|flight| flight.flight.authoritative == Some(projectile.id))
+                .and_then(|flight| flight.projectile.as_ref())
+                .unwrap_or(projectile)
+        });
+        let provisional = self.shots.flights.values().filter_map(|flight| {
+            let already_present = flight.flight.authoritative.is_some_and(|id| {
+                self.snapshot
+                    .projectiles
+                    .iter()
+                    .any(|projectile| projectile.id == id)
+            });
+            (!already_present)
+                .then_some(flight.projectile.as_ref())
+                .flatten()
+        });
+        official.chain(provisional)
     }
 }
 

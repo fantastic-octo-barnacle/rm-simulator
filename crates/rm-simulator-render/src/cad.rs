@@ -582,21 +582,25 @@ fn sync_cad(
     };
     for (face, mut pose) in &mut faces {
         if let Some(angle) = rune_angle(face.rune) {
-            *pose = face.rest;
-            pose.rotate_local_z(face.spin * angle);
+            let mut wanted = face.rest;
+            wanted.rotate_local_z(face.spin * angle);
+            pose.set_if_neq(wanted);
         }
     }
     for (cap, mut pose) in &mut caps {
         if let Some(angle) = rune_angle(cap.rune) {
-            *pose = Transform::from_rotation(Quat::from_rotation_z(-cap.spin * angle))
-                .mul_transform(cap.rest);
+            pose.set_if_neq(
+                Transform::from_rotation(Quat::from_rotation_z(-cap.spin * angle))
+                    .mul_transform(cap.rest),
+            );
         }
     }
     for (rotor, mut pose) in &mut rotors {
         match scene.outposts.get(rotor.outpost as usize) {
             Some(outpost) => {
-                *pose = rotor.rest;
-                pose.rotate_local_y(outpost.angle_rad as f32);
+                let mut wanted = rotor.rest;
+                wanted.rotate_local_y(outpost.angle_rad as f32);
+                pose.set_if_neq(wanted);
             }
             None => warn_once!("CAD outpost {} is absent from scene input", rotor.outpost),
         }

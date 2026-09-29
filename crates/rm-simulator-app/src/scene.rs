@@ -460,8 +460,8 @@ pub(crate) fn chassis_appearance(
 /// Fill the renderer's `SceneInput` from the session once a frame; the passive
 /// renderer applies that caller-owned state unchanged.
 ///
-/// The source is the session's visual snapshot, which already merges locally
-/// predicted projectiles. While the session is live and unpaused, rune blade,
+/// The source is the session checkpoint plus locally predicted projectiles.
+/// While the session is live and unpaused, rune blade,
 /// outpost, base plate and dart target poses are evaluated at the time a shot
 /// fired now would use, so the drawn scene matches the aim. A pending
 /// screenshot or a pause uses the snapshot's own time instead.
@@ -483,8 +483,7 @@ pub fn publish_scene(
         let duration_ns = session.flash.hit_flash_ns;
         session.hit_feedback.present(now, duration_ns);
     }
-    let visual = session.visual_snapshot();
-    let snapshot = &visual;
+    let snapshot = &session.snapshot;
     let live_presentation = capture.is_none();
     // Runes, outposts and the dart target move as functions of time, so they
     // are drawn where they will be when a shot taken now leaves the gun.
@@ -502,6 +501,13 @@ pub fn publish_scene(
         flashing(snapshot, session.flash.hit_flash_ns).collect()
     };
     let mut scene = scene_state_with_hits(snapshot, session.flash, time_ns, &hits);
+    scene.projectiles = session
+        .visual_projectiles()
+        .map(|projectile| ProjectileAppearance {
+            position_m: projectile.position_m,
+            radius_m: (projectile.caliber.diameter_m() / 2.0) as f32,
+        })
+        .collect();
     let own = drive.map(|drive| drive.chassis_id);
     let mut armor_flash: HashMap<u32, [bool; rm_simulator_world::chassis::ARMOR_COUNT]> =
         HashMap::new();

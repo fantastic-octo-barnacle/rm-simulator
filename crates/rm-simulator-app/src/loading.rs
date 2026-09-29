@@ -161,8 +161,6 @@ struct Loading {
     progress: f32,
     text: String,
     prepared: bool,
-    /// Escape was pressed: the worker's result is discarded when it arrives.
-    cancelled: bool,
     ready_frames: u32,
 }
 /// Starts the join when [`Screen::Loading`] is entered, polls the splash in
@@ -252,7 +250,6 @@ fn start(world: &mut World) {
         progress: 0.0,
         text: failed.clone().unwrap_or_else(|| "Preparing field".into()),
         prepared: false,
-        cancelled: false,
         ready_frames: 0,
     });
     if let Some(text) = failed {
@@ -347,12 +344,10 @@ fn poll(world: &mut World) {
         .resource::<ButtonInput<KeyCode>>()
         .just_pressed(KeyCode::Escape)
     {
-        if loading.prepared {
-            to_title(world, None);
-            return;
-        }
-        loading.cancelled = true;
-        loading.text = "Cancelling".into();
+        // Dropping the receiver makes a late worker result drop on the worker.
+        // The title must not wait for verification, a connection, or physics.
+        to_title(world, None);
+        return;
     }
     let mut outcome: Option<Option<String>> = None;
     loop {
@@ -364,14 +359,7 @@ fn poll(world: &mut World) {
         match message {
             Ok(Update::Progress(value, text)) => {
                 loading.progress = value;
-                if !loading.cancelled {
-                    loading.text = text;
-                }
-            }
-            Ok(Update::Complete(result)) if loading.cancelled => {
-                drop(result);
-                outcome = Some(None);
-                break;
+                loading.text = text;
             }
             Ok(Update::Complete(result)) => match *result {
                 Ok((cad, opened, args, yaw, minimap, bounds)) => {
@@ -624,7 +612,6 @@ mod tests {
             progress: 0.0,
             text: String::new(),
             prepared,
-            cancelled: false,
             ready_frames: 0,
         });
         (world, sender)
@@ -741,12 +728,12 @@ mod tests {
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::Escape);
         poll(&mut world);
-        assert!(world.resource::<Loading>().cancelled);
-        sender
-            .send(Update::Complete(Box::new(Err(anyhow::anyhow!("late")))))
-            .unwrap();
-        poll(&mut world);
         assert!(!world.contains_resource::<Loading>());
+        assert!(
+            sender
+                .send(Update::Complete(Box::new(Err(anyhow::anyhow!("late")))))
+                .is_err()
+        );
         assert_eq!(failure(&world), None);
         assert!(world.contains_resource::<TitleScreen>());
     }

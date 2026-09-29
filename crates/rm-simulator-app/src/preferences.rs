@@ -106,9 +106,14 @@ pub struct PreferenceStatus {
     last_saved: Preferences,
     last_observed: Preferences,
     changed_at: std::time::Duration,
+    pending: Option<PendingSave>,
     /// A readable explanation shown in settings; corrupt files are never overwritten.
     pub message: String,
     writable: bool,
+}
+struct PendingSave {
+    settings: Preferences,
+    worker: std::thread::JoinHandle<std::io::Result<()>>,
 }
 /// Loads `settings.json` beside `title.json` at startup, seeds `HudState` from
 /// it and adds the `PostUpdate` system that saves later edits. A load failure
@@ -144,6 +149,7 @@ impl Plugin for PreferencesPlugin {
             last_saved: settings.clone(),
             last_observed: settings.clone(),
             changed_at: std::time::Duration::ZERO,
+            pending: None,
             message,
             writable,
         })
@@ -182,7 +188,30 @@ fn save_changes(
         status.last_observed = settings.clone();
         status.changed_at = time.elapsed();
     }
+    if status
+        .pending
+        .as_ref()
+        .is_some_and(|pending| exiting || pending.worker.is_finished())
+    {
+        let pending = status.pending.take().expect("checked pending save");
+        match pending.worker.join() {
+            Ok(Ok(())) => status.message.clear(),
+            Ok(Err(error)) => {
+                status.message = format!("Settings could not be saved: {error}");
+                warn!("{}", status.message);
+            }
+            Err(_) => {
+                status.message = "Settings save worker stopped unexpectedly".into();
+                warn!("{}", status.message);
+            }
+        }
+        // A failed write waits for another edit; a later edit still differs.
+        status.last_saved = pending.settings;
+    }
     if *settings == status.last_saved || !status.writable {
+        return;
+    }
+    if status.pending.is_some() {
         return;
     }
     if ui.settings
@@ -195,18 +224,37 @@ fn save_changes(
     {
         return;
     }
-    let Some(path) = status.path.as_deref() else {
+    let Some(path) = status.path.clone() else {
         return;
     };
-    match settings.save(path) {
-        Ok(()) => {
+    if exiting {
+        // Preserve the final edit before process shutdown. Only exit waits for
+        // disk I/O; normal frames hand the atomic write to a worker.
+        let result = settings.save(&path);
+        if result.is_ok() {
             status.message.clear();
-            status.last_saved = settings.clone();
+        }
+        if let Err(error) = result {
+            status.message = format!("Settings could not be saved: {error}");
+            warn!("{}", status.message);
+        }
+        status.last_saved = settings.clone();
+        return;
+    }
+    let submitted = settings.clone();
+    match std::thread::Builder::new()
+        .name("settings-save".into())
+        .spawn(move || submitted.save(&path))
+    {
+        Ok(worker) => {
+            status.pending = Some(PendingSave {
+                settings: settings.clone(),
+                worker,
+            })
         }
         Err(error) => {
             status.message = format!("Settings could not be saved: {error}");
             warn!("{}", status.message);
-            // Retry after the next user edit, not every frame.
             status.last_saved = settings.clone();
         }
     }

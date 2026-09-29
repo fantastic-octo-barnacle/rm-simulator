@@ -225,8 +225,10 @@ fn sync_outposts(
             warn_once!("outpost {} is absent from scene input", armor.outpost);
             continue;
         };
-        apply_pose(&mut transform, outpost.armors[armor.face as usize]);
-        transform.rotate_local_y(std::f32::consts::PI);
+        let mut wanted = *transform;
+        apply_pose(&mut wanted, outpost.armors[armor.face as usize]);
+        wanted.rotate_local_y(std::f32::consts::PI);
+        transform.set_if_neq(wanted);
     }
     for (light, mut material) in &mut lights {
         if let Some(outpost) = scene.outposts.get(light.outpost as usize) {
@@ -327,8 +329,10 @@ fn sync_rune(
         let Some(rune) = lookup(visual.rune) else {
             continue;
         };
-        apply_pose(&mut transform, rune.hub_pose);
-        transform.rotate_local_z(rune.angle_rad as f32);
+        let mut wanted = *transform;
+        apply_pose(&mut wanted, rune.hub_pose);
+        wanted.rotate_local_z(rune.angle_rad as f32);
+        transform.set_if_neq(wanted);
     }
     let visibility = |visible| {
         if visible {
