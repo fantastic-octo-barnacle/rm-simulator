@@ -34,6 +34,8 @@ mod presentation;
 mod projectile_prediction;
 #[cfg(feature = "referee-link")]
 mod referee_link;
+#[cfg(feature = "referee-link")]
+mod referee_video;
 mod scene;
 mod screenshot;
 mod session;
@@ -86,6 +88,14 @@ fn main() -> AppExit {
         });
     if args.window_mode == args::WindowMode::Headless {
         plugins = plugins.disable::<bevy::winit::WinitPlugin>();
+    }
+    // The referee link's broker logs every connection and subscription.
+    #[cfg(feature = "referee-link")]
+    {
+        plugins = plugins.set(bevy::log::LogPlugin {
+            filter: format!("{},rumqttd=warn", bevy::log::DEFAULT_FILTER),
+            ..default()
+        });
     }
     app.insert_resource(args.window_mode);
     app.add_plugins(plugins)
@@ -219,6 +229,19 @@ fn main() -> AppExit {
             }
             Err(error) => {
                 eprintln!("cannot start referee link on {address}: {error}");
+                return AppExit::error();
+            }
+        }
+    }
+    #[cfg(feature = "referee-link")]
+    if let Some(address) = args.referee_video {
+        match referee_video::start(address) {
+            Ok(video) => {
+                app.insert_resource(video)
+                    .add_plugins(referee_video::RefereeVideoPlugin);
+            }
+            Err(error) => {
+                eprintln!("cannot start referee video to {address}: {error:#}");
                 return AppExit::error();
             }
         }

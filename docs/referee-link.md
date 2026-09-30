@@ -6,13 +6,14 @@ The referee link lets a RoboMaster custom client, such as trident-rm
 `custom-client-27`, run against the simulator instead of the referee system.
 The app embeds an MQTT broker and publishes the official custom-client state
 topics for the robot it pilots, as raw Protobuf, one topic per message name,
-and drives that robot from the client's `KeyboardMouseControl`.
+drives that robot from the client's `KeyboardMouseControl`, and with
+`--referee-video` sends the pilot's view as the client's video stream.
 
 It is opt-in twice: build with the `referee-link` feature (`just run-referee`
 does), then pass `--referee-link`.
 
 ~~~sh
-just run-referee --play --robot hero --referee-link
+just run-referee --play --robot hero --referee-link --referee-video
 # The custom client connects as it would to the referee system:
 ./build/rm-client --broker tcp://127.0.0.1:3333 --client-id 1
 ~~~
@@ -60,6 +61,22 @@ keeps capture but moves nothing.
 
 The console's `state` reply shows the link under `referee_link`:
 `controlling`, `controls_received` and the held `keys` and `buttons`.
+
+## Video
+
+`--referee-video` sends the pilot's view to `127.0.0.1:3334`, the custom
+client's video port, or to the address given. A second camera follows the
+gameplay camera without the HUD, including third person if selected, and
+renders 1280 x 720 at 30 frames per second while a match runs. Frames are read
+back from the GPU and encoded by an `ffmpeg` child process with libx265
+(ultrafast, zero latency, 3 Mbit/s, a keyframe every second); `ffmpeg` must be
+on `PATH`. The rendering costs a second view of the scene.
+
+Each access unit is one UDP frame in the official format: an 8-byte big-endian
+header (frame number, fragment index, access unit size) and at most 1400
+payload bytes per packet. Access units are split at the encoder's delimiters,
+so a frame leaves once the next one is encoded, adding one frame of latency.
+Frames are dropped, not queued, while the encoder is behind.
 
 ## Coordinates
 

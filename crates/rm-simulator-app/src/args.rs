@@ -111,6 +111,11 @@ pub struct Args {
     #[cfg(feature = "referee-link")]
     #[arg(long, num_args = 0..=1, default_missing_value = "127.0.0.1:3333")]
     pub referee_link: Option<std::net::SocketAddr>,
+    /// Send the pilot's view to a custom client as HEVC over UDP
+    /// (`referee-link` feature; needs `ffmpeg` with libx265 on PATH).
+    #[cfg(feature = "referee-link")]
+    #[arg(long, num_args = 0..=1, default_missing_value = "127.0.0.1:3334")]
+    pub referee_video: Option<std::net::SocketAddr>,
     /// Window presentation; headless still renders on the GPU.
     #[arg(long, value_enum, default_value_t = WindowMode::Normal)]
     pub window_mode: WindowMode,
