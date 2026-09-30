@@ -17,6 +17,8 @@ path = "src/main.rs"
 [features]
 default = []
 steam = ["dep:steamworks"]
+# Opt-in MQTT referee link for testing custom clients (`--referee-link`).
+referee-link = ["dep:rumqttd", "dep:prost"]
 
 [build-dependencies]
 sha2.workspace = true
@@ -34,6 +36,8 @@ serde_json.workspace = true
 sha2.workspace = true
 
 steamworks = { version = "=0.13.1", optional = true }
+prost = { version = "0.14", optional = true }
+rumqttd = { version = "0.20", default-features = false, optional = true }
 
 [dev-dependencies]
 rm-simulator-physics = { version = "0.1.0", path = "../rm-simulator-physics" }

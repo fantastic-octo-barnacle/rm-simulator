@@ -73,6 +73,10 @@ world-test:
 run *ARGS:
     cargo run -p rm-simulator-app --locked -- {{ARGS}}
 
+# The app with the opt-in custom-client referee link (see docs/referee-link.md).
+run-referee *ARGS:
+    cargo run -p rm-simulator-app --locked --features referee-link -- {{ARGS}}
+
 # Headless simulation server (GNS UDP plus the HTTP referee panel).
 server *ARGS:
     cargo run -p rm-simulator-server --locked -- {{ARGS}}

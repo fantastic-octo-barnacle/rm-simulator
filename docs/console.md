@@ -173,6 +173,7 @@ top-level fields:
 | `notices` | Pending notices |
 | `camera` | `position_m`, `yaw_deg`, `pitch_deg`, `captured` and `third_person` |
 | `ui` | `debug_panel`, `settings`, `blocks_input`, `unfocused` and `consumed` |
+| `referee_link` | With `--referee-link`: `controlling`, `controls_received`, and the held `keys` and `buttons` from the custom client; otherwise null |
 | `commands` | Supported command names |
 
 `ui.unfocused` and `ui.consumed` identify focus and one-frame input blocking.

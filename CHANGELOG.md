@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+- Opt-in referee link (`referee-link` feature, `--referee-link`): an embedded
+  MQTT broker publishes the RoboMaster custom-client state topics for the
+  piloted robot and plays the client's `KeyboardMouseControl` as local input;
+  `--referee-video` sends the pilot's view as HEVC over UDP. A custom client
+  can be tested against the simulation. See
+  [docs/referee-link.md](docs/referee-link.md).
+
 - Escape returns from a pending join to the title immediately, even while the
   field worker is still preparing. Settings and remembered title choices save
   off the frame thread; a final settings edit is flushed on exit.
