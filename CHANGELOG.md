@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+- Escape returns from a pending join to the title immediately, even while the
+  field worker is still preparing. Settings and remembered title choices save
+  off the frame thread; a final settings edit is flushed on exit.
+- Drawing provisional shots no longer copies the whole field checkpoint each
+  frame. Unchanged rune, outpost, CAD and projectile transforms keep their
+  existing Bevy change state.
+
 - Remove completed network investigation and dated asset/performance records
   from the current docs; keep their history in Git and retain runnable build
   and measurement guides.

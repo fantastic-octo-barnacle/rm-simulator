@@ -110,11 +110,15 @@ fn sync_projectiles(
     for (_, mut transform, mut visibility) in &mut pool {
         match wanted.next() {
             Some(projectile) => {
-                *transform = Transform::from_translation(flu_position(projectile.position_m))
-                    .with_scale(Vec3::splat(projectile.radius_m.max(0.001)));
-                *visibility = Visibility::Inherited;
+                transform.set_if_neq(
+                    Transform::from_translation(flu_position(projectile.position_m))
+                        .with_scale(Vec3::splat(projectile.radius_m.max(0.001))),
+                );
+                visibility.set_if_neq(Visibility::Inherited);
             }
-            None => *visibility = Visibility::Hidden,
+            None => {
+                visibility.set_if_neq(Visibility::Hidden);
+            }
         }
     }
     for projectile in wanted {

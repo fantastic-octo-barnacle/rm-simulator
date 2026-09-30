@@ -529,6 +529,39 @@ pub fn save_remembered(path: &Path, fields: &TitleFields) -> std::io::Result<()>
     )
 }
 
+// One writer keeps successive joins in order without writing on Bevy's frame.
+fn remember_in_background(path: PathBuf, fields: TitleFields) {
+    type SaveRequest = (PathBuf, TitleFields);
+    static WRITER: std::sync::OnceLock<Option<std::sync::mpsc::Sender<SaveRequest>>> =
+        std::sync::OnceLock::new();
+    let sender = WRITER.get_or_init(|| {
+        let (sender, receiver) = std::sync::mpsc::channel::<SaveRequest>();
+        match std::thread::Builder::new()
+            .name("title-save".into())
+            .spawn(move || {
+                for (path, fields) in receiver {
+                    if let Err(error) = save_remembered(&path, &fields) {
+                        warn!(
+                            "cannot remember the title fields in {}: {error}",
+                            path.display()
+                        );
+                    }
+                }
+            }) {
+            Ok(_) => Some(sender),
+            Err(error) => {
+                warn!("cannot start title save: {error}");
+                None
+            }
+        }
+    });
+    if let Some(sender) = sender
+        && sender.send((path, fields)).is_err()
+    {
+        warn!("title save worker stopped unexpectedly");
+    }
+}
+
 #[derive(Component)]
 struct TitleRoot;
 #[derive(Component)]
@@ -1735,12 +1768,8 @@ fn title_input(
         Ok(mut args) => {
             if !cfg!(test)
                 && let Some(path) = remembered_path()
-                && let Err(error) = save_remembered(&path, &fields)
             {
-                warn!(
-                    "cannot remember the title fields in {}: {error}",
-                    path.display()
-                );
+                remember_in_background(path, fields.clone());
             }
             screen.status = None;
             args.staging = true;
