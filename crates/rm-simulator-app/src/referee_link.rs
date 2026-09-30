@@ -22,9 +22,14 @@
 //!
 //! Radar positions are sent for every robot at 1 Hz, which is more than a
 //! real client receives; this is a test harness.
+//!
+//! The link subscribes to `KeyboardMouseControl` and plays it as local
+//! keyboard and mouse input, so the client drives the piloted robot through
+//! the ordinary controls.
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
+use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use rm_simulator_server::layout::FIELD_HALF_LENGTH_M;
 use rm_simulator_server::protocol::PlayerInfo;
@@ -194,6 +199,32 @@ pub mod wire {
         /// World y, centimetres.
         #[prost(uint32, optional, tag = "2")]
         pub target_pos_y: Option<u32>,
+    }
+
+    /// The client's keyboard and mouse, sent at 75 Hz.
+    #[derive(Clone, PartialEq, prost::Message)]
+    pub struct KeyboardMouseControl {
+        /// Mouse motion since the last message; negative is left.
+        #[prost(int32, optional, tag = "1")]
+        pub mouse_x: Option<i32>,
+        /// Mouse motion since the last message; negative is down.
+        #[prost(int32, optional, tag = "2")]
+        pub mouse_y: Option<i32>,
+        /// Wheel motion; negative is backward.
+        #[prost(int32, optional, tag = "3")]
+        pub mouse_z: Option<i32>,
+        /// Left button held.
+        #[prost(bool, optional, tag = "4")]
+        pub left_button_down: Option<bool>,
+        /// Right button held.
+        #[prost(bool, optional, tag = "5")]
+        pub right_button_down: Option<bool>,
+        /// Held keys, one bit each in the order of `CONTROL_KEYS`.
+        #[prost(uint32, optional, tag = "6")]
+        pub keyboard_value: Option<u32>,
+        /// Middle button held.
+        #[prost(bool, optional, tag = "7")]
+        pub mid_button_down: Option<bool>,
     }
 }
 
@@ -425,7 +456,71 @@ pub fn radar(view: &View) -> Option<wire::RadarInfoToClient> {
     Some(wire::RadarInfoToClient { radar_info })
 }
 
-/// The running broker's local link and the publication schedule.
+/// Keys of `KeyboardMouseControl.keyboard_value`, bit 0 first.
+const CONTROL_KEYS: [KeyCode; 16] = [
+    KeyCode::KeyW,
+    KeyCode::KeyS,
+    KeyCode::KeyA,
+    KeyCode::KeyD,
+    KeyCode::ShiftLeft,
+    KeyCode::ControlLeft,
+    KeyCode::KeyQ,
+    KeyCode::KeyE,
+    KeyCode::KeyR,
+    KeyCode::KeyF,
+    KeyCode::KeyG,
+    KeyCode::KeyZ,
+    KeyCode::KeyX,
+    KeyCode::KeyC,
+    KeyCode::KeyV,
+    KeyCode::KeyB,
+];
+/// Mouse buttons in the order of `Held::buttons` bits.
+const CONTROL_BUTTONS: [MouseButton; 3] =
+    [MouseButton::Left, MouseButton::Right, MouseButton::Middle];
+/// The client stops controlling when no message arrives for this long,
+/// 15 periods of its 75 Hz stream.
+const CONTROL_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// Keys and buttons one `KeyboardMouseControl` holds, as bit sets.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+struct Held {
+    keys: u32,
+    buttons: u8,
+}
+
+impl Held {
+    fn of(control: &wire::KeyboardMouseControl) -> Self {
+        let button = |down: Option<bool>, bit: u8| u8::from(down.unwrap_or(false)) << bit;
+        Self {
+            keys: control.keyboard_value.unwrap_or(0) & 0xffff,
+            buttons: button(control.left_button_down, 0)
+                | button(control.right_button_down, 1)
+                | button(control.mid_button_down, 2),
+        }
+    }
+    fn keys(self) -> impl Iterator<Item = KeyCode> {
+        (0..CONTROL_KEYS.len())
+            .filter(move |bit| self.keys & 1 << bit != 0)
+            .map(|bit| CONTROL_KEYS[bit])
+    }
+    fn buttons(self) -> impl Iterator<Item = MouseButton> {
+        (0..CONTROL_BUTTONS.len())
+            .filter(move |bit| self.buttons & 1 << bit != 0)
+            .map(|bit| CONTROL_BUTTONS[bit])
+    }
+}
+
+/// Mouse motion in window pixels, y down: the protocol's y is up.
+fn mouse_motion(control: &wire::KeyboardMouseControl) -> Vec2 {
+    Vec2::new(
+        control.mouse_x.unwrap_or(0) as f32,
+        -(control.mouse_y.unwrap_or(0) as f32),
+    )
+}
+
+/// The running broker's local link, the publication schedule and the
+/// client's control input.
 #[derive(Resource)]
 pub struct RefereeLink {
     tx: rumqttd::local::LinkTx,
@@ -433,6 +528,23 @@ pub struct RefereeLink {
     fast: Schedule,
     status: Schedule,
     slow: Schedule,
+    /// What the client holds and when it last sent it, while it controls.
+    control: Option<(Held, Instant)>,
+    /// `KeyboardMouseControl` messages received since start.
+    controls_received: u64,
+}
+
+impl RefereeLink {
+    /// Status for the app console's `state` reply.
+    pub fn status(&self) -> serde_json::Value {
+        let held = self.control.map(|(held, _)| held);
+        serde_json::json!({
+            "controlling": held.is_some(),
+            "controls_received": self.controls_received,
+            "keys": held.map(|held| held.keys().map(|key| format!("{key:?}")).collect::<Vec<_>>()),
+            "buttons": held.map(|held| held.buttons().map(|button| format!("{button:?}")).collect::<Vec<_>>()),
+        })
+    }
 }
 
 /// A fixed publication rate that skips missed periods instead of bursting.
@@ -492,7 +604,8 @@ pub fn start(address: SocketAddr) -> anyhow::Result<RefereeLink> {
         ..Default::default()
     };
     let mut broker = rumqttd::Broker::new(config);
-    let (tx, rx) = broker.link("rm-simulator-referee")?;
+    let (mut tx, rx) = broker.link("rm-simulator-referee")?;
+    tx.subscribe("KeyboardMouseControl")?;
     std::thread::Builder::new()
         .name("referee-link".into())
         .spawn(move || {
@@ -507,23 +620,108 @@ pub fn start(address: SocketAddr) -> anyhow::Result<RefereeLink> {
         fast: Schedule::hz(10),
         status: Schedule::hz(5),
         slow: Schedule::hz(1),
+        control: None,
+        controls_received: 0,
     })
 }
 
-/// Publishes the state topics while a match is loaded.
+/// Publishes the state topics while a match is loaded, and applies the
+/// client's `KeyboardMouseControl` as local input.
 pub struct RefereeLinkPlugin;
 
 impl Plugin for RefereeLinkPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, publish.run_if(in_state(Screen::InMatch)));
+        // Input capture shares the console's automation flag, which keeps an
+        // unfocused window from blocking gameplay input.
+        app.init_resource::<crate::console::ConsoleInputs>()
+            .add_systems(
+                PreUpdate,
+                control
+                    .after(bevy::input::InputSystems)
+                    .before(bevy::picking::PickingSystems::ProcessInput),
+            )
+            .add_systems(Update, publish.run_if(in_state(Screen::InMatch)));
+    }
+}
+
+/// Applies the client's newest `KeyboardMouseControl` as held keys and
+/// buttons, the way the console injects input, so every action goes through
+/// the ordinary controls and becomes a protocol command. Mouse motion from
+/// every message this frame is summed. While the stream is live the mouse is
+/// captured for aiming; when it stops for `CONTROL_TIMEOUT` or the match ends,
+/// everything is released.
+fn control(world: &mut World) {
+    let now = Instant::now();
+    let in_match = crate::loading::in_match(world);
+    let mut link = world.resource_mut::<RefereeLink>();
+    let mut latest = None;
+    let mut motion = Vec2::ZERO;
+    while let Ok(Some(notification)) = link.rx.recv_deadline(now) {
+        use prost::Message as _;
+        if let rumqttd::Notification::Forward(forward) = notification
+            && let Ok(control) = wire::KeyboardMouseControl::decode(forward.publish.payload)
+        {
+            link.controls_received += 1;
+            motion += mouse_motion(&control);
+            latest = Some(Held::of(&control));
+        }
+    }
+    let before = link.control.map(|(held, _)| held);
+    link.control = match latest {
+        Some(held) => Some((held, now)),
+        None => link
+            .control
+            .filter(|(_, seen)| now.duration_since(*seen) < CONTROL_TIMEOUT),
+    }
+    .filter(|_| in_match);
+    let after = link.control.map(|(held, _)| held);
+
+    let released = before.unwrap_or_default();
+    let held = after.unwrap_or_default();
+    let mut keys = world.resource_mut::<ButtonInput<KeyCode>>();
+    for key in released
+        .keys()
+        .filter(|key| !held.keys().any(|k| k == *key))
+    {
+        keys.release(key);
+    }
+    // Held keys are pressed again every frame, as focus changes may clear them.
+    for key in held.keys() {
+        keys.press(key);
+        if released.keys().any(|k| k == key) {
+            keys.clear_just_pressed(key);
+        }
+    }
+    let mut buttons = world.resource_mut::<ButtonInput<MouseButton>>();
+    for button in released
+        .buttons()
+        .filter(|button| !held.buttons().any(|b| b == *button))
+    {
+        buttons.release(button);
+    }
+    for button in held.buttons() {
+        buttons.press(button);
+        if released.buttons().any(|b| b == button) {
+            buttons.clear_just_pressed(button);
+        }
+    }
+    if before.is_some() != after.is_some() {
+        crate::console::set_capture(world, after.is_some());
+    }
+    if after.is_some() {
+        world.resource_mut::<AccumulatedMouseMotion>().delta += motion;
+        // Hold capture while live: a console disconnect releases its own
+        // capture, which is the same flag. Open panels still block aiming.
+        world
+            .resource_mut::<crate::console::ConsoleInputs>()
+            .captured = true;
+        if let Some(mut player) = world.get_resource_mut::<crate::controls::Player>() {
+            player.captured = true;
+        }
     }
 }
 
 fn publish(mut link: ResMut<RefereeLink>, session: Res<Session>) {
-    // Nothing is subscribed through the local link yet; drain it so the
-    // router never waits on it.
-    while let Ok(Some(_)) = link.rx.recv_deadline(Instant::now()) {}
-
     let view = View {
         field: &session.snapshot,
         team: session.team,
@@ -656,6 +854,39 @@ mod tests {
         assert_eq!(status.current_stage, Some(0));
         assert_eq!(status.is_paused, Some(true));
         assert_eq!(status.total_rounds, None);
+    }
+
+    #[test]
+    fn control_bits_map_to_keys_buttons_and_window_motion() {
+        let control = wire::KeyboardMouseControl {
+            // W, Ctrl, R and B, plus bits beyond the sixteen keys.
+            keyboard_value: Some(1 | 1 << 5 | 1 << 8 | 1 << 15 | 1 << 20),
+            left_button_down: Some(true),
+            mid_button_down: Some(true),
+            mouse_x: Some(-4),
+            mouse_y: Some(3),
+            ..Default::default()
+        };
+        let held = Held::of(&control);
+        assert_eq!(
+            held.keys().collect::<Vec<_>>(),
+            [
+                KeyCode::KeyW,
+                KeyCode::ControlLeft,
+                KeyCode::KeyR,
+                KeyCode::KeyB
+            ]
+        );
+        assert_eq!(
+            held.buttons().collect::<Vec<_>>(),
+            [MouseButton::Left, MouseButton::Middle]
+        );
+        // Protocol y is up; window y is down.
+        assert_eq!(mouse_motion(&control), Vec2::new(-4.0, -3.0));
+        assert_eq!(
+            Held::of(&wire::KeyboardMouseControl::default()),
+            Held::default()
+        );
     }
 
     #[test]

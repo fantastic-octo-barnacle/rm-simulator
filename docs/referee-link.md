@@ -5,7 +5,8 @@
 The referee link lets a RoboMaster custom client, such as trident-rm
 `custom-client-27`, run against the simulator instead of the referee system.
 The app embeds an MQTT broker and publishes the official custom-client state
-topics for the robot it pilots, as raw Protobuf, one topic per message name.
+topics for the robot it pilots, as raw Protobuf, one topic per message name,
+and drives that robot from the client's `KeyboardMouseControl`.
 
 It is opt-in twice: build with the `referee-link` feature (`just run-referee`
 does), then pass `--referee-link`.
@@ -40,6 +41,25 @@ client receives.
 Referee IDs come from the roster's robot (Infantry 3, 4 or 5), or from the kind
 where only one number fits. Robot numbers with no robot on the field report 0
 HP and radar position 0, 0.
+
+## Control
+
+The link subscribes to `KeyboardMouseControl` and plays each message as local
+input, the way the [app console](console.md) injects keys: the sixteen protocol
+keys (W, S, A, D, Shift, Ctrl, Q, E, R, F, G, Z, X, C, V, B) are held as the
+same keyboard keys, the three buttons as the mouse buttons, and mouse motion
+aims (protocol y is up). The app's own bindings then apply, so W drives, Ctrl
+is fast, R toggles spin and the left button fires unless they were rebound in
+the settings. The wheel is ignored.
+
+While messages arrive the link holds mouse capture, so the app aims and fires
+even when its window is not focused; an open panel still blocks input. When no
+message arrives for 200 ms, or the match ends, every held key and button is
+released and capture ends. A client in menu mode sends neutral input, which
+keeps capture but moves nothing.
+
+The console's `state` reply shows the link under `referee_link`:
+`controlling`, `controls_received` and the held `keys` and `buttons`.
 
 ## Coordinates
 

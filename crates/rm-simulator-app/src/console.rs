@@ -685,6 +685,16 @@ fn complete(world: &mut World) {
     });
 }
 
+/// The referee link's control status, or null when it is not running.
+fn referee_link_status(world: &World) -> Value {
+    #[cfg(feature = "referee-link")]
+    if let Some(link) = world.get_resource::<crate::referee_link::RefereeLink>() {
+        return link.status();
+    }
+    let _ = world;
+    Value::Null
+}
+
 fn state(world: &mut World) -> Value {
     let Some(session) = world.get_resource::<Session>() else {
         return json!({"ready":false});
@@ -717,6 +727,7 @@ fn state(world: &mut World) -> Value {
             "third_person":world.get_resource::<Drive>().is_some_and(|d| d.third_person),
         })),
         "ui": world.get_resource::<crate::hud::HudState>().map(|ui| json!({"debug_panel":ui.debug, "settings":ui.settings, "blocks_input":ui.blocks_input(), "unfocused":ui.unfocused, "consumed":ui.consumed})),
+        "referee_link": referee_link_status(world),
         "commands":["help","ready","state","camera","spawn","pause","step","screenshot","key",
             "mouse_button","mouse_motion","cursor","capture","release_inputs","inspect","world","quit"],
     })
@@ -791,7 +802,7 @@ fn parse_key(key: &str) -> Option<KeyCode> {
     })
 }
 
-fn set_capture(world: &mut World, captured: bool) {
+pub(crate) fn set_capture(world: &mut World, captured: bool) {
     if captured && let Some(mut ui) = world.get_resource_mut::<crate::hud::HudState>() {
         ui.unfocused = false;
         ui.consumed = false;
