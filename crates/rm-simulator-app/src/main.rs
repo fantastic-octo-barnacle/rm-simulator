@@ -32,6 +32,8 @@ mod prediction;
 mod preferences;
 mod presentation;
 mod projectile_prediction;
+#[cfg(feature = "referee-link")]
+mod referee_link;
 mod scene;
 mod screenshot;
 mod session;
@@ -204,6 +206,19 @@ fn main() -> AppExit {
             }
             Err(error) => {
                 eprintln!("cannot start console: {error}");
+                return AppExit::error();
+            }
+        }
+    }
+    #[cfg(feature = "referee-link")]
+    if let Some(address) = args.referee_link {
+        match referee_link::start(address) {
+            Ok(link) => {
+                app.insert_resource(link)
+                    .add_plugins(referee_link::RefereeLinkPlugin);
+            }
+            Err(error) => {
+                eprintln!("cannot start referee link on {address}: {error}");
                 return AppExit::error();
             }
         }

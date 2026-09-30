@@ -18,6 +18,7 @@ joined with `--connect` takes those from the server.
 | `--play` | Skip the title screen and start a local practice match at once |
 | `--staging` | Connect first, then choose side, robot and position over the real field; works with local hosting and `--connect` |
 | `--console [ADDR]` | App automation console on localhost, default `127.0.0.1:7790`; see [console commands](console.md) |
+| `--referee-link [ADDR]` | With the `referee-link` feature, serve the custom-client referee protocol over MQTT, default `127.0.0.1:3333`; see [referee link](referee-link.md) |
 | `--window-mode normal\|unfocused\|headless` | Normal visible window, visible without requesting focus, or GPU rendering without an OS window |
 | `--robot hero\|engineer\|infantry-3\|infantry-4\|infantry-5\|sentry\|drone` | Robot you drive on any host. Hero fires 42 mm; Infantry (default), Sentry and Drone fire 17 mm. Engineer has a fixed decorative arm; Drone flies at fixed altitude. Engineer has no launcher |
 | `--chassis auto\|omni\|balance\|mecanum\|flight` | Default `auto`: Infantry/Sentry use omni, Hero/Engineer use mecanum; Drone uses fixed-altitude flight. Infantry also offers balance (two wheels, mock balance assist and jump). Incompatible choices are rejected |

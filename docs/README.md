@@ -20,6 +20,7 @@ Git history.
 | Implemented live rules and assumptions | [Referee rules](referee-rules.md) |
 | Command-line options, controls and interface | [App options](app-options.md) |
 | App automation, headless rendering and screenshots | [Console](console.md) |
+| Testing a custom client over the referee protocol | [Referee link](referee-link.md) |
 | Packet metadata and local channel diagnostics | [Network tracing](network-tracing.md) |
 | Field package layout, discovery, composition, collision | [Field package](field-package.md) |
 | Asset contracts and composition | [Semantic assets](semantic-assets.md) |
